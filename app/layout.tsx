@@ -10,6 +10,9 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://chat.vercel.ai"),
   title: "Synergy",
   description: "Next.js chatbot template using the AI SDK.",
+  icons: {
+    icon: "/favicon.svg",
+  },
 };
 
 export const viewport = {
