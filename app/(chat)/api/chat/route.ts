@@ -44,6 +44,7 @@ import type { AppUsage } from "@/lib/usage";
 import { convertToUIMessages, generateUUID } from "@/lib/utils";
 import { generateTitleFromUserMessage } from "../../actions";
 import { type PostRequestBody, postRequestBodySchema } from "./schema";
+import { formatRetrievedContext, queryTurbopuffer } from "@/lib/rag/turbopuffer";
 
 export const maxDuration = 60;
 
@@ -159,6 +160,42 @@ export async function POST(request: Request) {
       country,
     };
 
+    // Build a best-effort query string from the user's text parts
+    const userTextParts = message.parts.filter(
+      (part): part is Extract<(typeof message.parts)[number], { type: "text" }> =>
+        part.type === "text"
+    );
+    const userText = userTextParts
+      .map((part) => part.text)
+      .join("\n")
+      .slice(0, 4000);
+
+    let retrievedContext = "";
+    if (userText) {
+      try {
+        const rows = await queryTurbopuffer({ query: userText, topK: 4 });
+        // Debug logging: summarize retrieval results without dumping large payloads
+        try {
+          console.log("Turbopuffer retrieval succeeded", {
+            queryLength: userText.length,
+            rowsCount: rows.length,
+            sample: rows.slice(0, 2).map((r) => ({
+              $dist:
+                typeof r.$dist === "number" ? Number(r.$dist.toFixed(3)) : r.$dist,
+              preview:
+                typeof r.content === "string" ? r.content.slice(0, 120) : null,
+            })),
+          });
+        } catch (_e) {
+          // Ignore logging failures
+        }
+        retrievedContext = formatRetrievedContext(rows);
+      } catch (err) {
+        // Retrieval is best-effort; proceed without external context on failure
+        console.warn("Turbopuffer retrieval failed", err);
+      }
+    }
+
     await saveMessages({
       messages: [
         {
@@ -181,7 +218,11 @@ export async function POST(request: Request) {
       execute: ({ writer: dataStream }) => {
         const result = streamText({
           model: myProvider.languageModel(selectedChatModel),
-          system: systemPrompt({ selectedChatModel, requestHints }),
+          system:
+            systemPrompt({ selectedChatModel, requestHints }) +
+            (retrievedContext
+              ? `\n\nRetrieved context:\n${retrievedContext}`
+              : ""),
           messages: convertToModelMessages(uiMessages),
           stopWhen: stepCountIs(5),
           experimental_activeTools:

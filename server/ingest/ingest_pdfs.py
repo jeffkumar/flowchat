@@ -66,10 +66,13 @@ def extract_text_per_page(pdf_path: Path) -> List[str]:
 
 def chunk_text(text: str, max_len: int = 1800, overlap: int = 200) -> List[str]:
     chunks: List[str] = []
-    i = 0
     n = len(text)
-    if n == 0:
+    if n == 0 or max_len <= 0:
         return chunks
+    # Ensure forward progress even if overlap >= max_len
+    effective_overlap = max(0, min(overlap, max_len - 1))
+    step = max_len - effective_overlap  # always >= 1
+    i = 0
     while i < n:
         end = min(i + max_len, n)
         slice_ = text[i:end].strip()
@@ -77,12 +80,12 @@ def chunk_text(text: str, max_len: int = 1800, overlap: int = 200) -> List[str]:
             chunks.append(slice_)
         if end == n:
             break
-        i = max(0, end - overlap)
+        i += step
     return chunks
 
 
-def stable_id(source_pdf: str, page_num: int, chunk_index: int) -> str:
-    base = f"{source_pdf}::{page_num}::{chunk_index}"
+def stable_id(file_hash: str, page_num: int, chunk_index: int) -> str:
+    base = f"{file_hash}::{page_num}::{chunk_index}"
     return hashlib.sha1(base.encode("utf-8")).hexdigest()
 
 
@@ -107,30 +110,25 @@ def upsert_rows_turbopuffer(
     api_key: str,
     namespace: str,
     rows: List[Dict],
-) -> None:
+) -> int:
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    attempted: List[Tuple[str, int, str]] = []
-
-    # Try common endpoint variants
-    endpoints = [
-        f"https://api.turbopuffer.com/v2/namespaces/{namespace}/rows",
-        f"https://api.turbopuffer.com/v2/namespaces/{namespace}/rows/upsert",
-        f"https://api.turbopuffer.com/v2/namespaces/{namespace}/upsert",
-    ]
-    last_status = None
-    last_text = ""
-    for url in endpoints:
-        res = requests.post(url, headers=headers, json={"rows": rows}, timeout=120)
-        if res.status_code < 400:
-            return
-        attempted.append((url, res.status_code, res.text))
-        last_status = res.status_code
-        last_text = res.text
-
-    message = "Upsert failed. Attempted endpoints:\n"
-    for (u, code, text) in attempted:
-        message += f" - {u} -> {code} {text[:200]}\n"
-    raise RuntimeError(message)
+    # According to docs, namespaces are implicitly created on first write and
+    # writes are performed via POST /v2/namespaces/:namespace with upsert_rows.
+    url = f"https://api.turbopuffer.com/v2/namespaces/{namespace}"
+    payload = {
+        "upsert_rows": rows,
+        # Required when writing vectors unless omitted or copying
+        "distance_metric": "cosine_distance",
+    }
+    res = requests.post(url, headers=headers, json=payload, timeout=120)
+    if res.status_code >= 400:
+        raise RuntimeError(f"Upsert failed: {res.status_code} {res.text}")
+    try:
+        data = res.json()
+        # Prefer rows_upserted; fallback to rows_affected
+        return int(data.get("rows_upserted") or data.get("rows_affected") or 0)
+    except Exception:
+        return 0
 
 
 def ingest_pdf(
@@ -153,6 +151,12 @@ def ingest_pdf(
     pages = extract_text_per_page(pdf_path)
     timestamp = datetime.now(tz=timezone.utc).isoformat()
     source_pdf = pdf_path.name
+    # Use a file hash to keep IDs stable across file renames
+    try:
+        file_bytes = pdf_path.read_bytes()
+    except Exception:
+        file_bytes = b""
+    file_hash = hashlib.sha1(file_bytes).hexdigest()
 
     total_chunks = 0
     rows_buffer: List[Dict] = []
@@ -180,7 +184,8 @@ def ingest_pdf(
 
             for j, text in enumerate(batch):
                 chunk_index = i + j
-                row_id = stable_id(source_pdf, page_index + 1, chunk_index)
+                row_id = stable_id(file_hash, page_index + 1, chunk_index)
+                content_hash = hashlib.sha1(text.encode("utf-8")).hexdigest()
                 row = {
                     "id": row_id,
                     "projectName": project_name,
@@ -191,6 +196,7 @@ def ingest_pdf(
                     "chunk_index": chunk_index,
                     "content": text,
                     "vector": vectors[j],
+                    "content_hash": content_hash,
                     "timestamp": timestamp,
                 }
                 rows_buffer.append(row)
@@ -199,16 +205,23 @@ def ingest_pdf(
             if not dry_run and len(rows_buffer) >= write_batch:
                 if not turbopuffer_key:
                     raise RuntimeError("TURBOPUFFER_API_KEY is not set.")
-                upsert_rows_turbopuffer(turbopuffer_key, namespace, rows_buffer)
-                rows_written += len(rows_buffer)
+                # Use conditional upsert to avoid rewriting unchanged chunks
+                rows_written += upsert_rows_turbopuffer(
+                    turbopuffer_key,
+                    namespace,
+                    rows_buffer,
+                )
                 rows_buffer.clear()
 
     # Final flush
     if not dry_run and rows_buffer:
         if not turbopuffer_key:
             raise RuntimeError("TURBOPUFFER_API_KEY is not set.")
-        upsert_rows_turbopuffer(turbopuffer_key, namespace, rows_buffer)
-        rows_written += len(rows_buffer)
+        rows_written += upsert_rows_turbopuffer(
+            turbopuffer_key,
+            namespace,
+            rows_buffer,
+        )
         rows_buffer.clear()
 
     return total_chunks, rows_written
