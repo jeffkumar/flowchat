@@ -1,0 +1,465 @@
+
+
+
+jeffkumar.aw
+  10:47 AM
+joined synergy-project. Also, Nathanael Farrelly
+ and Janez Tratnik
+ joined via invite.
+
+
+Nathanael Farrelly
+  3:15 PM
+Thanks for setting up Jeff!
+
+
+jeffkumar.aw
+  9:19 AM
+For sure Nate!
+
+
+Nathanael Farrelly
+  3:34 PM
+@Janez Tratnik can you confirm this channel works?
+
+
+Janez Tratnik
+  12:14 AM
+Hey, good morning. Yes everything works for me, thanks Jeff!
+12:14
+Looking forward to talking to you both tomorrow.
+
+
+jeffkumar.aw
+  12:26 PM
+You're welcome! Sounds good!
+
+
+jeffkumar.aw
+  9:38 AM
+Great talk today, @Janez Tratnik.
+I think what we discussed could absolutely become a product. It parallels what Collide is doing for oil & gas, but applied to EPC workflows. The speed of getting answers from documents is the core value, and I’m confident we can build an MVP quickly.
+A few things I’d like to validate with you:
+Target Personas
+My assumption is the primary buyers are EPC executives and project directors. But there may be other personas who would actively use a license (e.g., analysts, land teams, permitting teams, interconnect teams). If you can help refine who the day-to-day users are, that would help shape the initial scope.
+Document Types
+It would also help to understand the typical documents your team works with. From our conversation, I’m estimating:
+Purchase & lease agreements
+Environmental / permitting requirements
+Power purchase agreements
+Construction contracts
+Transcripts / meeting notes
+Technical specs and drawings (even if just referenced, not parsed, for MVP)
+Initial Feature Set
+Here’s what I believe we aligned on for the MVP:
+Document ingestion
+PDF / DOCX upload
+Basic storage (CDN or blob storage for now)
+Ingestion via turbopuffer / document tagging / collection delineation
+Chat + search
+Chat interface that doubles as a semantic search
+Inline references with highlighted source text
+Ability to open a referenced doc in a simple viewer
+Contextual relevance
+Sidebar showing top relevant documents / clauses
+Article-level ranking
+Contradiction or conflict flagging (basic to start)
+Project context
+Ability to scope search/chat to a specific project
+If we can refine the user personas, the exact document formats, and  gather a small set of sample docs, I’ll be in a great position to move quickly on an MVP.
+Let me know what you think and what’s worth adjusting. (edited) 
+
+
+jeffkumar.aw
+  10:33 AM
+We can fine tune this so that its not just another Claude project or notebook LM...making it specifically for EPCs.
+
+
+jeffkumar.aw
+  10:49 AM
+I think the next steps could be to nail down requirements for MVP, come up with a project architecture for this, design mockups, set up a marketing landing page, get together some sample data, and then start iterating and testing this out...
+
+
+jeffkumar.aw
+  11:16 AM
+Here is a very simple idea of the initial Product Architecture for a RAG tool like this.
+This file was deleted.
+
+
+jeffkumar.aw
+  11:23 AM
+Screenshot 2025-11-20 at 11.23.16 AM.png
+ 
+Screenshot 2025-11-20 at 11.23.16 AM.png
+
+
+
+
+jeffkumar.aw
+  11:28 AM
+This is just an initial draft really to enable us to dig in deeper into the conversation... I think in a few conversations we could nail something down.
+
+
+Janez Tratnik
+  12:58 AM
+Love the architecture draft. Turbopuffer seems like the right move for speed.
+Regarding the target persona – you mentioned EPCs, but I’m actually leaning more towards Developers (Project Managers/Origination) as the best entry point.
+Here is why: Development cycles are super long (3-5+ years). Teams change, context gets lost. I see this tool acting as a sort of "Project Memory." It’s not just for due diligence, but for daily workflow. I want to be able to quickly ask: "What did we promise the landowner regarding the fence line 2 years ago?" or "What did the stakeholder say about the funding last year?"
+EPCs operate on stricter contracts, but Developers deal with a lot of scattered info/chaos. If we solve that "lost context" pain, it’s huge value.
+We can definitely start with the Chat MVP as you outlined. Later on, we can add those "Phase 2" features where it proactively flags conflicts , but Chat is the fastest way to validate this.
+Long term, if we nail this for Solar/Wind/Battery, the natural expansion is into Transmission Lines and Data Centers (since they have the same permitting bottlenecks).
+Also, regarding next steps – let's get a landing page up too. It would be the perfect place to execute on that "failed projects" strategy I mentioned yesterday. We use the page to encourage devs to upload data from dead projects in exchange for launch credits. That solves our training data issue and validates interest at the same time.
+
+
+jeffkumar.aw
+  9:37 AM
+This all sounds good! I'm curious to dig into the different problems or the problems that overlap with EPCs.
+9:38
+There is an interesting open source project around AI memory for LLMs https://mem0.ai/.
+9:39
+https://github.com/mem0ai/mem0
+
+
+jeffkumar.aw
+  9:45 AM
+It probably makes sense to use something like Mem0 for conversational history and TurboPuffer for KB indexing.
+
+
+Nathanael Farrelly
+  4:36 PM
+@Janez Tratnik the developers you mention, I’d assume there is a database of projects, funding, or licenses they hold that we would be able to source all our target developers “buyers” of our solution. Essentially a comprised list of all the targeted clients we would be looking to sell to. Is the team interested for another call next week to discuss further? Again, I defer to Janez experience in the space and the pain points. If we have an idea in mind to solve for, I’d love to discuss next steps synergy/partnerships and roles in the coming calls as well.
+
+
+jeffkumar.aw
+  5:41 PM
+I’m definitely up for another session next week to go deeper
+
+
+Janez Tratnik
+  12:37 AM
+Hey both. Thanks for your emails / messages. And sure, let's have another call this week. Would Thursday work for you, perhaps this time we can do it a bit later so it's easier for Jeff. How about 10AM Eastern time?
+
+
+jeffkumar.aw
+  7:22 AM
+Yes, that works
+:+1:
+1
+
+
+
+Nathanael Farrelly
+  8:52 AM
+Yes that should work for me! I’ll send an invite
+:raised_hands:
+1
+
+
+
+Janez Tratnik
+  9:58 AM
+Perfect, see you on Thursday then!
+
+
+Nathanael Farrelly
+  8:52 AM
+“Hi folks, I need some advice with a project that has become increasingly frustrating. It’s real estate related but I think anyone with experience of handling big projects could have some useful input. I’ve hesitated to ask for help about this in the group up until now, as it’s almost embarrassing how long this project has been going on (15 years) but in the spirit of sharing vulnerabilities here goes… about 15 years ago I bought a 13 hector plot of land with planning permission for about 40 private houses in the capital of Estonia (Tallinn). On the advice of my architect (who is very well respected and used to be on the city planning committee) I applied for a change in the project as the surrounding area had 4 and 5 stories apartment blocks and my land was zoned for similar residential or mixed residential / commercial use. So the project went from 40 houses, to instead accommodation for approx. 5,000 people plus a kindergarten, school, sport centre, retail complex – all within the allowed property density and rules for the area. So, in theory a great project and great investment (copy of the project below this message). The new project application was greeted with a lot of enthusiasm by all right people in the planning committee and got all the way to almost getting final planning approval and then just got tied up in continual requested for changes, move this road here, then move it back again, do this environmental report, which I’d already done etc. The problem seems to be that as it is a big project, everyone wants to be involved and have their say and by the time we are getting close to approval the whole government / planning committee has changed and they want me to start again! I don’t have experience of doing a real estate project of this size and I’m really struggling to work out the best strategy. The government is just changing again and has asked me to withdraw the current plans and start again! My latest approach had been to contact a local law firm that is one of the longest established, most well connected and they have said they are reasonably optimistic they can help (but didn’t sound overly confident and are getting back to me after some initial research). I bought the land for cash, so there is no financial pressure but its incredibly frustrating. Admittedly it hasn’t had 100% of my focus as my other businesses have always been the main focus, but it has still been given a significant amount time and effort. Any advice / strategy plan would be hugely appreciated.”
+
+
+Nathanael Farrelly
+  9:58 AM
+Above text was copy and paste from pain points in development projects
+:eyes:
+1
+:raised_hands:
+1
+
+9:59
+@jeffkumar.aw collide is a great example from what we have discussed, especially if we niche to the energy space, solar, wind, etc
+:white_check_mark:
+1
+
+
+
+Janez Tratnik
+  7:44 AM
+Hey guys, following up on my email earlier.
+@jeffkumar.aw - I was thinking about your request for data for the POC, and I realized something important. We don't need to hunt for data project-by-project to start training our base model.
+If we scrape the public dockets of NY, Ohio, Texas, and BLM, we can legally get hundreds of thousands of docs. We can build a "Super-Senior Developer Brain" just from public records. Then, clients just add their private "secret sauce" on top.
+Check out these two projects for example:
+1. Shepherd's Run Solar (New York) Project info: https://www.shepherdsrunsolar.com/about/ The Documents (Goldmine): https://documents.dps.ny.gov/public/MatterManagement/CaseMaster.aspx?MatterSeq=85385&MNO=24-03041 (There are almost 500 documents here, some with 100+ pages long. Plus 500+ public comments/letters).
+2. Lava Ridge Wind (BLM Federal project) Link: https://eplanning.blm.gov/eplanning-ui/project/2013782/570
+My thought is: If our AI agent can answer detailed questions about these public documents, we have done the heavy lifting. What’s missing are mostly private lease agreements or internal lists, but the essential regulatory material is all there. And if AI can decipher a scanned, crumpled comment from a local resident, it will certainly be able to read and analyze rental contracts.
+Also, I realized that scraping this data creates insane value on its own: An experienced Project Manager sees maybe 10-20 big projects in their career. Our AI can learn immediately from 1000+ projects and find patterns on how things were done / solved.
+Example: I could ask: "Show me 5 examples of how other developers in Ohio argued against underground cabling requirements in their approved permits."
+The AI doesn't guess. It retrieves the exact legal phrasing and arguments that regulators have already accepted in the past. It becomes an Argumentation Engine. It helps us create better applications faster by using "proven" language.
+This is huge value for any developer trying to get a permit approved.
+So, scraping this data serves a double purpose: it gives us the necessary training material to launch our 'Project Brain' (internal memory) without waiting for client data, BUT it also upgrades the AI into a true 'Co-development Partner' (which is huge value).
+
+
+Nathanael Farrelly
+  11:29 AM
+@Janez Tratnik  this is awesome. Is there 1 site that seems to be doing something in a niche that we could essentially “copy” and use for energy development space? Being branded towards a certain niche can certainly have its advantages for trust. However can you find a product that would solve for your current needs exactly and we replicate and niche down work flows? I think having a work flow is the ideal, and then the extra advantages and tools included down the line once we have more data from customers could be huge
+
+
+Janez Tratnik
+  1:36 PM
+@Nathanael Farrelly - replying to your email and your question above about finding a model to "copy".
+I think the closest existing products to what we want to do are Collide.io and Trunk Tools.
+I would also add Rowland to the list, because they specifically emphasize "long-term memory" and transferring knowledge from senior experts to junior/new employees (which addresses one of the problem we discussed).
+However, I haven't found anyone doing this specifically for the Energy Development niche yet.
+That is why I believe this could be our focus:
+It seems to be an open market compared to construction.
+It is the phase I personally know best, so we have domain expertise here.
+The strategy could be:
+We essentially "copy" the functionality/logic of Collide /Trunk Tools / Rowland, but we train the model using that mountain of public project data I mentioned above (NY/BLM docs). This gives us a specialized "Development Brain" immediately.
+But of course, it will be very interesting to hear first what other developers say on our research calls next week to confirm this! (edited) 
+
+
+jeffkumar.aw
+  8:25 AM
+I am happy to test this out with the public docket data you shared. However, I do like the idea of an internal docs tool for projects with inline references to proprietary data / docs. That original data of gathering info about previous employees, conversations, agreements on a project by project basis is interesting. More broadly, Using non public data in personally beneficial ways for internal KB systems seems like an interesting problem and an opportunity for a moat... I'd be careful to build a trained model at this point, but using a RAG system with a vector search and prompt stuffing can very much simulate training and perform just as well just like perplexity does with Google search and off the shelf models. (edited) 
+
+
+jeffkumar.aw
+  1:59 PM
+What Trunk tools has built is actually pretty straight forward. I just watched a demo from their product about 9 months ago. It's a little hard to find out what their product looks like right now... So i'm not sure what they have built since then. I'm amazed they raised $40mm for this. https://www.youtube.com/watch?v=-rkEOagzLno&t=73s (edited) 
+
+
+Janez Tratnik
+  11:51 AM
+If Trunk Tools raised $40M for something that looks relatively basic... that is honestly a great news. It proves the value is in the workflow/application. And yes, regarding RAG vs Training - you are totally right, I used the wrong term. RAG is great because we need those citations.
+
+Regarding the Internal Data: I have a proposal.
+Obviously I have access to lots of data (Teams, emails) on my current projects.
+
+The problem: I have corporate co-owners, and right now we are in a "heavy" phase on some projects. Going to them for formal permission to use data for a 3rd party startup is bad timing politically.
+
+What if we build a private instance just for ME to use as a personal productivity tool?
+This instance would need to be deployed locally on my computer or on a private server where the data stays within my control and doesn't sit on Synergy's external database.
+We sign an NDA so I'm safe. I use it to manage my own work as a Director. This way we bypass the bureaucracy, I stay compliant with data privacy rules, but we still validate that the RAG architecture works on real, complex files.
+
+One more feature idea I had:
+It would be great for me if "Project Brain" could also connect to auto-note taking apps (like the one we used for our meeting). Or even have a app/button on my phone to toggle recording on/off when I get a relevant call. But maybe this is more difficult, because recording calls is probably not allowed without the other person knowing. Still, it would be a great feature if, at least after the call ends, you could quickly and easily create a summary, and then have it saved directly into your memory.
+
+In any case, if we can connect Cloud docs + Emails + Meetings + Calls... that would be the complete package. A real "second brain" that catches everything.
+
+Oh, and I was also wondering: would I need to tag every old email I have if I wanted emails + files to work properly? I know that AI can do a lot, but there will be a huge number of emails where, in my opinion, the context won’t be immediately clear to it. If yes, that would probably take quite a lot of work…
+
+
+jeffkumar.aw
+  12:55 PM
+So for emails, it could be interesting to build some graph relationships. I think Mem0 could be interesting here. So it's a little bit different from RAG if we get into building context relationships between emails -- for example email threads. I think the recording phone calls bit can be considered a multipart problem. Really, we would want to start with transcript ingestion for context. How we build those transcripts, is a part of a larger conversation, but voice to text models exist out there... So if you're able to grab audio, then you can get text, but then you need to enrich it properly, for example, each speaker needs to be tied to an identity...and that adds scope to the project. It's definitely possible, but probably not the starting point.
+An NDA sounds find. I will say, deploying OpenSearch or a tag / embedding / storage system from scratch is not trivial. Using off the shelf cloud products makes building 10x quicker. I'm happy to build a trial instance just for you, but i'd much prefer to use something off the shelf like TurboPuffer if we can. Open Search on AWS is more complex, but also an option, and that can sit on a VPC ( Virtual Private Cloud ) instance, but its a bit more laborious than Turbo puffer to set up for POC. Would https://turbopuffer.com/docs/security work for an isolated instance for you? I was also thinking we could use vercel / supabase / turbopuffer for the POC...that's the quickest... If we go with AWS, we can add more layers of security, but its going to take me a bit more time to set up...
+
+
+jeffkumar.aw
+  1:31 PM
+We can also obfuscate sensitive data...with mappings for storage if you are very concerned about data leak... Also, we can lock down the instance for example to our team with OAuth JWT tokens and create an isolated instance of turbopuffer collections for your specific project
+1:31
+There are lot of things we can do for securing the data, without spending too much time on engineering...
+1:33
+This is a great resource on security.
+https://owasp.org/www-project-top-ten/
+https://owasp.org/www-project-top-10-for-large-language-model-applications/
+
+
+Janez Tratnik
+  12:48 AM
+What is your rough time estimate for setting up TurboPuffer vs. AWS Private Cloud? Just so I have a feeling for the difference in effort.
+I am not so worried about external hacks or security breaches. My main concern is data residency/custody — basically where the data physically sits. To keep things clean with my board/co-owners, I need to be able to say the data is hosted on a private, isolated cloud instance under my control.
+Also, looking at the big picture: I suspect our future clients will probably demand this kind of Private Cloud / Isolated deployment anyway to get on board. So, if we try to set this up on AWS now, we are essentially already designing our architecture for the future.
+
+
+jeffkumar.aw
+  8:59 AM
+With Turbopuffer, I can spend most of the time focused on building a POC. With AWS, i'll spend most of the time setting up private cloud for open search. It would take easily 3 times as long. That's mostly because its a hassle to work with VPCs. I think its not ideal for POCs, but I think it could be a path if we have paying customers.  I think I can also get free credits for working with Turbopuffer from their support team for doing a POC. They are pretty good with security. The Cursor team uses them for their copilot and I found out about them from Maxime Allouch who I met early in NYC this year -- founder of Vera Health ( YC 24 ) . He uses them since they provide HIPAA compliance for vector storage.  If you want, I can open up a thread with support at TurboPuffer and/or Maxime to address any concerns about data. At the end of the day, we need a way to produce the vectors, and that's where we end up most vulnerable in sharing data. I think its less of a problem at the Turbopuffer layer since that data we can encrypt on storage.
+9:00
+I did test out Turbopuffer a couple months ago, and their api is very easy to use and quick to deploy thats why I was leaning that way for a prototype
+9:01
+I actually use AWS OpenSearch for the battery telemetry project I have for customer and site search. It works very well, but it took me a week to set up I think.
+9:01
+Turbopuffer on the other hand, I was able to get up and running in a day.
+:+1:
+1
+
+
+
+Janez Tratnik
+  9:07 AM
+Thanks for the detailed answer, Jeff. I'll think about the TurboPuffer option for the POC and let you know.
+On another note, I’ve completed the first call — I spoke with Michelle, who has extensive development experience and recently left her position as director of development at renewable energy development firm. Below is a transcript/summary of our conversation.
+From the discussion, it seemed to me that the problem of finding information is important to her, but she sees an even bigger and more difficult issue in the loss of knowledge when a new team member joins an existing team, or when projects are handed over — for example, when a developer sells a project to a utility company.
+She thinks our solution makes sense, but she pointed out that we need to consider what our tool means in the context of lawsuits. Apparently, developers in the U.S. are very frequently subject to lawsuits (from neighbors who oppose projects, etc.). This also happens in Europe, though perhaps not as often. In any case, she said there are quite a lot of lawsuits, and in such situations you must hand over all information to the authorities. She sees a risk that if internal communication differs from what is communicated externally, a tool like ours could be used against the developer — especially if they are required to hand over the internal communication to the authorities.
+This is an interesting point and likely important for us to think about — what we can do to ensure that the tool doesn’t end up creating problems instead of helping.
+9:08
+00:00 - 06:00: Background presentation
+Michelle: Yeah, absolutely. So my background is I've been in the solar and clean energy industry since 2007. I've worked in spaces ranging from residential rooftop solar to large-scale ground-mount projects. Most of the work I do is in the small utility-scale. In the markets I was in, that would be anywhere from 1 megawatt to maybe up to 10 or 20 megawatts. Janez: Okay, small utility. And you would mostly be working on the Eastern coast? Michelle: Throughout my career, I've worked in probably 20+ states. Most of my career has been the Northeast, Mid-Atlantic, Midwest, and West Coast. Janez: Understand. Michelle: In addition to solar, I have done DG (Distributed Generation) scale wind. And I did some hot water and toyed with storage, but no projects start to finish yet. Janez: You said what kind of wind projects? Michelle: Distributed Generation scale wind. So not directing right into the transmission system but in with the local utility. 1.5 MW turbines, sometimes co-located up to 5 of them. Community scale wind.
+07:30 - 12:00: Workflow analysis (Information search)
+Janez: Could you please walk me through a specific situation from say last month, where you urgently needed a piece of information from a project that has been in development for 2 or 3 years? For example, when does the option agreement for Smith property expire? Would that be the case and how would you typically find this information?
+Michelle: Yeah, absolutely. That is one example that frequently comes across as you're trying to figure out if you're going to permit your project in time. Another example is the zoning designation or acreage of the parcel. You're trying to make sure whatever development you're doing works. An example I can think of is we were permitting a project and trying to get a permit extension. We wanted to make sure the permit we secured was still valid and that we wouldn't need additional permits due to rule changes (ordinances). Janez: And how would you go do that? Michelle: I would go to the local tax assessor's website or GIS website, look up the parcel, go back to the codes, cross-reference them, and read through to make sure it still worked.
+Janez: How about if there is a piece of information that is already inside of your company? How would you find it? Would you look in emails, SharePoint? Michelle: It would be one of those three ways. I would navigate the file structure, read the document referenced, or search my email inbox to find the last time someone emailed me that document. Janez: How do you know it's actually the latest version? Does it happen that you work off an old version? Michelle: Oh yeah, absolutely. Version control is a major issue, in particular when you are swapping contracts or looking up the most recent lease amendment. It definitely has consequences.
+Janez: If you had to guess, how many hours a week do you or your team waste just searching for information? Michelle: I would say things have gotten better more recently... but maybe 5-10 hours a week. Janez: Why do you think it's getting better? Michelle: When I started, we were using an Excel sheet and Google Earth. Now there are better GIS tools, more codes available online.
+14:30 - 18:30: Project transfer (Handoffs)
+Janez: Let's say tomorrow you have to take over a complex project from a colleague who just quit. What would be your first step? Are you worried you're going to miss something critical?
+Michelle: Handing off projects is probably one of the most challenging pieces to the industry. How I would do it: I would read the real estate documents, the permits, the site feasibility studies to get up to speed technically. But the tricky part involves the relationships—understanding sensitivities of the landowner or neighbors. There have definitely been times where I've handed off projects and they haven't gone well because there's no great way to transfer the knowledge in your brain to someone else. This happens often on the financing side too.
+Janez: Has it ever happened that you had to redo a study or renegotiate something simply because nobody knew it had already been done? Michelle: I don't know if it's been that egregious, but there has definitely been duplication of work. Or the person coming in may not fully understand the context.
+23:00 - 25:00: Software
+Janez: What exactly do you use? Outlook or Gmail? Where do you store official documents? Michelle: Throughout my career, it's always been Outlook. For software, I've used Salesforce, Smartsheet. GIS is a big one. Dropbox, Google Docs. But primarily database management and then some form of software platform.
+25:00 - 35:00 Presentation of the solution and concerns
+Janez: We are essentially building a private, secure AI that works like your "project brain." It connects directly to your internal files (SharePoint, emails, meeting notes). It gives instant fact-checking, immediate context for new hires, and detects conflicts (e.g., promises vs. permits). Based on these use cases, would you find a tool like this "nice to have" or a "must have"?
+Michelle: I think it would be really interesting. I think the "need to have" depends on how it handles potential litigation. If something went bad with the project and you got sued, would the tool/data be subject to discovery? If conversations internally are different than external messaging, that creates a concern. Janez: That's a good point. The data stays inside your control/cloud. It's not shared with us or others. It's just connecting your existing databases. Security of data will be the number one topic.
+
+
+jeffkumar.aw
+  9:19 AM
+Is the real risk building an AI tool that serves as a sophisticated internal Knowledge Base and document management system or internal communication which is not in alignment with external communication and integrity issues?
+9:21
+A tool like ours could help stakeholders reduce litigation exposure if we use it to help developers strengthen consistency and integrity and do something along the lines of flagging / alerting like you talked about before when conversations or points are misaligned.
+
+
+Janez Tratnik
+  10:29 AM
+Yeah, I was thinking along the same lines.
+
+The emails and documents exist regardless. If they are forced to hand them over during discovery in a lawsuit, and those emails contradict their external messaging, they are liable whether they use our tool or not.
+So, we actually help them by flagging these inconsistencies early. It becomes a strong selling point (Risk Mitigation).
+
+It would be different if our tool actively asked the user to input new non-documented information (e.g., "Tell me the real context so I can understand better") and then stored that. In that case, we might be creating new “incriminating evidence” that wouldn't otherwise exist.
+But as long as we stick to analyzing existing files/emails, we are definitely a safety net, not a risk.
+
+
+jeffkumar.aw
+  12:18 PM
+I can do a coffee with https://www.linkedin.com/in/mike-costanti-7123a13/ on Wednesday morning. Let me know what questions you think I should be asking.
+
+linkedin.comlinkedin.com
+Mike Costanti - Stealth Startup | LinkedIn
+Experience: Stealth Startup · Education: Montana State University-Bozeman · Location: Bozeman · 500+ connections on LinkedIn. View Mike Costanti’s profile on LinkedIn, a professional community of 1 billion members.
+
+
+Nathanael Farrelly
+  12:30 PM
+@jeffkumar.aw @Janez Tratnik at PEF conference Miami will follow up with my thoughts when I get back Wednesday!
+:+1:
+1
+
+
+
+Janez Tratnik
+  12:39 PM
+Mike seems like a good fit! I can send tomorrow my script / question list that l’ve used for my discussion with Michelle. Btw this is her Linkedin profile: (edited) 
+12:39
+https://www.linkedin.com/in/michelle-carpenter-0681ba13?utm_source=share&utm_campaign=share_via&utm_content=profile&utm_medium=ios_app
+12:41
+@Nathanael Farrelly have fun at ChapterX. Hope you can meet lots of PEF members there!
+
+
+jeffkumar.aw
+  1:26 PM
+Sounds good @Janez Tratnik!
+
+
+Janez Tratnik
+  1:45 AM
+Hi Jeff. As agreed, I'm sending here the script and questions that I've been using.
+1:45
+Revised Interview Script (Focus: Internal Memory & Workflow)
+Goal: Extract "War Stories" and validate the pain of lost knowledge.
+Cluster 1: The "Archaeology" of Daily Work (Search Friction)
+Objective: Find out how painful it is to retrieve specific, old information.
+The "Needle in a Haystack" Question: "X, walk me through a specific situation from the last month where you urgently needed a piece of information from a project that is 2 or 3 years old (e.g., 'When does the lease agreement for the Smith property expire?'). How did you find it?" (Listen for: "I dug through Outlook," "I called an ex-colleague," "I gave up.")
+Trust issues with Data: "When you finally find a document on SharePoint or Teams – how do you know it’s the latest version? Does it ever happen that you work off an old version because you couldn't find the new one?"
+Quantifying the Pain: "If you had to guess: how many hours a week do you (or your team) waste just 'searching' for information instead of actually 'working'?"
+Cluster 2: The "Bus Factor" & Project Handovers
+Objective: Validate your thesis about knowledge loss when people leave.
+The Nightmare Scenario: "Let’s say tomorrow you have to take over a complex project from a colleague who just quit. What is your first step? How does that feel – are you worried you’re going to miss something critical?"
+Loss of Context: "Documents are usually saved somewhere. But what about the context (why decisions were made, informal verbal agreements, phone calls)? Where is that recorded? Or does that knowledge just vanish when the person leaves?"
+Consequences: "Has it ever happened that you had to re-do a study or re-negotiate something, simply because nobody knew it had already been done or agreed upon 3 years ago?"
+Cluster 3: Onboarding New Team Members
+Objective: See if the AI could act as a 'Mentor'.
+Drain on Seniors: "When a new member joins an existing project team – how much of your time goes into explaining the project history to them? Do you feel like you are answering the same questions over and over again?"
+Autonomy: "What is the hardest thing for a new engineer or manager to grasp? Is it the technical side, or is it understanding the 'history and politics' of the specific project?"
+Cluster 4: Current Tech Stack
+Objective: To know what we need to integrate with.
+"You mentioned searching through emails. Do you use Outlook or Gmail? Where do you keep your official documents – SharePoint, Procore, Box? And do you have any system for logging calls/meetings, or is that just your personal notes in Word?"
+"Thanks, X. This confirms exactly what we are seeing in the market. Here is the concept for our solution, 'Project Brain':
+We are building a private, secure AI that connects directly to your internal files – SharePoint, Emails, and Meeting Notes. It doesn’t look at the internet; it only looks at your project history.
+So instead of digging through folders, you can use it for 3 main things:
+1. Instant Fact-Checking: You can ask: 'When does the lease agreement for the Smith property expire?' or 'What exactly did we agree to pay for the local community festival last year?' or 'What were the key risks mentioned in the meeting minutes with the environmental consultant last month?' The AI gives you the answer instantly with a link to the source document.
+2. Instant Context for New Hires: When a new colleague joins the team, instead of you spending days explaining the history, they can just ask the 'Project Brain' to get up to speed. It gives them immediate access to the context, not just the files.
+3. Conflict Detection: It can also catch things you might miss. For example: 'Show me if there are any contradictions between what we promised the landowner regarding the fence line and what is currently in our permit.'
+The Question: Based on these use cases – would a tool like this be a 'nice-to-have' for you, or a 'must-have' to keep your sanity?"
+
+
+jeffkumar.aw
+  12:52 PM
+Thanks Janez for this! I'll go through it this afternoon.
+
+
+Janez Tratnik
+  5:58 AM
+Hi both! Unfortunately I've just realized that I need to leave my office tomorrow earlier. Any chance we can start our meeting one hour earlier?
+
+
+jeffkumar.aw
+  1:03 PM
+I'm ok with that
+1:03
+It ends up that I won't be able to meet with Mike until Friday. It looks like he got sick...
+1:05
+The question list is great @Janez Tratnik! Thanks for this!
+
+
+Janez Tratnik
+  1:12 PM
+Sure, no problem. I am hoping I can talk to another developer tomorrow.
+
+
+Nathanael Farrelly
+  3:26 PM
+@Janez Tratnik @jeffkumar.aw I just updated the invite!
+
+
+Nathanael Farrelly
+  3:41 PM
+Please refer to spreadsheet I sent for streamlined outreach
+:raised_hands:
+1
+
+
+
+Nathanael Farrelly
+  7:13 PM
+Interesting watch. I'm sure you both are well aware. I think everyone knows we are in the AI wave but my brain immediately goes to what will even allow for it and it is both the data centers and energy demand. Curious how we ride that wave? https://youtu.be/cz3AYYZBiGs?si=97H66kT7xB8Vj06D
+
+YouTubeYouTube | International Energy Agency
+How much electricity will AI need? 
+
+:+1:
+1
+
+
+
+Janez Tratnik
+  6:59 AM
+Will be few minutes late.
+
+
+jeffkumar.aw
+  11:19 AM
+I am excited about this project's direction. Thanks for the call today!
+BTW, I just sat next to this guy at the coffee shop: https://www.linkedin.com/in/leo-crane-3a959219/ I thought he might be interesting to talk to too...
+:raised_hands:
+1
+
+
+
+Nathanael Farrelly
+  5:45 PM
+Very cool’ did you have any dialogue with him? Looks like he is now a consultant, maybe that is where we also start learning more about painpoints, especially as consultants are working with those in the space already and knows where there pain points are
+
+
+jeffkumar.aw
+  6:19 PM
+I just met him...we connected on LinkedIn... hopefully I can interview him soon

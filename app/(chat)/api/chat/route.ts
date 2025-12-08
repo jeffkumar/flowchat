@@ -173,17 +173,17 @@ export async function POST(request: Request) {
     let retrievedContext = "";
     if (userText) {
       try {
-        const rows = await queryTurbopuffer({ query: userText, topK: 4 });
+        const rows = await queryTurbopuffer({ query: userText, topK: 10 });
         // Debug logging: summarize retrieval results without dumping large payloads
         try {
           console.log("Turbopuffer retrieval succeeded", {
             queryLength: userText.length,
             rowsCount: rows.length,
-            sample: rows.slice(0, 2).map((r) => ({
+            sample: rows.map((r) => ({
               $dist:
                 typeof r.$dist === "number" ? Number(r.$dist.toFixed(3)) : r.$dist,
               preview:
-                typeof r.content === "string" ? r.content.slice(0, 120) : null,
+                typeof r.content === "string" ? r.content : null,
             })),
           });
         } catch (_e) {
