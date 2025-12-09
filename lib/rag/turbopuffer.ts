@@ -44,7 +44,7 @@ async function createEmbedding(input: string): Promise<number[]> {
 
 export async function queryTurbopuffer({
   query,
-  topK = 4,
+  topK = 20,
 }: {
   query: string;
   topK?: number;
@@ -94,22 +94,22 @@ export function formatRetrievedContext(rows: TurbopufferRow[]): string {
       const content = String(contentValue);
       const truncated =
         content.length > 1000 ? `${content.slice(0, 1000)}…` : content;
-      const score =
-        typeof row.$dist === "number" ? `score: ${row.$dist.toFixed(3)}` : "";
+      const channelName =
+        typeof row.channel_name === "string" ? row.channel_name : "";
+      const userName = typeof row.user_name === "string" ? row.user_name : "";
+      const ts = typeof row.ts === "string" ? row.ts : "";
 
-      const metadataPairs = Object.entries(row).filter(
-        ([key]) => key !== "content" && key !== "$dist"
-      );
-      const metadata =
-        metadataPairs.length > 0
-          ? metadataPairs
-              .map(([key, value]) => `${key}: ${String(value)}`)
-              .join(", ")
-          : "";
+      const headerParts: string[] = [];
+      if (channelName) headerParts.push(`#${channelName}`);
+      if (userName) headerParts.push(userName);
+      if (ts) headerParts.push(`ts=${ts}`);
 
-      return `#${index + 1}${score ? ` (${score})` : ""}${
-        metadata ? `\n${metadata}` : ""
-      }\n${truncated}`;
+      const header =
+        headerParts.length > 0
+          ? headerParts.join(" · ")
+          : `result ${String(index + 1)}`;
+
+      return `${header}\n${truncated}`;
     })
     .join("\n\n");
 

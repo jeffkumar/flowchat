@@ -36,10 +36,10 @@ export const myProvider = isTestEnvironment
     ? customProvider({
         languageModels: {
           // OpenAI direct (no Vercel AI Gateway required)
-          "chat-model": openai!("gpt-4o-mini"),
-          "chat-model-reasoning": openai!("gpt-4o-mini"),
-          "title-model": openai!("gpt-4o-mini"),
-          "artifact-model": openai!("gpt-4o-mini"),
+          "chat-model": openai!("gpt-5.1"),
+          "chat-model-reasoning": openai!("gpt-5.1"),
+          "title-model": openai!("gpt-5.1"),
+          "artifact-model": openai!("gpt-5.1"),
         },
       })
     : customProvider({

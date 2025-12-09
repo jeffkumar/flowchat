@@ -173,7 +173,7 @@ export async function POST(request: Request) {
     let retrievedContext = "";
     if (userText) {
       try {
-        const rows = await queryTurbopuffer({ query: userText, topK: 10 });
+        const rows = await queryTurbopuffer({ query: userText, topK: 8 });
         // Debug logging: summarize retrieval results without dumping large payloads
         try {
           console.log("Turbopuffer retrieval succeeded", {
@@ -190,6 +190,12 @@ export async function POST(request: Request) {
           // Ignore logging failures
         }
         retrievedContext = formatRetrievedContext(rows);
+        const MAX_RETRIEVED_CONTEXT_CHARS = 12000;
+        if (retrievedContext.length > MAX_RETRIEVED_CONTEXT_CHARS) {
+          retrievedContext =
+            retrievedContext.slice(0, MAX_RETRIEVED_CONTEXT_CHARS) +
+            "\n\n[Context truncated]";
+        }
       } catch (err) {
         // Retrieval is best-effort; proceed without external context on failure
         console.warn("Turbopuffer retrieval failed", err);
@@ -216,14 +222,24 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream({
       execute: ({ writer: dataStream }) => {
+        const synergySystemPrompt =
+          "You are Synergy, a helpful assistant answering questions based on Slack channel history. Use the provided Slack message context when it is relevant. If the context does not contain the answer, say so briefly and answer from general knowledge when appropriate. When talking about people, projects, or events, only use names and details that explicitly appear in the retrieved context or the conversation so far; do not invent or guess new names.";
+
+        const baseMessages = convertToModelMessages(uiMessages);
+        const messagesWithContext = retrievedContext
+          ? [
+              {
+                role: "system" as const,
+                content: `Here is retrieved Slack context:\n\n${retrievedContext}`,
+              },
+              ...baseMessages,
+            ]
+          : baseMessages;
+
         const result = streamText({
           model: myProvider.languageModel(selectedChatModel),
-          system:
-            systemPrompt({ selectedChatModel, requestHints }) +
-            (retrievedContext
-              ? `\n\nRetrieved context:\n${retrievedContext}`
-              : ""),
-          messages: convertToModelMessages(uiMessages),
+          system: synergySystemPrompt,
+          messages: messagesWithContext,
           stopWhen: stepCountIs(5),
           experimental_activeTools:
             selectedChatModel === "chat-model-reasoning"

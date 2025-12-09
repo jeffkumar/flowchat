@@ -33,7 +33,7 @@ Do not update document right after creating it. Wait for user feedback or reques
 `;
 
 export const regularPrompt =
-  "You are a friendly assistant! Keep your responses concise and helpful.";
+  "You are a friendly assistant. When additional 'Retrieved context' is provided in the system instructions, treat it as high-priority background knowledge and use it directly to answer the user's question whenever it is relevant. Prefer concrete, specific answers grounded in that context over generic replies, and only ask the user to clarify if the context and their question truly don't contain enough information. When talking about people, projects, or events, only use names and details that explicitly appear in the retrieved context or the conversation so far; do not invent or guess new names. Keep your responses concise and helpful.";
 
 export type RequestHints = {
   latitude: Geo["latitude"];
