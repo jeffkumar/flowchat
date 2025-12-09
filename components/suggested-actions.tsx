@@ -15,10 +15,10 @@ type SuggestedActionsProps = {
 
 function PureSuggestedActions({ chatId, sendMessage }: SuggestedActionsProps) {
   const suggestedActions = [
-    "Summarize key permit requirements for this project and cite sources.",
-    "Extract lease/option expiration dates and parties into a table.",
-    "Flag inconsistencies between landowner commitments and current permits.",
-    "Create a project handoff brief: history, key decisions, open risks.",
+    "What are some key insights from our recent interviews?.",
+    "Who are the key stakeholders in this project?",
+    "What are some thematic painpoints?",
+    "What would make a good MVP?",
   ];
 
   return (
