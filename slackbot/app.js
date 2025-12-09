@@ -11,8 +11,7 @@ const app = new App({
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
 const turbopufferApiKey = process.env.TURBOPUFFER_API_KEY;
-const turbopufferNamespace =
-  process.env.TURBOPUFFER_NAMESPACE || "_synergy_slack";
+const turbopufferNamespace = process.env.TURBOPUFFER_NAMESPACE || "_synergy_slack";
 
 function toSlackMarkdown(text) {
   if (typeof text !== "string") {
