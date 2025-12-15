@@ -45,6 +45,11 @@ import { convertToUIMessages, generateUUID } from "@/lib/utils";
 import { generateTitleFromUserMessage } from "../../actions";
 import { type PostRequestBody, postRequestBodySchema } from "./schema";
 import { formatRetrievedContext, queryTurbopuffer } from "@/lib/rag/turbopuffer";
+import {
+  inferSourceTypeFromNamespace,
+  namespacesForSourceTypes,
+  type SourceType,
+} from "@/lib/rag/source-routing";
 
 export const maxDuration = 60;
 
@@ -177,16 +182,10 @@ export async function POST(request: Request) {
     let retrievedContext = "";
     if (userText) {
       try {
-        const requestedSourceTypes =
-          Array.isArray(sourceTypes) && sourceTypes.length > 0
-            ? sourceTypes
-            : ["slack", "docs"];
-        const namespaces =
-          requestedSourceTypes.length === 1 && requestedSourceTypes[0] === "docs"
-            ? ["_synergy_docs"]
-            : requestedSourceTypes.length === 1 && requestedSourceTypes[0] === "slack"
-              ? ["_synergy_slack"]
-              : ["_synergy_slack", "_synergy_docs"];
+        const requestedSourceTypes = (Array.isArray(sourceTypes)
+          ? sourceTypes
+          : undefined) as SourceType[] | undefined;
+        const namespaces = namespacesForSourceTypes(requestedSourceTypes);
 
         const perNamespaceTopK = 24;
 
@@ -198,15 +197,14 @@ export async function POST(request: Request) {
               namespace: ns,
             });
 
-            const inferredSourceType =
-              ns === "_synergy_docs" ? "docs" : ns === "_synergy_slack" ? "slack" : "";
+            const inferredSourceType = inferSourceTypeFromNamespace(ns);
 
             return nsRows.map((r) => ({
               ...r,
               sourceType:
                 typeof (r as any).sourceType === "string"
                   ? (r as any).sourceType
-                  : inferredSourceType,
+                  : inferredSourceType ?? "",
             }));
           })
         );
