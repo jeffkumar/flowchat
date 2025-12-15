@@ -4,6 +4,7 @@ import { after } from "next/server";
 import { z } from "zod";
 
 import { auth } from "@/app/(auth)/auth";
+import { isDevelopmentEnvironment } from "@/lib/constants";
 import {
   createProjectDoc,
   getProjectByIdForUser,
@@ -113,6 +114,13 @@ export async function POST(request: Request) {
       if (shouldIngest) {
         const buffer = Buffer.from(fileBuffer);
         after(async () => {
+          console.log("ProjectDoc ingestion started", {
+            docId: doc.id,
+            projectId,
+            projectSlug,
+            filename,
+            mimeType: file.type,
+          });
           try {
             const result = await ingestUploadedDocToTurbopuffer({
               docId: doc.id,
@@ -123,6 +131,7 @@ export async function POST(request: Request) {
               filename,
               mimeType: file.type,
               blobUrl: data.url,
+              sourceCreatedAtMs: doc.createdAt.getTime(),
               fileBuffer: buffer,
             });
 
@@ -131,19 +140,37 @@ export async function POST(request: Request) {
               indexedAt: new Date(),
               turbopufferNamespace: result.namespace,
             });
+            console.log("ProjectDoc ingestion succeeded", {
+              docId: doc.id,
+              namespace: result.namespace,
+              chunks: result.chunks,
+            });
           } catch (error) {
             const message =
               error instanceof Error ? error.message : "Unknown ingestion error";
             await markProjectDocIndexError({ docId: doc.id, error: message });
+            console.warn("ProjectDoc ingestion failed", {
+              docId: doc.id,
+              error: message,
+            });
           }
         });
       }
 
       return NextResponse.json({ ...data, doc }, { status: 200 });
-    } catch (_error) {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Upload failed";
+      if (isDevelopmentEnvironment) {
+        return NextResponse.json({ error: message }, { status: 500 });
+      }
       return NextResponse.json({ error: "Upload failed" }, { status: 500 });
     }
-  } catch (_error) {
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to process request";
+    if (isDevelopmentEnvironment) {
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
     return NextResponse.json(
       { error: "Failed to process request" },
       { status: 500 }

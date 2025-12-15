@@ -128,7 +128,10 @@ function buildSlackDocument({
     // like "what about Nate?" can match messages authored by Nate even if
     // his name isn't in the message body itself.
     embeddingText: `${prefix}${raw}`,
-    source: "slack",
+    sourceType: "slack",
+    sourceCreatedAtMs:
+      typeof ts === "string" && ts.length > 0 ? Math.floor(Number(ts) * 1000) : Date.now(),
+    indexedAtMs: Date.now(),
     channel_id: channelId,
     channel_name: channelName,
     user_id: userId,

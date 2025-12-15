@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import mammoth from "mammoth";
 import {
   createEmbedding,
@@ -57,7 +59,27 @@ async function extractTextFromPdf(buffer: Buffer) {
   }
 
   const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as any;
-  const loadingTask = pdfjs.getDocument({ data: buffer });
+  // Turbopack can break pdf.js's default worker resolution in Next dev/server builds.
+  // Point pdf.js at the real worker file on disk to avoid ".next/.../pdf.worker.mjs" lookups.
+  try {
+    const workerFsPath = path.join(
+      process.cwd(),
+      "node_modules",
+      "pdfjs-dist",
+      "legacy",
+      "build",
+      "pdf.worker.mjs"
+    );
+    pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(workerFsPath).toString();
+  } catch {
+    // Best-effort: if this fails, pdf.js may still work in environments where worker resolution is correct.
+  }
+
+  // pdfjs-dist requires Uint8Array; Buffer can trip runtime checks in some builds.
+  const data = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  // In Next.js dev (Turbopack), pdf.js worker bundling can fail and crash ingestion.
+  // We only need text extraction, so disable the worker and run parsing in-process.
+  const loadingTask = pdfjs.getDocument({ data, disableWorker: true });
   const doc = await loadingTask.promise;
 
   const pageNumbers = Array.from({ length: doc.numPages }, (_, i) => i + 1);
@@ -91,6 +113,7 @@ export async function ingestUploadedDocToTurbopuffer({
   filename,
   mimeType,
   blobUrl,
+  sourceCreatedAtMs,
   fileBuffer,
 }: {
   docId: string;
@@ -101,9 +124,13 @@ export async function ingestUploadedDocToTurbopuffer({
   filename: string;
   mimeType: string;
   blobUrl: string;
+  sourceCreatedAtMs: number;
   fileBuffer: Buffer;
 }) {
-  const namespace = `_synergy_${safeProjectSlug(projectSlug)}_docs`;
+  // Store docs in their own namespace to avoid Slack-heavy ANN results starving doc-only retrieval.
+  // We'll re-introduce per-project namespaces later.
+  const namespace = "_synergy_docs";
+  const indexedAtMs = Date.now();
 
   let fullText = "";
   if (mimeType === "application/pdf") {
@@ -132,7 +159,13 @@ export async function ingestUploadedDocToTurbopuffer({
   for (let index = 0; index < chunks.length; index += 1) {
     const chunk = chunks[index];
     const vector = await createEmbedding(chunk);
-    const rowId = `${docId}:${fileHash}:chunk:${index}`;
+    // Turbopuffer requires id strings < 64 bytes. Use a stable, short hash.
+    const idHash = crypto
+      .createHash("sha256")
+      .update(`${docId}:${fileHash}:${index}`)
+      .digest("hex")
+      .slice(0, 40);
+    const rowId = `docs_${idHash}`;
     rows.push({
       id: rowId,
       vector,
@@ -140,6 +173,9 @@ export async function ingestUploadedDocToTurbopuffer({
         chunk.length > MAX_CONTENT_CHARS
           ? `${chunk.slice(0, MAX_CONTENT_CHARS)}…`
           : chunk,
+      sourceType: "docs",
+      sourceCreatedAtMs,
+      indexedAtMs,
       doc_id: docId,
       project_id: projectId,
       created_by: createdBy,

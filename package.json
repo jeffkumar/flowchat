@@ -65,6 +65,7 @@
     "orderedmap": "^2.1.1",
     "papaparse": "^5.5.2",
     "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "5.4.296",
     "postgres": "^3.4.4",
     "prosemirror-example-setup": "^1.2.3",
     "prosemirror-inputrules": "^1.4.0",

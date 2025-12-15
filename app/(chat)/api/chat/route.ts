@@ -102,11 +102,15 @@ export async function POST(request: Request) {
       message,
       selectedChatModel,
       selectedVisibilityType,
+      projectId: providedProjectId,
+      sourceTypes,
     }: {
       id: string;
       message: ChatMessage;
       selectedChatModel: ChatModel["id"];
       selectedVisibilityType: VisibilityType;
+      projectId?: string;
+      sourceTypes?: Array<"slack" | "docs">;
     } = requestBody;
 
     const session = await auth();
@@ -173,23 +177,87 @@ export async function POST(request: Request) {
     let retrievedContext = "";
     if (userText) {
       try {
-        const rows = await queryTurbopuffer({ query: userText, topK: 8 });
+        const requestedSourceTypes =
+          Array.isArray(sourceTypes) && sourceTypes.length > 0
+            ? sourceTypes
+            : ["slack", "docs"];
+        const namespaces =
+          requestedSourceTypes.length === 1 && requestedSourceTypes[0] === "docs"
+            ? ["_synergy_docs"]
+            : requestedSourceTypes.length === 1 && requestedSourceTypes[0] === "slack"
+              ? ["_synergy_slack"]
+              : ["_synergy_slack", "_synergy_docs"];
+
+        const perNamespaceTopK = 24;
+
+        const rowsByNamespace = await Promise.all(
+          namespaces.map(async (ns) => {
+            const nsRows = await queryTurbopuffer({
+              query: userText,
+              topK: perNamespaceTopK,
+              namespace: ns,
+            });
+
+            const inferredSourceType =
+              ns === "_synergy_docs" ? "docs" : ns === "_synergy_slack" ? "slack" : "";
+
+            return nsRows.map((r) => ({
+              ...r,
+              sourceType:
+                typeof (r as any).sourceType === "string"
+                  ? (r as any).sourceType
+                  : inferredSourceType,
+            }));
+          })
+        );
+
+        const fusedRows = rowsByNamespace
+          .flat()
+          .sort((a, b) => {
+            const da =
+              typeof a.$dist === "number" ? a.$dist : Number.POSITIVE_INFINITY;
+            const db =
+              typeof b.$dist === "number" ? b.$dist : Number.POSITIVE_INFINITY;
+            return da - db;
+          });
+
+        const filteredRows = fusedRows.slice(0, 24);
         // Debug logging: summarize retrieval results without dumping large payloads
         try {
+          const truncatePreview = (value: unknown) => {
+            if (typeof value !== "string") {
+              return null;
+            }
+            const oneLine = value.replace(/\s+/g, " ").trim();
+            return oneLine.length > 50 ? `${oneLine.slice(0, 50)}…` : oneLine;
+          };
+          const byNamespaceCounts = rowsByNamespace.map((nsRows, i) => ({
+            namespace: namespaces[i],
+            rowsCount: nsRows.length,
+          }));
           console.log("Turbopuffer retrieval succeeded", {
             queryLength: userText.length,
-            rowsCount: rows.length,
-            sample: rows.map((r) => ({
+            requestedSourceTypes,
+            namespaces,
+            perNamespace: byNamespaceCounts,
+            fusedRowsCount: fusedRows.length,
+            selectedRowsCount: filteredRows.length,
+            sample: filteredRows.slice(0, 12).map((r) => ({
               $dist:
                 typeof r.$dist === "number" ? Number(r.$dist.toFixed(3)) : r.$dist,
-              preview:
-                typeof r.content === "string" ? r.content : null,
+              sourceType:
+                typeof (r as any).sourceType === "string"
+                  ? (r as any).sourceType
+                  : typeof (r as any).source === "string"
+                      ? (r as any).source
+                      : null,
+              preview: truncatePreview(r.content),
             })),
           });
         } catch (_e) {
           // Ignore logging failures
         }
-        retrievedContext = formatRetrievedContext(rows);
+        retrievedContext = formatRetrievedContext(filteredRows.slice(0, 8));
         const MAX_RETRIEVED_CONTEXT_CHARS = 12000;
         if (retrievedContext.length > MAX_RETRIEVED_CONTEXT_CHARS) {
           retrievedContext =
@@ -223,14 +291,14 @@ export async function POST(request: Request) {
     const stream = createUIMessageStream({
       execute: ({ writer: dataStream }) => {
         const synergySystemPrompt =
-          "You are Synergy, a helpful assistant answering questions based on Slack channel history. Use the provided Slack message context when it is relevant. If the context does not contain the answer, say so briefly and answer from general knowledge when appropriate. When talking about people, projects, or events, only use names and details that explicitly appear in the retrieved context or the conversation so far; do not invent or guess new names.";
+          "You are Synergy, a helpful assistant answering questions based on retrieved context (Slack messages and uploaded docs). Use the provided context when it is relevant. If the context does not contain the answer, say so briefly and answer from general knowledge when appropriate. When talking about people, projects, or events, only use names and details that explicitly appear in the retrieved context or the conversation so far; do not invent or guess new names.";
 
         const baseMessages = convertToModelMessages(uiMessages);
         const messagesWithContext = retrievedContext
           ? [
               {
                 role: "system" as const,
-                content: `Here is retrieved Slack context:\n\n${retrievedContext}`,
+                content: `Here is retrieved context:\n\n${retrievedContext}`,
               },
               ...baseMessages,
             ]

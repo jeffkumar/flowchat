@@ -77,9 +77,19 @@ export function Chat({
   const [currentModelId, setCurrentModelId] = useState(initialChatModel);
   const currentModelIdRef = useRef(currentModelId);
 
+  const [sourceTypes, setSourceTypes] = useState<Array<"slack" | "docs">>([
+    "slack",
+    "docs",
+  ]);
+  const sourceTypesRef = useRef(sourceTypes);
+
   useEffect(() => {
     currentModelIdRef.current = currentModelId;
   }, [currentModelId]);
+
+  useEffect(() => {
+    sourceTypesRef.current = sourceTypes;
+  }, [sourceTypes]);
 
   const {
     messages,
@@ -104,6 +114,7 @@ export function Chat({
             message: request.messages.at(-1),
             selectedChatModel: currentModelIdRef.current,
             selectedVisibilityType: visibilityType,
+            sourceTypes: sourceTypesRef.current,
             ...request.body,
           },
         };
@@ -174,6 +185,8 @@ export function Chat({
           chatId={id}
           isReadonly={isReadonly}
           selectedVisibilityType={initialVisibilityType}
+          sourceTypes={sourceTypes}
+          setSourceTypes={setSourceTypes}
         />
 
         <Messages

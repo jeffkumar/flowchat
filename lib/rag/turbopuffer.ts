@@ -84,21 +84,26 @@ export async function upsertRowsToTurbopuffer({
 export async function queryTurbopuffer({
   query,
   topK = 20,
+  namespace,
 }: {
   query: string;
   topK?: number;
+  namespace?: string;
 }): Promise<TurbopufferRow[]> {
   if (!turbopufferApiKey) {
     throw new Error("Missing TURBOPUFFER_API_KEY");
   }
-  if (!turbopufferNamespace) {
+  const effectiveNamespace = namespace ?? turbopufferNamespace;
+  if (!effectiveNamespace) {
     throw new Error("Missing TURBOPUFFER_NAMESPACE");
   }
 
   const vector = await createEmbedding(query);
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
   const response = await fetch(
-    `https://api.turbopuffer.com/v2/namespaces/${turbopufferNamespace}/query`,
+    `https://api.turbopuffer.com/v2/namespaces/${effectiveNamespace}/query`,
     {
       method: "POST",
       headers: {
@@ -110,8 +115,11 @@ export async function queryTurbopuffer({
         top_k: topK,
         include_attributes: true,
       }),
+      signal: controller.signal,
     }
-  );
+  ).finally(() => {
+    clearTimeout(timeoutId);
+  });
 
   if (!response.ok) {
     const message = await response.text();
