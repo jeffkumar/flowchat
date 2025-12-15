@@ -42,17 +42,61 @@ import { generateHashedPassword } from "./utils";
 // use the Drizzle adapter for Auth.js / NextAuth
 // https://authjs.dev/reference/adapter/drizzle
 
+type PostgresClient = ReturnType<typeof postgres>;
+type DbClient = ReturnType<typeof drizzle>;
+
+type GlobalDbCache = {
+  __flowchat_postgres_client__?: PostgresClient;
+  __flowchat_db__?: DbClient;
+};
+
+const globalCache = globalThis as unknown as GlobalDbCache;
+
+const postgresUrl = process.env.POSTGRES_URL;
 // biome-ignore lint: Forbidden non-null assertion.
-const client = postgres(process.env.POSTGRES_URL!);
-const db = drizzle(client);
+const safePostgresUrl = postgresUrl!;
+
+// Neon/Supabase poolers often run in transaction pooling mode, which is incompatible
+// with prepared statements. Disable prepares when we detect a pooler URL.
+const isPoolerUrl = safePostgresUrl.includes("-pooler");
+
+const maxConnectionsRaw = process.env.POSTGRES_MAX_CONNECTIONS;
+const parsedMax =
+  typeof maxConnectionsRaw === "string" && maxConnectionsRaw.length > 0
+    ? Number(maxConnectionsRaw)
+    : undefined;
+const defaultMaxConnections = process.env.NODE_ENV === "production" ? 2 : 5;
+const maxConnections =
+  typeof parsedMax === "number" && Number.isFinite(parsedMax) && parsedMax > 0
+    ? parsedMax
+    : defaultMaxConnections;
+
+// In dev (Turbopack/HMR), this module can be re-evaluated often. If we create a new
+// postgres-js client each time, we can exhaust DB connections and cause stalls/timeouts.
+// Cache the client on globalThis to keep a single pool.
+const client =
+  globalCache.__flowchat_postgres_client__ ??
+  postgres(safePostgresUrl, {
+    max: maxConnections,
+    idle_timeout: 20,
+    connect_timeout: 10,
+    prepare: !isPoolerUrl,
+  });
+
+const db = globalCache.__flowchat_db__ ?? drizzle(client);
+
+if (process.env.NODE_ENV !== "production") {
+  globalCache.__flowchat_postgres_client__ = client;
+  globalCache.__flowchat_db__ = db;
+}
 
 export async function getUser(email: string): Promise<User[]> {
   try {
     return await db.select().from(user).where(eq(user.email, email));
-  } catch (_error) {
+  } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
-      "Failed to get user by email"
+      error instanceof Error ? error.message : "Failed to get user by email"
     );
   }
 }
@@ -484,10 +528,10 @@ export async function getChatsByUserId({
       chats: hasMore ? filteredChats.slice(0, limit) : filteredChats,
       hasMore,
     };
-  } catch (_error) {
+  } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
-      "Failed to get chats by user id"
+      error instanceof Error ? error.message : "Failed to get chats by user id"
     );
   }
 }
@@ -809,10 +853,12 @@ export async function getMessageCountByUserId({
       .execute();
 
     return stats?.count ?? 0;
-  } catch (_error) {
+  } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
-      "Failed to get message count by user id"
+      error instanceof Error
+        ? error.message
+        : "Failed to get message count by user id"
     );
   }
 }
