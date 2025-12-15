@@ -64,6 +64,13 @@
       "when": 1765775299026,
       "tag": "0008_lazy_maggott",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1765778744073,
+      "tag": "0009_cooing_abomination",
+      "breakpoints": true
     }
   ]
 }

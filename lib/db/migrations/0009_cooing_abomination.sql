@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS "chat_user_created_at_idx" ON "Chat" USING btree ("userId","createdAt");

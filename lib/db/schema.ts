@@ -77,18 +77,27 @@ export const projectDoc = pgTable(
 
 export type ProjectDoc = InferSelectModel<typeof projectDoc>;
 
-export const chat = pgTable("Chat", {
-  id: uuid("id").primaryKey().notNull().defaultRandom(),
-  createdAt: timestamp("createdAt").notNull(),
-  title: text("title").notNull(),
-  userId: uuid("userId")
-    .notNull()
-    .references(() => user.id),
-  visibility: varchar("visibility", { enum: ["public", "private"] })
-    .notNull()
-    .default("private"),
-  lastContext: jsonb("lastContext").$type<AppUsage | null>(),
-});
+export const chat = pgTable(
+  "Chat",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    createdAt: timestamp("createdAt").notNull(),
+    title: text("title").notNull(),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => user.id),
+    visibility: varchar("visibility", { enum: ["public", "private"] })
+      .notNull()
+      .default("private"),
+    lastContext: jsonb("lastContext").$type<AppUsage | null>(),
+  },
+  (table) => ({
+    userIdCreatedAtIdx: index("chat_user_created_at_idx").on(
+      table.userId,
+      table.createdAt
+    ),
+  })
+);
 
 export type Chat = InferSelectModel<typeof chat>;
 
