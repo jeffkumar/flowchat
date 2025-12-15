@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/app/(auth)/auth";
 import {
@@ -7,8 +7,8 @@ import {
 } from "@/lib/db/queries";
 
 export async function GET(
-  _request: Request,
-  { params }: { params: { projectId: string } }
+  _request: NextRequest,
+  { params }: { params: Promise<{ projectId: string }> }
 ) {
   const session = await auth();
 
@@ -16,7 +16,7 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const projectId = params.projectId;
+  const { projectId } = await params;
   const project = await getProjectByIdForUser({
     projectId,
     userId: session.user.id,
