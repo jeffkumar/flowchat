@@ -18,8 +18,8 @@ import { ingestUploadedDocToTurbopuffer } from "@/lib/ingest/docs";
 const FileSchema = z.object({
   file: z
     .instanceof(Blob)
-    .refine((file) => file.size <= 20 * 1024 * 1024, {
-      message: "File size should be less than 20MB",
+    .refine((file) => file.size <= 40 * 1024 * 1024, {
+      message: "File size should be less than 40MB",
     })
     // Update the file type based on the kind of files you want to accept
     .refine(
