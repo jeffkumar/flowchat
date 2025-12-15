@@ -48,6 +48,10 @@
   /* border radius unit */
   --radius: 0.5rem;
   --sidebar: hsl(0 0% 98%);
+
+  /* auth + brand */
+  --brand: hsl(145 55% 36%);
+  --auth-charcoal: hsl(220 10% 12%);
 }
 
 /* define design tokens (dark mode) */
@@ -85,6 +89,10 @@
   --sidebar-border: hsl(240 3.7% 15.9%);
   --sidebar-ring: hsl(217.2 91.2% 59.8%);
   --sidebar: hsl(240 5.9% 10%);
+
+  /* auth + brand */
+  --brand: hsl(145 65% 55%);
+  --auth-charcoal: hsl(220 10% 10%);
 }
 
 /* define theme */
@@ -140,6 +148,9 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+
+  --color-brand: var(--brand);
+  --color-auth-charcoal: var(--auth-charcoal);
 }
 
 /*

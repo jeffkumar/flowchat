@@ -1,7 +1,9 @@
-import type { InferSelectModel } from "drizzle-orm";
+import { sql, type InferSelectModel } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   foreignKey,
+  index,
   json,
   jsonb,
   pgTable,
@@ -9,6 +11,7 @@ import {
   text,
   timestamp,
   uuid,
+  uniqueIndex,
   varchar,
 } from "drizzle-orm/pg-core";
 import type { AppUsage } from "../usage";
@@ -20,6 +23,59 @@ export const user = pgTable("User", {
 });
 
 export type User = InferSelectModel<typeof user>;
+
+export const project = pgTable(
+  "Project",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    name: text("name").notNull(),
+    createdBy: uuid("createdBy")
+      .notNull()
+      .references(() => user.id),
+    organizationId: uuid("organizationId"),
+    isDefault: boolean("isDefault").notNull().default(false),
+    createdAt: timestamp("createdAt").notNull(),
+  },
+  (table) => ({
+    defaultPerUser: uniqueIndex("project_default_per_user")
+      .on(table.createdBy)
+      .where(sql`${table.isDefault} = true`),
+    namePerUser: uniqueIndex("project_name_per_user").on(
+      table.createdBy,
+      table.name
+    ),
+  })
+);
+
+export type Project = InferSelectModel<typeof project>;
+
+export const projectDoc = pgTable(
+  "ProjectDoc",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    projectId: uuid("projectId")
+      .notNull()
+      .references(() => project.id),
+    createdBy: uuid("createdBy")
+      .notNull()
+      .references(() => user.id),
+    organizationId: uuid("organizationId"),
+    blobUrl: text("blobUrl").notNull(),
+    filename: text("filename").notNull(),
+    mimeType: text("mimeType").notNull(),
+    sizeBytes: bigint("sizeBytes", { mode: "number" }).notNull(),
+    turbopufferNamespace: text("turbopufferNamespace"),
+    indexedAt: timestamp("indexedAt"),
+    indexingError: text("indexingError"),
+    createdAt: timestamp("createdAt").notNull(),
+  },
+  (table) => ({
+    createdByIdx: index("project_doc_created_by_idx").on(table.createdBy),
+    projectIdIdx: index("project_doc_project_id_idx").on(table.projectId),
+  })
+);
+
+export type ProjectDoc = InferSelectModel<typeof projectDoc>;
 
 export const chat = pgTable("Chat", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),

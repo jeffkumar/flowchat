@@ -25,6 +25,10 @@ import {
   type DBMessage,
   document,
   message,
+  type Project,
+  project,
+  type ProjectDoc,
+  projectDoc,
   type Suggestion,
   stream,
   suggestion,
@@ -76,6 +80,264 @@ export async function createGuestUser() {
     throw new ChatSDKError(
       "bad_request:database",
       "Failed to create guest user"
+    );
+  }
+}
+
+export async function getProjectsByUserId(userId: string): Promise<Project[]> {
+  try {
+    return await db
+      .select()
+      .from(project)
+      .where(eq(project.createdBy, userId))
+      .orderBy(desc(project.createdAt));
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to get projects by user id"
+    );
+  }
+}
+
+export async function getProjectByIdForUser({
+  projectId,
+  userId,
+}: {
+  projectId: string;
+  userId: string;
+}): Promise<Project | null> {
+  try {
+    const [found] = await db
+      .select()
+      .from(project)
+      .where(and(eq(project.id, projectId), eq(project.createdBy, userId)))
+      .limit(1);
+    return found ?? null;
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to get project by id"
+    );
+  }
+}
+
+export async function createProject({
+  name,
+  createdBy,
+  organizationId,
+}: {
+  name: string;
+  createdBy: string;
+  organizationId?: string | null;
+}): Promise<Project> {
+  try {
+    const [created] = await db
+      .insert(project)
+      .values({
+        name,
+        createdBy,
+        organizationId: organizationId ?? null,
+        isDefault: false,
+        createdAt: new Date(),
+      })
+      .returning();
+
+    if (!created) {
+      throw new Error("Project insert returned no row");
+    }
+
+    return created;
+  } catch (_error) {
+    throw new ChatSDKError("bad_request:database", "Failed to create project");
+  }
+}
+
+export async function getOrCreateDefaultProjectForUser({
+  userId,
+  organizationId,
+}: {
+  userId: string;
+  organizationId?: string | null;
+}): Promise<Project> {
+  try {
+    const [existing] = await db
+      .select()
+      .from(project)
+      .where(and(eq(project.createdBy, userId), eq(project.isDefault, true)))
+      .limit(1);
+
+    if (existing) {
+      return existing;
+    }
+
+    try {
+      const [created] = await db
+        .insert(project)
+        .values({
+          name: "Default",
+          createdBy: userId,
+          organizationId: organizationId ?? null,
+          isDefault: true,
+          createdAt: new Date(),
+        })
+        .returning();
+
+      if (created) {
+        return created;
+      }
+    } catch (_error) {
+      // If there's a race (two requests create default at once), fall through to re-select.
+    }
+
+    const [afterRace] = await db
+      .select()
+      .from(project)
+      .where(and(eq(project.createdBy, userId), eq(project.isDefault, true)))
+      .limit(1);
+
+    if (!afterRace) {
+      throw new Error("Default project not found after create attempt");
+    }
+
+    return afterRace;
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to get or create default project"
+    );
+  }
+}
+
+export async function createProjectDoc({
+  projectId,
+  createdBy,
+  organizationId,
+  blobUrl,
+  filename,
+  mimeType,
+  sizeBytes,
+  turbopufferNamespace,
+}: {
+  projectId: string;
+  createdBy: string;
+  organizationId?: string | null;
+  blobUrl: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  turbopufferNamespace?: string | null;
+}): Promise<ProjectDoc> {
+  try {
+    const [created] = await db
+      .insert(projectDoc)
+      .values({
+        projectId,
+        createdBy,
+        organizationId: organizationId ?? null,
+        blobUrl,
+        filename,
+        mimeType,
+        sizeBytes,
+        turbopufferNamespace: turbopufferNamespace ?? null,
+        createdAt: new Date(),
+      })
+      .returning();
+
+    if (!created) {
+      throw new Error("ProjectDoc insert returned no row");
+    }
+
+    return created;
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to create project doc"
+    );
+  }
+}
+
+export async function getProjectDocsByProjectId({
+  projectId,
+}: {
+  projectId: string;
+}): Promise<ProjectDoc[]> {
+  try {
+    return await db
+      .select()
+      .from(projectDoc)
+      .where(eq(projectDoc.projectId, projectId))
+      .orderBy(desc(projectDoc.createdAt));
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to get project docs by project id"
+    );
+  }
+}
+
+export async function getProjectDocsByUserId({
+  userId,
+}: {
+  userId: string;
+}): Promise<ProjectDoc[]> {
+  try {
+    return await db
+      .select()
+      .from(projectDoc)
+      .where(eq(projectDoc.createdBy, userId))
+      .orderBy(desc(projectDoc.createdAt));
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to get project docs by user id"
+    );
+  }
+}
+
+export async function markProjectDocIndexed({
+  docId,
+  indexedAt,
+  turbopufferNamespace,
+}: {
+  docId: string;
+  indexedAt: Date;
+  turbopufferNamespace?: string | null;
+}) {
+  try {
+    return await db
+      .update(projectDoc)
+      .set({
+        indexedAt,
+        turbopufferNamespace: turbopufferNamespace ?? null,
+        indexingError: null,
+      })
+      .where(eq(projectDoc.id, docId));
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to mark project doc indexed"
+    );
+  }
+}
+
+export async function markProjectDocIndexError({
+  docId,
+  error,
+}: {
+  docId: string;
+  error: string;
+}) {
+  try {
+    return await db
+      .update(projectDoc)
+      .set({
+        indexingError: error,
+      })
+      .where(eq(projectDoc.id, docId));
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to mark project doc indexing error"
     );
   }
 }

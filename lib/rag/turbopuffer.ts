@@ -12,7 +12,14 @@ const openaiApiKey = process.env.OPENAI_API_KEY;
 const turbopufferApiKey = process.env.TURBOPUFFER_API_KEY;
 const turbopufferNamespace = process.env.TURBOPUFFER_NAMESPACE;
 
-async function createEmbedding(input: string): Promise<number[]> {
+export type TurbopufferUpsertRow = {
+  id: string;
+  vector: number[];
+  content: string;
+  [key: string]: unknown;
+};
+
+export async function createEmbedding(input: string): Promise<number[]> {
   if (!openaiApiKey) {
     throw new Error("Missing OPENAI_API_KEY");
   }
@@ -40,6 +47,38 @@ async function createEmbedding(input: string): Promise<number[]> {
     throw new Error("Invalid embeddings response");
   }
   return first.embedding;
+}
+
+export async function upsertRowsToTurbopuffer({
+  namespace,
+  rows,
+}: {
+  namespace: string;
+  rows: TurbopufferUpsertRow[];
+}) {
+  if (!turbopufferApiKey) {
+    throw new Error("Missing TURBOPUFFER_API_KEY");
+  }
+
+  const response = await fetch(
+    `https://api.turbopuffer.com/v2/namespaces/${namespace}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${turbopufferApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        upsert_rows: rows,
+        distance_metric: "cosine_distance",
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Turbopuffer upsert failed: ${message}`);
+  }
 }
 
 export async function queryTurbopuffer({

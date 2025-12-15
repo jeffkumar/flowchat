@@ -300,6 +300,7 @@ function PureMultimodalInput({
 
       <input
         className="-top-4 -left-4 pointer-events-none fixed size-0.5 opacity-0"
+        accept="image/jpeg,image/png,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         multiple
         onChange={handleFileChange}
         ref={fileInputRef}
