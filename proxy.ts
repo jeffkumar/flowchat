@@ -23,17 +23,28 @@ export async function proxy(request: NextRequest) {
     secureCookie: !isDevelopmentEnvironment,
   });
 
-  if (!token) {
-    const redirectUrl = encodeURIComponent(request.url);
+  const isGuest = guestRegex.test(token?.email ?? "");
 
+  // If not logged in (or guest), require sign-in / registration.
+  if (!token || isGuest) {
+    // Don't redirect auth API routes, return 401 so client fetches don't get HTML.
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    // Allow access to auth pages.
+    if (["/login", "/register"].includes(pathname)) {
+      return NextResponse.next();
+    }
+
+    const redirectUrl = encodeURIComponent(request.url);
     return NextResponse.redirect(
-      new URL(`/api/auth/guest?redirectUrl=${redirectUrl}`, request.url)
+      new URL(`/login?callbackUrl=${redirectUrl}`, request.url)
     );
   }
 
-  const isGuest = guestRegex.test(token?.email ?? "");
-
-  if (token && !isGuest && ["/login", "/register"].includes(pathname)) {
+  // If logged in (non-guest), keep them out of auth pages.
+  if (token && ["/login", "/register"].includes(pathname)) {
     return NextResponse.redirect(new URL("/", request.url));
   }
 
