@@ -55,6 +55,7 @@ import {
   ShoppingBagIcon,
   BotIcon,
   EllipsisIcon,
+  FileIcon,
 } from "lucide-react";
 
 function PureMultimodalInput({
@@ -457,40 +458,25 @@ function PureAttachmentsButton({
             variant="ghost"
           >
             <PaperclipIcon size={16} />
-            Add photos & files
+            Add project files
           </Button>
+           
           <Button
             className="h-9 justify-start gap-2 px-2 text-sm font-normal"
             disabled
             variant="ghost"
           >
-            <ImageIcon size={16} />
-            Create image
+            <FileIcon size={16} />
+            Create a change order
           </Button>
-          <Button
+         <Button
             className="h-9 justify-start gap-2 px-2 text-sm font-normal"
             disabled
             variant="ghost"
           >
-            <SearchIcon size={16} />
-            Deep research
-          </Button>
-          <Button
-            className="h-9 justify-start gap-2 px-2 text-sm font-normal"
-            disabled
-            variant="ghost"
-          >
-            <ShoppingBagIcon size={16} />
-            Shopping research
-          </Button>
-          <Button
-            className="h-9 justify-start gap-2 px-2 text-sm font-normal"
-            disabled
-            variant="ghost"
-          >
-            <BotIcon size={16} />
-            Agent mode
-          </Button>
+            <FileIcon size={16} />
+            Highlight doc changes
+          </Button> 
           <div className="my-1 h-px bg-border" />
           <Button
             className="h-9 justify-start gap-2 px-2 text-sm font-normal"
