@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { memo } from "react";
 import type { ChatMessage } from "@/lib/types";
 import { Suggestion } from "./elements/suggestion";
-import type { VisibilityType } from "./visibility-selector";
+import type { VisibilityType } from "@/lib/types";
 
 type SuggestedActionsProps = {
   chatId: string;

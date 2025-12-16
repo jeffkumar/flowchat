@@ -4,6 +4,7 @@ import { useProjectSelector } from "@/hooks/use-project-selector";
 import useSWR from "swr";
 import { fetcher } from "@/lib/utils";
 import type { ProjectDoc } from "@/lib/db/schema";
+import { useState } from "react";
 import {
   Sheet,
   SheetContent,
@@ -12,10 +13,21 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { EyeIcon, EyeOffIcon, LoaderIcon } from "lucide-react";
+import { EyeIcon, EyeOffIcon, LoaderIcon, Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { format } from "date-fns";
+import { toast } from "sonner";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 interface ViewDocsProps {
   isOpen: boolean;
@@ -31,8 +43,10 @@ export function ViewDocs({
   setIgnoredDocIds,
 }: ViewDocsProps) {
   const { selectedProjectId } = useProjectSelector();
+  const [docToDelete, setDocToDelete] = useState<ProjectDoc | null>(null);
+  const [showClearAllDialog, setShowClearAllDialog] = useState(false);
 
-  const { data, isLoading } = useSWR<{ docs: ProjectDoc[] }>(
+  const { data, isLoading, mutate } = useSWR<{ docs: ProjectDoc[] }>(
     selectedProjectId ? `/api/projects/${selectedProjectId}/docs` : null,
     fetcher
   );
@@ -48,6 +62,67 @@ export function ViewDocs({
   const truncateFilename = (filename: string, maxChars = 20) => {
     if (filename.length <= maxChars) return filename;
     return `${filename.slice(0, maxChars)}…`;
+  };
+
+  const deleteDoc = (doc: ProjectDoc) => {
+    if (!selectedProjectId) {
+      toast.error("No project selected");
+      return;
+    }
+
+    const deletePromise = fetch(
+      `/api/projects/${selectedProjectId}/docs/${doc.id}`,
+      { method: "DELETE" }
+    ).then(async (response) => {
+      if (!response.ok) {
+        const json = (await response.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(json?.error ?? "Failed to delete document");
+      }
+    });
+
+    toast.promise(deletePromise, {
+      loading: "Deleting document...",
+      success: () => {
+        setIgnoredDocIds(ignoredDocIds.filter((id) => id !== doc.id));
+        void mutate();
+        setDocToDelete(null);
+        return "Document deleted";
+      },
+      error: (error) =>
+        error instanceof Error ? error.message : "Failed to delete document",
+    });
+  };
+
+  const clearAllDocs = () => {
+    if (!selectedProjectId) {
+      toast.error("No project selected");
+      return;
+    }
+
+    const clearPromise = fetch(`/api/projects/${selectedProjectId}/docs/clear`, {
+      method: "POST",
+    }).then(async (response) => {
+      if (!response.ok) {
+        const json = (await response.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(json?.error ?? "Failed to clear documents");
+      }
+    });
+
+    toast.promise(clearPromise, {
+      loading: "Clearing documents...",
+      success: () => {
+        setIgnoredDocIds([]);
+        void mutate();
+        setShowClearAllDialog(false);
+        return "All documents cleared";
+      },
+      error: (error) =>
+        error instanceof Error ? error.message : "Failed to clear documents",
+    });
   };
 
   return (
@@ -99,19 +174,32 @@ export function ViewDocs({
                           {format(new Date(doc.createdAt), "PP")}
                         </span>
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => toggleDocVisibility(doc.id)}
-                        className="shrink-0"
-                        title={isIgnored ? "Show in context" : "Hide from context"}
-                      >
-                         {isIgnored ? (
-                          <EyeOffIcon className="h-4 w-4 text-muted-foreground" />
-                        ) : (
-                          <EyeIcon className="h-4 w-4" />
-                        )}
-                      </Button>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <Button
+                          className="shrink-0"
+                          onClick={() => toggleDocVisibility(doc.id)}
+                          size="icon"
+                          title={isIgnored ? "Show in context" : "Hide from context"}
+                          type="button"
+                          variant="ghost"
+                        >
+                          {isIgnored ? (
+                            <EyeOffIcon className="h-4 w-4 text-muted-foreground" />
+                          ) : (
+                            <EyeIcon className="h-4 w-4" />
+                          )}
+                        </Button>
+                        <Button
+                          className="shrink-0"
+                          onClick={() => setDocToDelete(doc)}
+                          size="icon"
+                          title="Delete document"
+                          type="button"
+                          variant="ghost"
+                        >
+                          <Trash2Icon className="h-4 w-4 text-muted-foreground" />
+                        </Button>
+                      </div>
                     </div>
                   );
                 })}
@@ -119,7 +207,65 @@ export function ViewDocs({
             </ScrollArea>
           )}
         </div>
+
+        <div className="mt-4 flex items-center justify-end border-t pt-3">
+          <Button
+            className="h-8 px-2 text-xs"
+            onClick={() => setShowClearAllDialog(true)}
+            size="sm"
+            type="button"
+            variant="destructive"
+          >
+            Clear all docs
+          </Button>
+        </div>
       </SheetContent>
+
+      <AlertDialog onOpenChange={(open) => !open && setDocToDelete(null)} open={docToDelete !== null}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete document?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. This will permanently delete the file,
+              remove it from storage, and remove its indexed content.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel type="button">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (docToDelete) {
+                  deleteDoc(docToDelete);
+                }
+              }}
+              type="button"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        onOpenChange={setShowClearAllDialog}
+        open={showClearAllDialog}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear all documents?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. This will permanently delete all docs
+              in this project and remove their indexed content.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel type="button">Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={clearAllDocs} type="button">
+              Clear all
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Sheet>
   );
 }

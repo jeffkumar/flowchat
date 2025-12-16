@@ -32,7 +32,7 @@ import { Messages } from "./messages";
 import { MultimodalInput } from "./multimodal-input";
 import { getChatHistoryPaginationKey } from "./sidebar-history";
 import { toast } from "./toast";
-import type { VisibilityType } from "./visibility-selector";
+import type { VisibilityType } from "@/lib/types";
 
 export function Chat({
   id,
@@ -258,7 +258,7 @@ export function Chat({
 
   return (
     <>
-      <div className="overscroll-behavior-contain flex h-dvh min-w-0 touch-pan-y flex-col bg-background">
+      <div className="overscroll-behavior-contain flex h-dvh min-w-0 touch-pan-y flex-col bg-background dark:bg-auth-charcoal">
         <ChatHeader
           chatId={id}
           isReadonly={isReadonly}
@@ -282,7 +282,7 @@ export function Chat({
           showCitations={showCitations}
         />
 
-        <div className="sticky bottom-0 z-1 mx-auto flex w-full max-w-4xl flex-col gap-2 border-t-0 bg-background px-2 pb-3 md:px-4 md:pb-4">
+        <div className="sticky bottom-0 z-1 mx-auto flex w-full max-w-4xl flex-col gap-2 border-t-0 bg-background dark:bg-auth-charcoal px-2 pb-3 md:px-4 md:pb-4">
           {!isReadonly && (
             <>
               <div className="flex items-center gap-2 px-1">
@@ -310,7 +310,6 @@ export function Chat({
                 setMessages={setMessages}
                 status={status}
                 stop={stop}
-                usage={usage}
                 selectedProjectId={selectedProjectId ?? undefined}
               />
             </>

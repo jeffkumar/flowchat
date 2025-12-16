@@ -27,7 +27,7 @@ import { MultimodalInput } from "./multimodal-input";
 import { Toolbar } from "./toolbar";
 import { useSidebar } from "./ui/sidebar";
 import { VersionFooter } from "./version-footer";
-import type { VisibilityType } from "./visibility-selector";
+import type { VisibilityType } from "@/lib/types";
 
 export const artifactDefinitions = [
   textArtifact,

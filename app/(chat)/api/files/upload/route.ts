@@ -9,6 +9,7 @@ import {
 } from "@/lib/constants";
 import {
   createProjectDoc,
+  getProjectDocById,
   getProjectDocByProjectIdAndFilename,
   getOrCreateDefaultProjectForUser,
   getProjectByIdForUser,
@@ -16,6 +17,7 @@ import {
   markProjectDocIndexed,
 } from "@/lib/db/queries";
 import { ingestUploadedDocToTurbopuffer } from "@/lib/ingest/docs";
+import { deleteByFilterFromTurbopuffer } from "@/lib/rag/turbopuffer";
 
 // Use Blob instead of File since File is not available in Node.js environment
 const FileSchema = z.object({
@@ -150,6 +152,14 @@ export async function POST(request: Request) {
             mimeType: file.type,
           });
           try {
+            const latestBefore = await getProjectDocById({ docId: doc.id });
+            if (!latestBefore || latestBefore.indexingError === "Deleting") {
+              console.log("ProjectDoc ingestion skipped (deleted/deleting)", {
+                docId: doc.id,
+              });
+              return;
+            }
+
             const result = await ingestUploadedDocToTurbopuffer({
               docId: doc.id,
               projectSlug,
@@ -163,6 +173,18 @@ export async function POST(request: Request) {
               sourceCreatedAtMs: doc.createdAt.getTime(),
               fileBuffer: buffer,
             });
+
+            const latestAfter = await getProjectDocById({ docId: doc.id });
+            if (!latestAfter || latestAfter.indexingError === "Deleting") {
+              await deleteByFilterFromTurbopuffer({
+                namespace: result.namespace,
+                filters: ["doc_id", "Eq", doc.id],
+              });
+              console.log("ProjectDoc ingestion cleanup (deleted mid-ingest)", {
+                docId: doc.id,
+              });
+              return;
+            }
 
             await markProjectDocIndexed({
               docId: doc.id,

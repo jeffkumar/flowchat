@@ -95,6 +95,79 @@
   --auth-charcoal: hsl(220 10% 10%);
 }
 
+/* Invert the sidebar (only when applied) without switching the entire app theme. */
+.sidebar-inverted {
+  /*
+    Match dark mode styling inside the sidebar, but with a slightly lighter
+    charcoal background than true dark mode.
+  */
+  --sidebar-inverted-bg: hsl(220 10% 26%);
+
+  /* shadcn tokens */
+  --background: var(--sidebar-inverted-bg);
+  --foreground: hsl(0 0% 98%);
+  --card: var(--sidebar-inverted-bg);
+  --card-foreground: hsl(0 0% 98%);
+  --popover: var(--sidebar-inverted-bg);
+  --popover-foreground: hsl(0 0% 98%);
+  --primary: hsl(0 0% 98%);
+  --primary-foreground: hsl(240 5.9% 10%);
+  --secondary: hsl(240 3.7% 15.9%);
+  --secondary-foreground: hsl(0 0% 98%);
+  --muted: hsl(240 3.7% 15.9%);
+  --muted-foreground: hsl(240 5% 64.9%);
+  --accent: hsl(240 3.7% 15.9%);
+  --accent-foreground: hsl(0 0% 98%);
+  --destructive: hsl(0 62.8% 30.6%);
+  --destructive-foreground: hsl(0 0% 98%);
+  --border: hsl(240 3.7% 15.9%);
+  --input: hsl(240 3.7% 15.9%);
+  --ring: hsl(240 4.9% 83.9%);
+
+  /* sidebar tokens */
+  --sidebar-background: var(--sidebar-inverted-bg);
+  --sidebar-foreground: hsl(240 4.8% 95.9%);
+  --sidebar-primary: hsl(224.3 76.3% 48%);
+  --sidebar-primary-foreground: hsl(0 0% 100%);
+  --sidebar-accent: hsl(240 3.7% 15.9%);
+  --sidebar-accent-foreground: hsl(240 4.8% 95.9%);
+  --sidebar-border: hsl(240 3.7% 15.9%);
+  --sidebar-ring: hsl(217.2 91.2% 59.8%);
+  --sidebar: var(--sidebar-inverted-bg);
+
+  /* Tailwind v4 theme vars used by bg-background/bg-muted/etc */
+  --color-background: var(--sidebar-inverted-bg);
+  --color-foreground: hsl(0 0% 98%);
+  --color-card: var(--sidebar-inverted-bg);
+  --color-card-foreground: hsl(0 0% 98%);
+  --color-popover: var(--sidebar-inverted-bg);
+  --color-popover-foreground: hsl(0 0% 98%);
+  --color-primary: hsl(0 0% 98%);
+  --color-primary-foreground: hsl(240 5.9% 10%);
+  --color-secondary: hsl(240 3.7% 15.9%);
+  --color-secondary-foreground: hsl(0 0% 98%);
+  --color-muted: hsl(240 3.7% 15.9%);
+  --color-muted-foreground: hsl(240 5% 64.9%);
+  --color-accent: hsl(240 3.7% 15.9%);
+  --color-accent-foreground: hsl(0 0% 98%);
+  --color-destructive: hsl(0 62.8% 30.6%);
+  --color-destructive-foreground: hsl(0 0% 98%);
+  --color-border: hsl(240 3.7% 15.9%);
+  --color-input: hsl(240 3.7% 15.9%);
+  --color-ring: hsl(240 4.9% 83.9%);
+
+  --color-sidebar: var(--sidebar-inverted-bg);
+  --color-sidebar-foreground: hsl(240 4.8% 95.9%);
+  --color-sidebar-primary: hsl(224.3 76.3% 48%);
+  --color-sidebar-primary-foreground: hsl(0 0% 100%);
+  --color-sidebar-accent: hsl(240 3.7% 15.9%);
+  --color-sidebar-accent-foreground: hsl(240 4.8% 95.9%);
+  --color-sidebar-border: hsl(240 3.7% 15.9%);
+  --color-sidebar-ring: hsl(217.2 91.2% 59.8%);
+
+  --brand: hsl(145 65% 55%);
+}
+
 /* define theme */
 @theme {
   --font-sans: var(--font-geist);

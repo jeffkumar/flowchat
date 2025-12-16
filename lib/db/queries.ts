@@ -15,7 +15,7 @@ import {
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import type { ArtifactKind } from "@/components/artifact";
-import type { VisibilityType } from "@/components/visibility-selector";
+import type { VisibilityType } from "@/lib/types";
 import { ChatSDKError } from "../errors";
 import type { AppUsage } from "../usage";
 import { generateUUID } from "../utils";
@@ -252,6 +252,49 @@ export async function getOrCreateDefaultProjectForUser({
   }
 }
 
+export async function deleteProjectById({
+  projectId,
+  userId,
+}: {
+  projectId: string;
+  userId: string;
+}) {
+  try {
+    const [projectToDelete] = await db
+      .select()
+      .from(project)
+      .where(and(eq(project.id, projectId), eq(project.createdBy, userId)))
+      .limit(1);
+
+    if (!projectToDelete) {
+      throw new Error("Project not found or not owned by user");
+    }
+
+    if (projectToDelete.isDefault) {
+      throw new Error("Cannot delete default project");
+    }
+
+    await db.delete(projectDoc).where(eq(projectDoc.projectId, projectId));
+
+    await db
+      .update(chat)
+      .set({ projectId: null })
+      .where(eq(chat.projectId, projectId));
+
+    const [deleted] = await db
+      .delete(project)
+      .where(eq(project.id, projectId))
+      .returning();
+
+    return deleted;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to delete project"
+    );
+  }
+}
+
 export async function createProjectDoc({
   projectId,
   createdBy,
@@ -337,6 +380,70 @@ export async function getProjectDocsByProjectId({
     throw new ChatSDKError(
       "bad_request:database",
       "Failed to get project docs by project id"
+    );
+  }
+}
+
+export async function getProjectDocById({
+  docId,
+}: {
+  docId: string;
+}): Promise<ProjectDoc | null> {
+  try {
+    const [doc] = await db
+      .select()
+      .from(projectDoc)
+      .where(eq(projectDoc.id, docId))
+      .limit(1);
+    return doc ?? null;
+  } catch (_error) {
+    throw new ChatSDKError("bad_request:database", "Failed to get project doc by id");
+  }
+}
+
+export async function markProjectDocDeleting({ docId }: { docId: string }) {
+  try {
+    return await db
+      .update(projectDoc)
+      .set({
+        indexingError: "Deleting",
+      })
+      .where(eq(projectDoc.id, docId));
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to mark project doc deleting"
+    );
+  }
+}
+
+export async function deleteProjectDocById({ docId }: { docId: string }) {
+  try {
+    const [deleted] = await db
+      .delete(projectDoc)
+      .where(eq(projectDoc.id, docId))
+      .returning();
+    return deleted ?? null;
+  } catch (_error) {
+    throw new ChatSDKError("bad_request:database", "Failed to delete project doc by id");
+  }
+}
+
+export async function deleteProjectDocsByProjectId({
+  projectId,
+}: {
+  projectId: string;
+}): Promise<{ deletedCount: number }> {
+  try {
+    const deleted = await db
+      .delete(projectDoc)
+      .where(eq(projectDoc.projectId, projectId))
+      .returning({ id: projectDoc.id });
+    return { deletedCount: deleted.length };
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to delete project docs by project id"
     );
   }
 }

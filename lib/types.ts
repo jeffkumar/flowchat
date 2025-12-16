@@ -66,4 +66,7 @@ export type Attachment = {
   name: string;
   url: string;
   contentType: string;
+  isLoading?: boolean;
 };
+
+export type VisibilityType = "public" | "private";

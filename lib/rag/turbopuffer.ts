@@ -12,12 +12,52 @@ const openaiApiKey = process.env.OPENAI_API_KEY;
 const turbopufferApiKey = process.env.TURBOPUFFER_API_KEY;
 const turbopufferNamespace = process.env.TURBOPUFFER_NAMESPACE;
 
+type TurbopufferWriteResponse = {
+  rows_deleted?: number;
+  rows_remaining?: boolean;
+};
+
 export type TurbopufferUpsertRow = {
   id: string;
   vector: number[];
   content: string;
   [key: string]: unknown;
 };
+
+async function writeToTurbopuffer({
+  namespace,
+  body,
+}: {
+  namespace: string;
+  body: Record<string, unknown>;
+}): Promise<TurbopufferWriteResponse> {
+  if (!turbopufferApiKey) {
+    throw new Error("Missing TURBOPUFFER_API_KEY");
+  }
+
+  const response = await fetch(
+    `https://api.turbopuffer.com/v2/namespaces/${namespace}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${turbopufferApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    const message = await response.text();
+    if (message.includes("was not found")) {
+      return { rows_deleted: 0, rows_remaining: false };
+    }
+    throw new Error(`Turbopuffer write failed: ${message}`);
+  }
+
+  const json = (await response.json().catch(() => ({}))) as TurbopufferWriteResponse;
+  return json;
+}
 
 export async function createEmbedding(input: string): Promise<number[]> {
   if (!openaiApiKey) {
@@ -56,29 +96,40 @@ export async function upsertRowsToTurbopuffer({
   namespace: string;
   rows: TurbopufferUpsertRow[];
 }) {
-  if (!turbopufferApiKey) {
-    throw new Error("Missing TURBOPUFFER_API_KEY");
-  }
+  await writeToTurbopuffer({
+    namespace,
+    body: {
+      upsert_rows: rows,
+      distance_metric: "cosine_distance",
+    },
+  });
+}
 
-  const response = await fetch(
-    `https://api.turbopuffer.com/v2/namespaces/${namespace}`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${turbopufferApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        upsert_rows: rows,
+export async function deleteByFilterFromTurbopuffer({
+  namespace,
+  filters,
+}: {
+  namespace: string;
+  filters: unknown;
+}): Promise<{ rowsDeleted: number }> {
+  let totalDeleted = 0;
+  let rowsRemaining = true;
+
+  while (rowsRemaining) {
+    const result = await writeToTurbopuffer({
+      namespace,
+      body: {
+        delete_by_filter: filters,
+        delete_by_filter_allow_partial: true,
         distance_metric: "cosine_distance",
-      }),
-    }
-  );
+      },
+    });
 
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(`Turbopuffer upsert failed: ${message}`);
+    totalDeleted += result.rows_deleted ?? 0;
+    rowsRemaining = result.rows_remaining === true;
   }
+
+  return { rowsDeleted: totalDeleted };
 }
 
 export async function queryTurbopuffer({

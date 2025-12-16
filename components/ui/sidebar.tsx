@@ -201,7 +201,10 @@ const Sidebar = React.forwardRef<
       return (
         <Sheet onOpenChange={setOpenMobile} open={openMobile} {...props}>
           <SheetContent
-            className="w-[var(--sidebar-width)] bg-sidebar p-0 text-sidebar-foreground [&>button]:hidden"
+            className={cn(
+              "w-[var(--sidebar-width)] bg-sidebar p-0 text-sidebar-foreground [&>button]:hidden",
+              className
+            )}
             data-mobile="true"
             data-sidebar="sidebar"
             side={side}
@@ -223,7 +226,10 @@ const Sidebar = React.forwardRef<
 
     return (
       <div
-        className="group peer hidden text-sidebar-foreground md:block"
+        className={cn(
+          "group peer hidden text-sidebar-foreground md:block",
+          className
+        )}
         data-collapsible={state === "collapsed" ? collapsible : ""}
         data-side={side}
         data-state={state}

@@ -15,11 +15,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownIcon, PlusIcon } from "./icons";
-import { Settings2 } from "lucide-react";
+import { Settings, Settings2 } from "lucide-react";
 import { useSidebar } from "./ui/sidebar";
 import { ViewDocs } from "./view-docs";
-import { VisibilitySelector } from "./visibility-selector";
-import type { VisibilityType } from "./visibility-selector";
+import { ProjectDetails } from "./project-details";
+import type { VisibilityType } from "@/lib/types";
 
 function PureChatHeader({
   chatId,
@@ -41,6 +41,7 @@ function PureChatHeader({
   const router = useRouter();
   const { open } = useSidebar();
   const [isViewDocsOpen, setIsViewDocsOpen] = useState(false);
+  const [isProjectDetailsOpen, setIsProjectDetailsOpen] = useState(false);
 
   const { width: windowWidth } = useWindowSize();
 
@@ -73,15 +74,10 @@ function PureChatHeader({
 
       {!isReadonly && (
         <div className="ml-auto flex items-center gap-1">
-          <VisibilitySelector
-            chatId={chatId}
-            selectedVisibilityType={selectedVisibilityType}
-          />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-1">
-                Context
-                <ChevronDownIcon size={12} />
+              <Button variant="outline" size="sm" className="gap-1"> 
+                <Settings size={14} className="text-muted-foreground" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-64">
@@ -107,6 +103,10 @@ function PureChatHeader({
                 <Settings2 className="mr-2 h-4 w-4" />
                 Manage Documents...
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setIsProjectDetailsOpen(true)}>
+                <Settings2 className="mr-2 h-4 w-4" />
+                Project Details...
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -115,6 +115,10 @@ function PureChatHeader({
             onOpenChange={setIsViewDocsOpen}
             ignoredDocIds={ignoredDocIds}
             setIgnoredDocIds={setIgnoredDocIds}
+          />
+          <ProjectDetails
+            isOpen={isProjectDetailsOpen}
+            onOpenChange={setIsProjectDetailsOpen}
           />
         </div>
       )}

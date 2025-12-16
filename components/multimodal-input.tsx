@@ -23,9 +23,7 @@ import { saveChatModelAsCookie } from "@/app/(chat)/actions";
 import { SelectItem } from "@/components/ui/select";
 import { chatModels } from "@/lib/ai/models";
 import type { Attachment, ChatMessage } from "@/lib/types";
-import type { AppUsage } from "@/lib/usage";
 import { cn } from "@/lib/utils";
-import { Context } from "./elements/context";
 import {
   PromptInput,
   PromptInputModelSelect,
@@ -41,11 +39,23 @@ import {
   CpuIcon,
   PaperclipIcon,
   StopIcon,
+  PlusIcon,
 } from "./icons";
 import { PreviewAttachment } from "./preview-attachment";
-import { SuggestedActions } from "./suggested-actions";
 import { Button } from "./ui/button";
-import type { VisibilityType } from "./visibility-selector";
+import type { VisibilityType } from "@/lib/types";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  ImageIcon,
+  SearchIcon,
+  ShoppingBagIcon,
+  BotIcon,
+  EllipsisIcon,
+} from "lucide-react";
 
 function PureMultimodalInput({
   chatId,
@@ -62,7 +72,6 @@ function PureMultimodalInput({
   selectedVisibilityType,
   selectedModelId,
   onModelChange,
-  usage,
   selectedProjectId,
 }: {
   chatId: string;
@@ -79,7 +88,6 @@ function PureMultimodalInput({
   selectedVisibilityType: VisibilityType;
   selectedModelId: string;
   onModelChange?: (modelId: string) => void;
-  usage?: AppUsage;
   selectedProjectId?: string;
 }) {
   const { mutate } = useSWRConfig();
@@ -205,13 +213,6 @@ function PureMultimodalInput({
     }
   }, [selectedProjectId, mutate]);
 
-  const contextProps = useMemo(
-    () => ({
-      usage,
-    }),
-    [usage]
-  );
-
   const handleFileChange = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(event.target.files || []);
@@ -299,16 +300,6 @@ function PureMultimodalInput({
 
   return (
     <div className={cn("relative flex w-full flex-col gap-4", className)}>
-      {messages.length === 0 &&
-        attachments.length === 0 &&
-        uploadQueue.length === 0 && (
-          <SuggestedActions
-            chatId={chatId}
-            selectedVisibilityType={selectedVisibilityType}
-            sendMessage={sendMessage}
-          />
-        )}
-
       <input
         accept="image/jpeg,image/png,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         className="-top-4 -left-4 pointer-events-none fixed size-0.5 opacity-0"
@@ -372,12 +363,11 @@ function PureMultimodalInput({
             maxHeight={200}
             minHeight={44}
             onChange={handleInput}
-            placeholder="Send a message..."
+            placeholder="Ask me anything about this project..."
             ref={textareaRef}
             rows={1}
             value={input}
           />{" "}
-          <Context {...contextProps} />
         </div>
         <PromptInputToolbar className="!border-top-0 border-t-0! p-0 shadow-none dark:border-0 dark:border-transparent!">
           <PromptInputTools className="gap-0 sm:gap-0.5">
@@ -442,20 +432,77 @@ function PureAttachmentsButton({
   selectedModelId: string;
 }) {
   const isReasoningModel = selectedModelId === "chat-model-reasoning";
+  const [isOpen, setIsOpen] = useState(false);
 
   return (
-    <Button
-      className="aspect-square h-8 rounded-lg p-1 transition-colors hover:bg-accent"
-      data-testid="attachments-button"
-      disabled={status !== "ready" || isReasoningModel}
-      onClick={(event) => {
-        event.preventDefault();
-        fileInputRef.current?.click();
-      }}
-      variant="ghost"
-    >
-      <PaperclipIcon size={14} style={{ width: 14, height: 14 }} />
-    </Button>
+    <Popover open={isOpen} onOpenChange={setIsOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          className="aspect-square h-8 rounded-full p-1.5 transition-colors hover:bg-accent"
+          data-testid="attachments-button"
+          disabled={status !== "ready" || isReasoningModel}
+          variant="ghost"
+        >
+          <PlusIcon size={16} />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-56 p-1.5" side="top">
+        <div className="flex flex-col gap-0.5">
+          <Button
+            className="h-9 justify-start gap-2 px-2 text-sm font-normal"
+            onClick={() => {
+              setIsOpen(false);
+              fileInputRef.current?.click();
+            }}
+            variant="ghost"
+          >
+            <PaperclipIcon size={16} />
+            Add photos & files
+          </Button>
+          <Button
+            className="h-9 justify-start gap-2 px-2 text-sm font-normal"
+            disabled
+            variant="ghost"
+          >
+            <ImageIcon size={16} />
+            Create image
+          </Button>
+          <Button
+            className="h-9 justify-start gap-2 px-2 text-sm font-normal"
+            disabled
+            variant="ghost"
+          >
+            <SearchIcon size={16} />
+            Deep research
+          </Button>
+          <Button
+            className="h-9 justify-start gap-2 px-2 text-sm font-normal"
+            disabled
+            variant="ghost"
+          >
+            <ShoppingBagIcon size={16} />
+            Shopping research
+          </Button>
+          <Button
+            className="h-9 justify-start gap-2 px-2 text-sm font-normal"
+            disabled
+            variant="ghost"
+          >
+            <BotIcon size={16} />
+            Agent mode
+          </Button>
+          <div className="my-1 h-px bg-border" />
+          <Button
+            className="h-9 justify-start gap-2 px-2 text-sm font-normal"
+            disabled
+            variant="ghost"
+          >
+            <EllipsisIcon size={16} />
+            More
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

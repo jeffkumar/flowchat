@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useTheme } from "next-themes";
 import { useRouter } from "next/navigation";
 import type { User } from "next-auth";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
 import { unstable_serialize } from "swr/infinite";
@@ -24,6 +25,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { useProjectSelector } from "@/hooks/use-project-selector";
+import { cn } from "@/lib/utils";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -43,6 +45,14 @@ export function AppSidebar({ user }: { user: User | undefined }) {
   const [showDeleteAllDialog, setShowDeleteAllDialog] = useState(false);
   const [showCreateProjectDialog, setShowCreateProjectDialog] = useState(false);
   const { selectedProjectId } = useProjectSelector();
+  const { resolvedTheme } = useTheme();
+  const [hasMounted, setHasMounted] = useState(false);
+
+  useEffect(() => {
+    setHasMounted(true);
+  }, []);
+
+  const shouldInvertSidebar = hasMounted && resolvedTheme === "light";
 
   const handleDeleteAll = () => {
     const deletePromise = fetch("/api/history", {
@@ -71,7 +81,12 @@ export function AppSidebar({ user }: { user: User | undefined }) {
 
   return (
     <>
-      <Sidebar className="group-data-[side=left]:border-r-0">
+      <Sidebar
+        className={cn(
+          "group-data-[side=left]:border-r-0",
+          shouldInvertSidebar && "sidebar-inverted"
+        )}
+      >
         <SidebarHeader>
           <SidebarMenu>
             <div className="flex flex-row items-center justify-between">
