@@ -50,6 +50,7 @@ function PureArtifactMessages({
           isReadonly={isReadonly}
           key={message.id}
           message={message}
+          showCitations={true}
           regenerate={regenerate}
           requiresScrollPadding={
             hasSentMessage && index === messages.length - 1

@@ -311,7 +311,7 @@ export function Chat({
                 status={status}
                 stop={stop}
                 usage={usage}
-                selectedProjectId={selectedProjectId}
+                selectedProjectId={selectedProjectId ?? undefined}
               />
             </>
           )}
