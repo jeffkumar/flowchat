@@ -26,8 +26,8 @@ import {
   document,
   message,
   type Project,
-  project,
   type ProjectDoc,
+  project,
   projectDoc,
   type Suggestion,
   stream,
@@ -389,11 +389,13 @@ export async function markProjectDocIndexError({
 export async function saveChat({
   id,
   userId,
+  projectId,
   title,
   visibility,
 }: {
   id: string;
   userId: string;
+  projectId?: string;
   title: string;
   visibility: VisibilityType;
 }) {
@@ -402,6 +404,7 @@ export async function saveChat({
       id,
       createdAt: new Date(),
       userId,
+      projectId,
       title,
       visibility,
     });
@@ -462,11 +465,13 @@ export async function deleteAllChatsByUserId({ userId }: { userId: string }) {
 
 export async function getChatsByUserId({
   id,
+  projectId,
   limit,
   startingAfter,
   endingBefore,
 }: {
   id: string;
+  projectId?: string;
   limit: number;
   startingAfter: string | null;
   endingBefore: string | null;
@@ -474,17 +479,20 @@ export async function getChatsByUserId({
   try {
     const extendedLimit = limit + 1;
 
-    const query = (whereCondition?: SQL<any>) =>
-      db
+    const query = (whereCondition?: SQL<any>) => {
+      const conditions: (SQL<any> | undefined)[] = [
+        eq(chat.userId, id),
+        projectId ? eq(chat.projectId, projectId) : undefined,
+        whereCondition,
+      ];
+
+      return db
         .select()
         .from(chat)
-        .where(
-          whereCondition
-            ? and(whereCondition, eq(chat.userId, id))
-            : eq(chat.userId, id)
-        )
+        .where(and(...conditions))
         .orderBy(desc(chat.createdAt))
         .limit(extendedLimit);
+    };
 
     let filteredChats: Chat[] = [];
 

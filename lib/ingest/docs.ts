@@ -70,13 +70,18 @@ async function extractTextFromPdf(buffer: Buffer) {
       "build",
       "pdf.worker.mjs"
     );
-    pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(workerFsPath).toString();
+    pdfjs.GlobalWorkerOptions.workerSrc =
+      pathToFileURL(workerFsPath).toString();
   } catch {
     // Best-effort: if this fails, pdf.js may still work in environments where worker resolution is correct.
   }
 
   // pdfjs-dist requires Uint8Array; Buffer can trip runtime checks in some builds.
-  const data = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const data = new Uint8Array(
+    buffer.buffer,
+    buffer.byteOffset,
+    buffer.byteLength
+  );
   // In Next.js dev (Turbopack), pdf.js worker bundling can fail and crash ingestion.
   // We only need text extraction, so disable the worker and run parsing in-process.
   const loadingTask = pdfjs.getDocument({ data, disableWorker: true });
@@ -108,6 +113,7 @@ export async function ingestUploadedDocToTurbopuffer({
   docId,
   projectSlug,
   projectId,
+  isDefaultProject,
   createdBy,
   organizationId,
   filename,
@@ -119,6 +125,7 @@ export async function ingestUploadedDocToTurbopuffer({
   docId: string;
   projectSlug: string;
   projectId: string;
+  isDefaultProject?: boolean;
   createdBy: string;
   organizationId?: string | null;
   filename: string;
@@ -127,9 +134,10 @@ export async function ingestUploadedDocToTurbopuffer({
   sourceCreatedAtMs: number;
   fileBuffer: Buffer;
 }) {
-  // Store docs in their own namespace to avoid Slack-heavy ANN results starving doc-only retrieval.
-  // We'll re-introduce per-project namespaces later.
-  const namespace = "_synergy_docs";
+  // Store docs in per-project namespaces. Default project uses legacy namespace.
+  const namespace = isDefaultProject
+    ? "_synergy_docs"
+    : `_synergy_${projectId}_docs`;
   const indexedAtMs = Date.now();
 
   let fullText = "";
@@ -191,5 +199,3 @@ export async function ingestUploadedDocToTurbopuffer({
 
   return { namespace, chunks: rows.length };
 }
-
-

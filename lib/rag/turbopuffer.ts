@@ -162,5 +162,3 @@ export function formatRetrievedContext(rows: TurbopufferRow[]): string {
 
   return formatted;
 }
-
-

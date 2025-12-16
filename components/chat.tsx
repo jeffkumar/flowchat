@@ -20,6 +20,7 @@ import {
 import { useArtifactSelector } from "@/hooks/use-artifact";
 import { useAutoResume } from "@/hooks/use-auto-resume";
 import { useChatVisibility } from "@/hooks/use-chat-visibility";
+import { useProjectSelector } from "@/hooks/use-project-selector";
 import type { Vote } from "@/lib/db/schema";
 import { ChatSDKError } from "@/lib/errors";
 import type { Attachment, ChatMessage } from "@/lib/types";
@@ -76,6 +77,8 @@ export function Chat({
   const [showCreditCardAlert, setShowCreditCardAlert] = useState(false);
   const [currentModelId, setCurrentModelId] = useState(initialChatModel);
   const currentModelIdRef = useRef(currentModelId);
+  const { selectedProjectId } = useProjectSelector();
+  const selectedProjectIdRef = useRef(selectedProjectId);
 
   const [sourceTypes, setSourceTypes] = useState<Array<"slack" | "docs">>([
     "slack",
@@ -86,6 +89,10 @@ export function Chat({
   useEffect(() => {
     currentModelIdRef.current = currentModelId;
   }, [currentModelId]);
+
+  useEffect(() => {
+    selectedProjectIdRef.current = selectedProjectId;
+  }, [selectedProjectId]);
 
   useEffect(() => {
     sourceTypesRef.current = sourceTypes;
@@ -115,6 +122,7 @@ export function Chat({
             selectedChatModel: currentModelIdRef.current,
             selectedVisibilityType: visibilityType,
             sourceTypes: sourceTypesRef.current,
+            projectId: selectedProjectIdRef.current,
             ...request.body,
           },
         };
@@ -127,7 +135,15 @@ export function Chat({
       }
     },
     onFinish: () => {
-      mutate(unstable_serialize(getChatHistoryPaginationKey));
+      mutate(
+        unstable_serialize((index, previousPageData) =>
+          getChatHistoryPaginationKey(
+            index,
+            previousPageData,
+            selectedProjectIdRef.current
+          )
+        )
+      );
     },
     onError: (error) => {
       if (error instanceof ChatSDKError) {
@@ -185,8 +201,8 @@ export function Chat({
           chatId={id}
           isReadonly={isReadonly}
           selectedVisibilityType={initialVisibilityType}
-          sourceTypes={sourceTypes}
           setSourceTypes={setSourceTypes}
+          sourceTypes={sourceTypes}
         />
 
         <Messages

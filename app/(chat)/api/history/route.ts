@@ -9,6 +9,7 @@ export async function GET(request: NextRequest) {
   const limit = Number.parseInt(searchParams.get("limit") || "10", 10);
   const startingAfter = searchParams.get("starting_after");
   const endingBefore = searchParams.get("ending_before");
+  const projectId = searchParams.get("projectId");
 
   if (startingAfter && endingBefore) {
     return new ChatSDKError(
@@ -25,6 +26,7 @@ export async function GET(request: NextRequest) {
 
   const chats = await getChatsByUserId({
     id: session.user.id,
+    projectId: projectId || undefined,
     limit,
     startingAfter,
     endingBefore,

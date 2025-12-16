@@ -33,23 +33,28 @@ import {
   getChatById,
   getMessageCountByUserId,
   getMessagesByChatId,
+  getOrCreateDefaultProjectForUser,
+  getProjectByIdForUser,
   saveChat,
   saveMessages,
   updateChatLastContextById,
 } from "@/lib/db/queries";
 import type { DBMessage } from "@/lib/db/schema";
 import { ChatSDKError } from "@/lib/errors";
-import type { ChatMessage } from "@/lib/types";
-import type { AppUsage } from "@/lib/usage";
-import { convertToUIMessages, generateUUID } from "@/lib/utils";
-import { generateTitleFromUserMessage } from "../../actions";
-import { type PostRequestBody, postRequestBodySchema } from "./schema";
-import { formatRetrievedContext, queryTurbopuffer } from "@/lib/rag/turbopuffer";
 import {
   inferSourceTypeFromNamespace,
   namespacesForSourceTypes,
   type SourceType,
 } from "@/lib/rag/source-routing";
+import {
+  formatRetrievedContext,
+  queryTurbopuffer,
+} from "@/lib/rag/turbopuffer";
+import type { ChatMessage } from "@/lib/types";
+import type { AppUsage } from "@/lib/usage";
+import { convertToUIMessages, generateUUID } from "@/lib/utils";
+import { generateTitleFromUserMessage } from "../../actions";
+import { type PostRequestBody, postRequestBodySchema } from "./schema";
 
 export const maxDuration = 60;
 
@@ -137,6 +142,8 @@ export async function POST(request: Request) {
 
     const chat = await getChatById({ id });
     let messagesFromDb: DBMessage[] = [];
+    let activeProjectId: string;
+    let isDefaultProject = false;
 
     if (chat) {
       if (chat.userId !== session.user.id) {
@@ -144,14 +151,53 @@ export async function POST(request: Request) {
       }
       // Only fetch messages if chat already exists
       messagesFromDb = await getMessagesByChatId({ id });
+
+      if (chat.projectId) {
+        activeProjectId = chat.projectId;
+        const project = await getProjectByIdForUser({
+          projectId: activeProjectId,
+          userId: session.user.id,
+        });
+        isDefaultProject = project?.isDefault ?? false;
+      } else {
+        // Fallback for chats without projectId (should be rare after backfill)
+        const defaultProject = await getOrCreateDefaultProjectForUser({
+          userId: session.user.id,
+        });
+        activeProjectId = defaultProject.id;
+        isDefaultProject = true;
+      }
     } else {
       const title = await generateTitleFromUserMessage({
         message,
       });
 
+      if (
+        typeof providedProjectId === "string" &&
+        providedProjectId.length > 0
+      ) {
+        const project = await getProjectByIdForUser({
+          projectId: providedProjectId,
+          userId: session.user.id,
+        });
+
+        if (!project) {
+          return new ChatSDKError("not_found:database").toResponse();
+        }
+        activeProjectId = project.id;
+        isDefaultProject = project.isDefault;
+      } else {
+        const defaultProject = await getOrCreateDefaultProjectForUser({
+          userId: session.user.id,
+        });
+        activeProjectId = defaultProject.id;
+        isDefaultProject = true;
+      }
+
       await saveChat({
         id,
         userId: session.user.id,
+        projectId: activeProjectId,
         title,
         visibility: selectedVisibilityType,
       });
@@ -171,7 +217,9 @@ export async function POST(request: Request) {
 
     // Build a best-effort query string from the user's text parts
     const userTextParts = message.parts.filter(
-      (part): part is Extract<(typeof message.parts)[number], { type: "text" }> =>
+      (
+        part
+      ): part is Extract<(typeof message.parts)[number], { type: "text" }> =>
         part.type === "text"
     );
     const userText = userTextParts
@@ -182,10 +230,14 @@ export async function POST(request: Request) {
     let retrievedContext = "";
     if (userText) {
       try {
-        const requestedSourceTypes = (Array.isArray(sourceTypes)
-          ? sourceTypes
-          : undefined) as SourceType[] | undefined;
-        const namespaces = namespacesForSourceTypes(requestedSourceTypes);
+        const requestedSourceTypes = (
+          Array.isArray(sourceTypes) ? sourceTypes : undefined
+        ) as SourceType[] | undefined;
+        const namespaces = namespacesForSourceTypes(
+          requestedSourceTypes,
+          activeProjectId,
+          isDefaultProject
+        );
 
         const perNamespaceTopK = 24;
 
@@ -204,20 +256,18 @@ export async function POST(request: Request) {
               sourceType:
                 typeof (r as any).sourceType === "string"
                   ? (r as any).sourceType
-                  : inferredSourceType ?? "",
+                  : (inferredSourceType ?? ""),
             }));
           })
         );
 
-        const fusedRows = rowsByNamespace
-          .flat()
-          .sort((a, b) => {
-            const da =
-              typeof a.$dist === "number" ? a.$dist : Number.POSITIVE_INFINITY;
-            const db =
-              typeof b.$dist === "number" ? b.$dist : Number.POSITIVE_INFINITY;
-            return da - db;
-          });
+        const fusedRows = rowsByNamespace.flat().sort((a, b) => {
+          const da =
+            typeof a.$dist === "number" ? a.$dist : Number.POSITIVE_INFINITY;
+          const db =
+            typeof b.$dist === "number" ? b.$dist : Number.POSITIVE_INFINITY;
+          return da - db;
+        });
 
         const filteredRows = fusedRows.slice(0, 24);
         // Debug logging: summarize retrieval results without dumping large payloads
@@ -242,13 +292,15 @@ export async function POST(request: Request) {
             selectedRowsCount: filteredRows.length,
             sample: filteredRows.slice(0, 12).map((r) => ({
               $dist:
-                typeof r.$dist === "number" ? Number(r.$dist.toFixed(3)) : r.$dist,
+                typeof r.$dist === "number"
+                  ? Number(r.$dist.toFixed(3))
+                  : r.$dist,
               sourceType:
                 typeof (r as any).sourceType === "string"
                   ? (r as any).sourceType
                   : typeof (r as any).source === "string"
-                      ? (r as any).source
-                      : null,
+                    ? (r as any).source
+                    : null,
               preview: truncatePreview(r.content),
             })),
           });
@@ -256,7 +308,7 @@ export async function POST(request: Request) {
           // Ignore logging failures
         }
         retrievedContext = formatRetrievedContext(filteredRows.slice(0, 8));
-        const MAX_RETRIEVED_CONTEXT_CHARS = 12000;
+        const MAX_RETRIEVED_CONTEXT_CHARS = 12_000;
         if (retrievedContext.length > MAX_RETRIEVED_CONTEXT_CHARS) {
           retrievedContext =
             retrievedContext.slice(0, MAX_RETRIEVED_CONTEXT_CHARS) +

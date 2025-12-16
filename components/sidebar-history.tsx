@@ -23,6 +23,7 @@ import {
   SidebarMenu,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { useProjectSelector } from "@/hooks/use-project-selector";
 import type { Chat } from "@/lib/db/schema";
 import { fetcher } from "@/lib/utils";
 import { LoaderIcon } from "./icons";
@@ -78,14 +79,22 @@ const groupChatsByDate = (chats: Chat[]): GroupedChats => {
 
 export function getChatHistoryPaginationKey(
   pageIndex: number,
-  previousPageData: ChatHistory
+  previousPageData: ChatHistory,
+  projectId?: string | null
 ) {
   if (previousPageData && previousPageData.hasMore === false) {
     return null;
   }
 
+  // If no project ID is provided (e.g. during initial load/default), we might default to something or return null.
+  // But here we want to filter by project. If null, we might want to return nothing or all?
+  // Strategy: If projectId is missing, return null to avoid fetching until we have one.
+  if (!projectId) {
+    return null;
+  }
+
   if (pageIndex === 0) {
-    return `/api/history?limit=${PAGE_SIZE}`;
+    return `/api/history?limit=${PAGE_SIZE}&projectId=${projectId}`;
   }
 
   const firstChatFromPage = previousPageData.chats.at(-1);
@@ -94,12 +103,21 @@ export function getChatHistoryPaginationKey(
     return null;
   }
 
-  return `/api/history?ending_before=${firstChatFromPage.id}&limit=${PAGE_SIZE}`;
+  return `/api/history?ending_before=${firstChatFromPage.id}&limit=${PAGE_SIZE}&projectId=${projectId}`;
 }
 
 export function SidebarHistory({ user }: { user: User | undefined }) {
   const { setOpenMobile } = useSidebar();
   const { id } = useParams();
+  const { selectedProjectId } = useProjectSelector();
+
+  const getKey = (pageIndex: number, previousPageData: ChatHistory) => {
+    return getChatHistoryPaginationKey(
+      pageIndex,
+      previousPageData,
+      selectedProjectId
+    );
+  };
 
   const {
     data: paginatedChatHistories,
@@ -107,7 +125,7 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
     isValidating,
     isLoading,
     mutate,
-  } = useSWRInfinite<ChatHistory>(getChatHistoryPaginationKey, fetcher, {
+  } = useSWRInfinite<ChatHistory>(getKey, fetcher, {
     fallbackData: [],
   });
 

@@ -7,6 +7,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
 import { unstable_serialize } from "swr/infinite";
+import { CreateProjectDialog } from "@/components/create-project-dialog";
 import { PlusIcon, TrashIcon } from "@/components/icons";
 import {
   getChatHistoryPaginationKey,
@@ -22,6 +23,7 @@ import {
   SidebarMenu,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { useProjectSelector } from "@/hooks/use-project-selector";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -39,6 +41,8 @@ export function AppSidebar({ user }: { user: User | undefined }) {
   const { setOpenMobile } = useSidebar();
   const { mutate } = useSWRConfig();
   const [showDeleteAllDialog, setShowDeleteAllDialog] = useState(false);
+  const [showCreateProjectDialog, setShowCreateProjectDialog] = useState(false);
+  const { selectedProjectId } = useProjectSelector();
 
   const handleDeleteAll = () => {
     const deletePromise = fetch("/api/history", {
@@ -48,7 +52,15 @@ export function AppSidebar({ user }: { user: User | undefined }) {
     toast.promise(deletePromise, {
       loading: "Deleting all chats...",
       success: () => {
-        mutate(unstable_serialize(getChatHistoryPaginationKey));
+        mutate(
+          unstable_serialize((index, previousPageData) =>
+            getChatHistoryPaginationKey(
+              index,
+              previousPageData,
+              selectedProjectId
+            )
+          )
+        );
         router.push("/");
         setShowDeleteAllDialog(false);
         return "All chats deleted successfully";
@@ -116,6 +128,16 @@ export function AppSidebar({ user }: { user: User | undefined }) {
           </SidebarMenu>
         </SidebarHeader>
         <SidebarContent>
+          <div className="px-2 py-2">
+            <Button
+              className="w-full justify-start"
+              onClick={() => setShowCreateProjectDialog(true)}
+              variant="outline"
+            >
+              <PlusIcon />
+              <span className="ml-2">Create Project</span>
+            </Button>
+          </div>
           <SidebarHistory user={user} />
         </SidebarContent>
         <SidebarFooter>{user && <SidebarUserNav user={user} />}</SidebarFooter>
@@ -141,6 +163,11 @@ export function AppSidebar({ user }: { user: User | undefined }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <CreateProjectDialog
+        onOpenChange={setShowCreateProjectDialog}
+        open={showCreateProjectDialog}
+      />
     </>
   );
 }

@@ -4,14 +4,15 @@ require("dotenv").config({ path: "../.env.local" });
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN, // xoxb-...
   appToken: process.env.SLACK_APP_TOKEN, // xapp-...
-  socketMode: true
+  socketMode: true,
 });
 
 // --- Turbopuffer + OpenAI helpers -------------------------------------------------
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
 const turbopufferApiKey = process.env.TURBOPUFFER_API_KEY;
-const turbopufferNamespace = process.env.TURBOPUFFER_NAMESPACE || "_synergy_slack";
+const turbopufferNamespace =
+  process.env.TURBOPUFFER_NAMESPACE || "_synergy_slack";
 
 function toSlackMarkdown(text) {
   if (typeof text !== "string") {
@@ -19,9 +20,7 @@ function toSlackMarkdown(text) {
   }
   // Convert **bold** (GitHub-style) to *bold* (Slack mrkdwn)
   // and normalize leading "- " list items into real bullets.
-  return text
-    .replace(/\*\*(.+?)\*\*/g, "*$1*")
-    .replace(/^\s*-\s+/gm, "• ");
+  return text.replace(/\*\*(.+?)\*\*/g, "*$1*").replace(/^\s*-\s+/gm, "• ");
 }
 
 async function createEmbedding(input) {
@@ -33,12 +32,12 @@ async function createEmbedding(input) {
     method: "POST",
     headers: {
       Authorization: `Bearer ${openaiApiKey}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
       model: "text-embedding-3-small",
-      input
-    })
+      input,
+    }),
   });
 
   if (!response.ok) {
@@ -68,12 +67,12 @@ async function upsertToTurbopuffer(rows) {
       method: "POST",
       headers: {
         Authorization: `Bearer ${turbopufferApiKey}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         upsert_rows: rows,
-        distance_metric: "cosine_distance"
-      })
+        distance_metric: "cosine_distance",
+      }),
     }
   );
 
@@ -94,7 +93,7 @@ function buildSlackDocument({
   channelId,
   channelName,
   ts,
-  team
+  team,
 }) {
   const raw = (text || "").trim();
   if (!raw) {
@@ -106,7 +105,9 @@ function buildSlackDocument({
   // under this limit while still keeping the most relevant text.
   const MAX_CONTENT_CHARS = 3800;
   const trimmed =
-    raw.length > MAX_CONTENT_CHARS ? `${raw.slice(0, MAX_CONTENT_CHARS)}…` : raw;
+    raw.length > MAX_CONTENT_CHARS
+      ? `${raw.slice(0, MAX_CONTENT_CHARS)}…`
+      : raw;
 
   const id = `slack:${channelId}:${ts}`;
   const messageUrl = `https://slack.com/archives/${channelId}/p${String(
@@ -117,9 +118,7 @@ function buildSlackDocument({
   if (userName) embeddingTextParts.push(`From ${userName}`);
   if (channelName) embeddingTextParts.push(`in #${channelName}`);
   const prefix =
-    embeddingTextParts.length > 0
-      ? `${embeddingTextParts.join(" ")}: `
-      : "";
+    embeddingTextParts.length > 0 ? `${embeddingTextParts.join(" ")}: ` : "";
 
   return {
     id,
@@ -130,7 +129,9 @@ function buildSlackDocument({
     embeddingText: `${prefix}${raw}`,
     sourceType: "slack",
     sourceCreatedAtMs:
-      typeof ts === "string" && ts.length > 0 ? Math.floor(Number(ts) * 1000) : Date.now(),
+      typeof ts === "string" && ts.length > 0
+        ? Math.floor(Number(ts) * 1000)
+        : Date.now(),
     indexedAtMs: Date.now(),
     channel_id: channelId,
     channel_name: channelName,
@@ -139,7 +140,7 @@ function buildSlackDocument({
     user_email: userEmail,
     team_id: team,
     ts,
-    url: messageUrl
+    url: messageUrl,
   };
 }
 
@@ -190,7 +191,7 @@ async function indexSlackMessage(document) {
             : chunk,
         parent_id: baseId,
         chunk_index: index,
-        ...attributes
+        ...attributes,
       }))
     );
   }
@@ -201,7 +202,7 @@ async function indexSlackMessage(document) {
     id: baseId,
     chunks: rows.length,
     channel: document.channel_name,
-    user: document.user_name
+    user: document.user_name,
   });
 }
 
@@ -213,7 +214,7 @@ async function fetchAllChannelMessages(client, channelId) {
     const response = await client.conversations.history({
       channel: channelId,
       limit: 200,
-      cursor
+      cursor,
     });
 
     const messages = response.messages || [];
@@ -224,8 +225,7 @@ async function fetchAllChannelMessages(client, channelId) {
     }
 
     cursor =
-      response.response_metadata &&
-      response.response_metadata.next_cursor
+      response.response_metadata && response.response_metadata.next_cursor
         ? response.response_metadata.next_cursor
         : undefined;
   } while (cursor);
@@ -251,13 +251,13 @@ async function queryTurbopuffer(query, topK = 20) {
       method: "POST",
       headers: {
         Authorization: `Bearer ${turbopufferApiKey}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         rank_by: ["vector", "ANN", vector],
         top_k: topK,
-        include_attributes: true
-      })
+        include_attributes: true,
+      }),
     }
   );
 
@@ -316,14 +316,14 @@ async function answerWithRag(question) {
 
   console.log("🔎 RAG query results:", {
     question,
-    rowCount: rows.length
+    rowCount: rows.length,
   });
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${openaiApiKey}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
       model: chatModel,
@@ -331,21 +331,21 @@ async function answerWithRag(question) {
         {
           role: "system",
           content:
-            "You are Synergy, a helpful assistant answering questions based on Slack channel history. Use the provided Slack message context when it is relevant. If the context does not contain the answer, say so briefly and answer from general knowledge when appropriate."
+            "You are Synergy, a helpful assistant answering questions based on Slack channel history. Use the provided Slack message context when it is relevant. If the context does not contain the answer, say so briefly and answer from general knowledge when appropriate.",
         },
         {
           role: "system",
           content: context
             ? `Here is retrieved Slack context:\n\n${context}`
-            : "No relevant Slack messages were retrieved for this question."
+            : "No relevant Slack messages were retrieved for this question.",
         },
         {
           role: "user",
-          content: question
-        }
+          content: question,
+        },
       ],
-      temperature: 0.2
-    })
+      temperature: 0.2,
+    }),
   });
 
   if (!response.ok) {
@@ -371,8 +371,7 @@ app.message(async ({ message, client, context }) => {
     const botUserId = context.botUserId;
     const textValue = typeof message.text === "string" ? message.text : "";
     const isDirectBotMention =
-      typeof botUserId === "string" &&
-      textValue.includes(`<@${botUserId}>`);
+      typeof botUserId === "string" && textValue.includes(`<@${botUserId}>`);
 
     // Don't index direct questions/commands to Synergy itself.
     if (isDirectBotMention) {
@@ -383,11 +382,12 @@ app.message(async ({ message, client, context }) => {
     try {
       const [userResult, channelResult] = await Promise.all([
         client.users.info({ user: message.user }),
-        client.conversations.info({ channel: message.channel })
+        client.conversations.info({ channel: message.channel }),
       ]);
 
       const profile = userResult.user.profile;
-      const displayName = profile.display_name || profile.real_name || "Unknown";
+      const displayName =
+        profile.display_name || profile.real_name || "Unknown";
 
       console.log("💬 Channel message:", {
         text: message.text,
@@ -396,7 +396,7 @@ app.message(async ({ message, client, context }) => {
         userEmail: profile.email,
         channelId: message.channel,
         channelName: channelResult.channel && channelResult.channel.name,
-        ts: message.ts
+        ts: message.ts,
       });
 
       const document = buildSlackDocument({
@@ -407,7 +407,7 @@ app.message(async ({ message, client, context }) => {
         channelId: message.channel,
         channelName: channelResult.channel && channelResult.channel.name,
         ts: message.ts,
-        team: message.team
+        team: message.team,
       });
 
       await indexSlackMessage(document);
@@ -418,7 +418,7 @@ app.message(async ({ message, client, context }) => {
         text: message.text,
         user: message.user,
         channel: message.channel,
-        ts: message.ts
+        ts: message.ts,
       });
     }
   }
@@ -433,12 +433,14 @@ app.event("app_mention", async ({ event, client, say }) => {
 
     // "index channel" command
     if (normalized.includes("index channel")) {
-      await say("📚 Indexing this channel into Synergy's project database. This may take a moment...");
+      await say(
+        "📚 Indexing this channel into Synergy's project database. This may take a moment..."
+      );
 
       try {
         const [channelInfo, messages] = await Promise.all([
           client.conversations.info({ channel: event.channel }),
-          fetchAllChannelMessages(client, event.channel)
+          fetchAllChannelMessages(client, event.channel),
         ]);
 
         const uniqueUserIds = Array.from(
@@ -458,7 +460,7 @@ app.event("app_mention", async ({ event, client, say }) => {
             } catch (error) {
               console.error("Failed to fetch user profile during indexing", {
                 userId,
-                error
+                error,
               });
             }
           })
@@ -480,7 +482,7 @@ app.event("app_mention", async ({ event, client, say }) => {
                 ? channelInfo.channel.name
                 : undefined,
             ts: message.ts,
-            team: message.team
+            team: message.team,
           });
 
           // Sequential to keep things simple and idempotent (same id upserts).
@@ -491,7 +493,9 @@ app.event("app_mention", async ({ event, client, say }) => {
         await say("✅ Finished indexing this channel into Synergy.");
       } catch (error) {
         console.error("Failed to index channel history", error);
-        await say("❌ Sorry, I ran into a problem while indexing this channel.");
+        await say(
+          "❌ Sorry, I ran into a problem while indexing this channel."
+        );
       }
 
       return;
@@ -505,7 +509,7 @@ app.event("app_mention", async ({ event, client, say }) => {
       cleanedQuestion: question || "(empty)",
       user: event.user,
       channel: event.channel,
-      ts: event.ts
+      ts: event.ts,
     });
 
     const effectiveQuestion =
@@ -518,33 +522,31 @@ app.event("app_mention", async ({ event, client, say }) => {
           type: "section",
           text: {
             type: "mrkdwn",
-            text: "🤔 Let me check what I know about this..."
-          }
-        }
-      ]
+            text: "🤔 Let me check what I know about this...",
+          },
+        },
+      ],
     });
 
     try {
       const answer = await answerWithRag(effectiveQuestion);
       await say({
         text: toSlackMarkdown(answer),
-        mrkdwn: true
+        mrkdwn: true,
       });
     } catch (error) {
       console.error("Failed to answer question with RAG", error);
       await say({
-        text:
-          "❌ Sorry, I ran into a problem while answering that. Please try again in a moment.",
+        text: "❌ Sorry, I ran into a problem while answering that. Please try again in a moment.",
         blocks: [
           {
             type: "section",
             text: {
               type: "mrkdwn",
-              text:
-                "❌ Sorry, I ran into a problem while answering that. Please try again in a moment."
-            }
-          }
-        ]
+              text: "❌ Sorry, I ran into a problem while answering that. Please try again in a moment.",
+            },
+          },
+        ],
       });
     }
   }

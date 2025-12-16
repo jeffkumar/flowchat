@@ -8,7 +8,11 @@ function assertEqual(actual: unknown, expected: unknown, label: string) {
   }
 }
 
-assertEqual(namespacesForSourceTypes(["slack"]), ["_synergy_slack"], "slack-only");
+assertEqual(
+  namespacesForSourceTypes(["slack"]),
+  ["_synergy_slack"],
+  "slack-only"
+);
 assertEqual(namespacesForSourceTypes(["docs"]), ["_synergy_docs"], "docs-only");
 assertEqual(
   namespacesForSourceTypes(["slack", "docs"]),
@@ -26,5 +30,3 @@ console.log("OK: namespace routing", {
   docsOnly: namespacesForSourceTypes(["docs"]),
   all: namespacesForSourceTypes(["slack", "docs"]),
 });
-
-

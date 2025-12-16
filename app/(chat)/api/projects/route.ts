@@ -42,7 +42,10 @@ export async function POST(request: Request) {
 
   const parsed = createProjectSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid project name" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Invalid project name" },
+      { status: 400 }
+    );
   }
 
   const project = await createProject({
@@ -52,5 +55,3 @@ export async function POST(request: Request) {
 
   return NextResponse.json({ project }, { status: 201 });
 }
-
-

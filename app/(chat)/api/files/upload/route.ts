@@ -1,14 +1,13 @@
 import { put } from "@vercel/blob";
-import { NextResponse } from "next/server";
-import { after } from "next/server";
+import { after, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { auth } from "@/app/(auth)/auth";
 import { isDevelopmentEnvironment } from "@/lib/constants";
 import {
   createProjectDoc,
-  getProjectByIdForUser,
   getOrCreateDefaultProjectForUser,
+  getProjectByIdForUser,
   markProjectDocIndexError,
   markProjectDocIndexed,
 } from "@/lib/db/queries";
@@ -78,23 +77,32 @@ export async function POST(request: Request) {
 
       let projectId: string;
       let projectSlug: string;
+      let isDefaultProject = false;
 
-      if (typeof providedProjectId === "string" && providedProjectId.length > 0) {
+      if (
+        typeof providedProjectId === "string" &&
+        providedProjectId.length > 0
+      ) {
         const project = await getProjectByIdForUser({
           projectId: providedProjectId,
           userId: session.user.id,
         });
         if (!project) {
-          return NextResponse.json({ error: "Project not found" }, { status: 404 });
+          return NextResponse.json(
+            { error: "Project not found" },
+            { status: 404 }
+          );
         }
         projectId = project.id;
         projectSlug = project.isDefault ? "default" : project.name;
+        isDefaultProject = project.isDefault;
       } else {
         const defaultProject = await getOrCreateDefaultProjectForUser({
           userId: session.user.id,
         });
         projectId = defaultProject.id;
         projectSlug = "default";
+        isDefaultProject = true;
       }
 
       const doc = await createProjectDoc({
@@ -126,6 +134,7 @@ export async function POST(request: Request) {
               docId: doc.id,
               projectSlug,
               projectId,
+              isDefaultProject,
               createdBy: session.user.id,
               organizationId: doc.organizationId,
               filename,
@@ -147,7 +156,9 @@ export async function POST(request: Request) {
             });
           } catch (error) {
             const message =
-              error instanceof Error ? error.message : "Unknown ingestion error";
+              error instanceof Error
+                ? error.message
+                : "Unknown ingestion error";
             await markProjectDocIndexError({ docId: doc.id, error: message });
             console.warn("ProjectDoc ingestion failed", {
               docId: doc.id,

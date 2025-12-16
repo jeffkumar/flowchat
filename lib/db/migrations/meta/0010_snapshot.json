@@ -1,6 +1,6 @@
 {
-  "id": "9a616949-fe01-4e6a-8829-64935f71b846",
-  "prevId": "097660a7-976a-4b3e-8ebb-79312e3ece6f",
+  "id": "1404129b-9945-452d-9454-1e0eadd2a50e",
+  "prevId": "6af50f53-169e-49d9-8b55-38a9f718640d",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -33,6 +33,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "projectId": {
+          "name": "projectId",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "visibility": {
           "name": "visibility",
           "type": "varchar",
@@ -47,13 +53,44 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "chat_user_created_at_idx": {
+          "name": "chat_user_created_at_idx",
+          "columns": [
+            {
+              "expression": "userId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "createdAt",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "Chat_userId_User_id_fk": {
           "name": "Chat_userId_User_id_fk",
           "tableFrom": "Chat",
           "tableTo": "User",
           "columnsFrom": ["userId"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "Chat_projectId_Project_id_fk": {
+          "name": "Chat_projectId_Project_id_fk",
+          "tableFrom": "Chat",
+          "tableTo": "Project",
+          "columnsFrom": ["projectId"],
           "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"

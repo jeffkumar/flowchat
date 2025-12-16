@@ -1,4 +1,4 @@
-import { sql, type InferSelectModel } from "drizzle-orm";
+import { type InferSelectModel, sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
@@ -10,8 +10,8 @@ import {
   primaryKey,
   text,
   timestamp,
-  uuid,
   uniqueIndex,
+  uuid,
   varchar,
 } from "drizzle-orm/pg-core";
 import type { AppUsage } from "../usage";
@@ -86,6 +86,7 @@ export const chat = pgTable(
     userId: uuid("userId")
       .notNull()
       .references(() => user.id),
+    projectId: uuid("projectId").references(() => project.id),
     visibility: varchar("visibility", { enum: ["public", "private"] })
       .notNull()
       .default("private"),
