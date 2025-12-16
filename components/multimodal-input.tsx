@@ -3,7 +3,7 @@
 import type { UseChatHelpers } from "@ai-sdk/react";
 import { Trigger } from "@radix-ui/react-select";
 import type { UIMessage } from "ai";
-import equal from "fast-deep-equal";
+import fastDeepEqual from "fast-deep-equal";
 import {
   type ChangeEvent,
   type Dispatch,
@@ -17,6 +17,7 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
+import { useSWRConfig } from "swr";
 import { useLocalStorage, useWindowSize } from "usehooks-ts";
 import { saveChatModelAsCookie } from "@/app/(chat)/actions";
 import { SelectItem } from "@/components/ui/select";
@@ -62,6 +63,7 @@ function PureMultimodalInput({
   selectedModelId,
   onModelChange,
   usage,
+  selectedProjectId,
 }: {
   chatId: string;
   input: string;
@@ -78,7 +80,9 @@ function PureMultimodalInput({
   selectedModelId: string;
   onModelChange?: (modelId: string) => void;
   usage?: AppUsage;
+  selectedProjectId?: string;
 }) {
+  const { mutate } = useSWRConfig();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { width } = useWindowSize();
 
@@ -170,6 +174,9 @@ function PureMultimodalInput({
   const uploadFile = useCallback(async (file: File) => {
     const formData = new FormData();
     formData.append("file", file);
+    if (selectedProjectId) {
+      formData.append("projectId", selectedProjectId);
+    }
 
     try {
       const response = await fetch("/api/files/upload", {
@@ -180,6 +187,10 @@ function PureMultimodalInput({
       if (response.ok) {
         const data = await response.json();
         const { url, pathname, contentType } = data;
+
+        if (selectedProjectId) {
+          mutate(`/api/projects/${selectedProjectId}/docs`);
+        }
 
         return {
           url,
@@ -192,7 +203,7 @@ function PureMultimodalInput({
     } catch (_error) {
       toast.error("Failed to upload file, please try again!");
     }
-  }, []);
+  }, [selectedProjectId, mutate]);
 
   const contextProps = useMemo(
     () => ({
@@ -404,13 +415,16 @@ export const MultimodalInput = memo(
     if (prevProps.status !== nextProps.status) {
       return false;
     }
-    if (!equal(prevProps.attachments, nextProps.attachments)) {
+    if (!fastDeepEqual(prevProps.attachments, nextProps.attachments)) {
       return false;
     }
     if (prevProps.selectedVisibilityType !== nextProps.selectedVisibilityType) {
       return false;
     }
     if (prevProps.selectedModelId !== nextProps.selectedModelId) {
+      return false;
+    }
+    if (prevProps.selectedProjectId !== nextProps.selectedProjectId) {
       return false;
     }
 

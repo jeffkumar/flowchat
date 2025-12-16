@@ -23,7 +23,7 @@ import { useChatVisibility } from "@/hooks/use-chat-visibility";
 import { useProjectSelector } from "@/hooks/use-project-selector";
 import type { Vote } from "@/lib/db/schema";
 import { ChatSDKError } from "@/lib/errors";
-import type { Attachment, ChatMessage } from "@/lib/types";
+import type { Attachment, ChatMessage, RetrievedSource } from "@/lib/types";
 import type { AppUsage } from "@/lib/usage";
 import { fetcher, fetchWithErrorHandlers, generateUUID } from "@/lib/utils";
 import { Artifact } from "./artifact";
@@ -86,17 +86,14 @@ export function Chat({
   ]);
   const sourceTypesRef = useRef(sourceTypes);
 
-  useEffect(() => {
-    currentModelIdRef.current = currentModelId;
-  }, [currentModelId]);
+  const [ignoredDocIds, setIgnoredDocIds] = useState<string[]>([]);
+  const ignoredDocIdsRef = useRef(ignoredDocIds);
 
-  useEffect(() => {
-    selectedProjectIdRef.current = selectedProjectId;
-  }, [selectedProjectId]);
-
-  useEffect(() => {
-    sourceTypesRef.current = sourceTypes;
-  }, [sourceTypes]);
+  const [showCitations, setShowCitations] = useState(false);
+  const [pendingSources, setPendingSources] = useState<RetrievedSource[] | null>(
+    null
+  );
+  const pendingSourcesRef = useRef<RetrievedSource[] | null>(null);
 
   const {
     messages,
@@ -123,6 +120,7 @@ export function Chat({
             selectedVisibilityType: visibilityType,
             sourceTypes: sourceTypesRef.current,
             projectId: selectedProjectIdRef.current,
+            ignoredDocIds: ignoredDocIdsRef.current,
             ...request.body,
           },
         };
@@ -133,8 +131,35 @@ export function Chat({
       if (dataPart.type === "data-usage") {
         setUsage(dataPart.data);
       }
+      if (dataPart.type === "data-sources") {
+        pendingSourcesRef.current = dataPart.data;
+        setPendingSources(dataPart.data);
+      }
     },
-    onFinish: () => {
+    onFinish: (result) => {
+      // If we have pending sources, attach them to the last message here
+      // This is safe because the stream has finished
+      const sourcesToAttach = pendingSourcesRef.current;
+      if (sourcesToAttach) {
+        setMessages((prevMessages) => {
+          const last = prevMessages[prevMessages.length - 1];
+          // We look for the last assistant message
+          if (last && last.role === "assistant") {
+            const newAnnotations = [
+              ...(last.annotations || []),
+              { type: "sources", data: sourcesToAttach },
+            ];
+            return [
+              ...prevMessages.slice(0, -1),
+              { ...last, annotations: newAnnotations },
+            ];
+          }
+          return prevMessages;
+        });
+        pendingSourcesRef.current = null;
+        setPendingSources(null);
+      }
+
       mutate(
         unstable_serialize((index, previousPageData) =>
           getChatHistoryPaginationKey(
@@ -158,9 +183,46 @@ export function Chat({
             description: error.message,
           });
         }
+        return;
       }
+
+      const message =
+        error instanceof Error && error.message.trim().length > 0
+          ? error.message
+          : "Something went wrong. Please try again.";
+
+      toast({
+        type: "error",
+        description: message.length > 300 ? `${message.slice(0, 300)}…` : message,
+      });
     },
   });
+
+  const statusRef = useRef(status);
+
+  useEffect(() => {
+    if (statusRef.current !== status && status === "submitted") {
+      pendingSourcesRef.current = null;
+      setPendingSources(null);
+    }
+    statusRef.current = status;
+  }, [status]);
+
+  useEffect(() => {
+    currentModelIdRef.current = currentModelId;
+  }, [currentModelId]);
+
+  useEffect(() => {
+    selectedProjectIdRef.current = selectedProjectId;
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    sourceTypesRef.current = sourceTypes;
+  }, [sourceTypes]);
+
+  useEffect(() => {
+    ignoredDocIdsRef.current = ignoredDocIds;
+  }, [ignoredDocIds]);
 
   const searchParams = useSearchParams();
   const query = searchParams.get("query");
@@ -203,6 +265,8 @@ export function Chat({
           selectedVisibilityType={initialVisibilityType}
           setSourceTypes={setSourceTypes}
           sourceTypes={sourceTypes}
+          ignoredDocIds={ignoredDocIds}
+          setIgnoredDocIds={setIgnoredDocIds}
         />
 
         <Messages
@@ -215,26 +279,41 @@ export function Chat({
           setMessages={setMessages}
           status={status}
           votes={votes}
+          showCitations={showCitations}
         />
 
-        <div className="sticky bottom-0 z-1 mx-auto flex w-full max-w-4xl gap-2 border-t-0 bg-background px-2 pb-3 md:px-4 md:pb-4">
+        <div className="sticky bottom-0 z-1 mx-auto flex w-full max-w-4xl flex-col gap-2 border-t-0 bg-background px-2 pb-3 md:px-4 md:pb-4">
           {!isReadonly && (
-            <MultimodalInput
-              attachments={attachments}
-              chatId={id}
-              input={input}
-              messages={messages}
-              onModelChange={setCurrentModelId}
-              selectedModelId={currentModelId}
-              selectedVisibilityType={visibilityType}
-              sendMessage={sendMessage}
-              setAttachments={setAttachments}
-              setInput={setInput}
-              setMessages={setMessages}
-              status={status}
-              stop={stop}
-              usage={usage}
-            />
+            <>
+              <div className="flex items-center gap-2 px-1">
+                <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showCitations}
+                    onChange={(e) => setShowCitations(e.target.checked)}
+                    className="h-3 w-3 rounded-sm border border-primary ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground accent-primary"
+                  />
+                  Show citations
+                </label>
+              </div>
+              <MultimodalInput
+                attachments={attachments}
+                chatId={id}
+                input={input}
+                messages={messages}
+                onModelChange={setCurrentModelId}
+                selectedModelId={currentModelId}
+                selectedVisibilityType={visibilityType}
+                sendMessage={sendMessage}
+                setAttachments={setAttachments}
+                setInput={setInput}
+                setMessages={setMessages}
+                status={status}
+                stop={stop}
+                usage={usage}
+                selectedProjectId={selectedProjectId}
+              />
+            </>
           )}
         </div>
       </div>

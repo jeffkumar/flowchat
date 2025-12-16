@@ -30,6 +30,7 @@ export const postRequestBodySchema = z.object({
   selectedVisibilityType: z.enum(["public", "private"]),
   projectId: z.string().uuid().optional(),
   sourceTypes: z.array(z.enum(["slack", "docs"])).optional(),
+  ignoredDocIds: z.array(z.string()).optional(),
 });
 
 export type PostRequestBody = z.infer<typeof postRequestBodySchema>;

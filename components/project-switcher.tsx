@@ -1,6 +1,7 @@
 "use client";
 
 import { Check, ChevronDown, Plus } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,6 +18,8 @@ import { cn } from "@/lib/utils";
 import { CreateProjectDialog } from "./create-project-dialog";
 
 export function ProjectSwitcher({ className }: { className?: string }) {
+  const router = useRouter();
+  const pathname = usePathname();
   const { projects, selectedProjectId, setSelectedProjectId, selectedProject } =
     useProjectSelector();
   const [showCreateDialog, setShowCreateDialog] = React.useState(false);
@@ -40,7 +43,13 @@ export function ProjectSwitcher({ className }: { className?: string }) {
             {projects.map((project) => (
               <DropdownMenuItem
                 key={project.id}
-                onSelect={() => setSelectedProjectId(project.id)}
+                onSelect={() => {
+                  setSelectedProjectId(project.id);
+                  if (pathname.startsWith("/chat/")) {
+                    router.push("/");
+                    router.refresh();
+                  }
+                }}
               >
                 <Check
                   className={cn(

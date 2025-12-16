@@ -19,6 +19,7 @@ type MessagesProps = {
   isReadonly: boolean;
   isArtifactVisible: boolean;
   selectedModelId: string;
+  showCitations: boolean;
 };
 
 function PureMessages({
@@ -30,6 +31,7 @@ function PureMessages({
   regenerate,
   isReadonly,
   selectedModelId: _selectedModelId,
+  showCitations,
 }: MessagesProps) {
   const {
     containerRef: messagesContainerRef,
@@ -71,6 +73,7 @@ function PureMessages({
                   ? votes.find((vote) => vote.messageId === message.id)
                   : undefined
               }
+              showCitations={showCitations}
             />
           ))}
 
@@ -117,6 +120,9 @@ export const Messages = memo(PureMessages, (prevProps, nextProps) => {
     return false;
   }
   if (!equal(prevProps.votes, nextProps.votes)) {
+    return false;
+  }
+  if (prevProps.showCitations !== nextProps.showCitations) {
     return false;
   }
 

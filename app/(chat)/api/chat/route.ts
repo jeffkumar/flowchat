@@ -114,6 +114,7 @@ export async function POST(request: Request) {
       selectedVisibilityType,
       projectId: providedProjectId,
       sourceTypes,
+      ignoredDocIds,
     }: {
       id: string;
       message: ChatMessage;
@@ -121,6 +122,7 @@ export async function POST(request: Request) {
       selectedVisibilityType: VisibilityType;
       projectId?: string;
       sourceTypes?: Array<"slack" | "docs">;
+      ignoredDocIds?: string[];
     } = requestBody;
 
     const session = await auth();
@@ -228,6 +230,7 @@ export async function POST(request: Request) {
       .slice(0, 4000);
 
     let retrievedContext = "";
+    let sources: any[] = [];
     if (userText) {
       try {
         const requestedSourceTypes = (
@@ -239,14 +242,28 @@ export async function POST(request: Request) {
           isDefaultProject
         );
 
+        console.log("Chat Retrieval Debug:", {
+          activeProjectId,
+          isDefaultProject,
+          namespaces,
+          requestedSourceTypes,
+          ignoredDocIds,
+        });
+
         const perNamespaceTopK = 24;
 
         const rowsByNamespace = await Promise.all(
           namespaces.map(async (ns) => {
+            const filters =
+              ignoredDocIds && ignoredDocIds.length > 0
+                ? ["Not", ["doc_id", "In", ignoredDocIds]]
+                : undefined;
+
             const nsRows = await queryTurbopuffer({
               query: userText,
               topK: perNamespaceTopK,
               namespace: ns,
+              filters,
             });
 
             const inferredSourceType = inferSourceTypeFromNamespace(ns);
@@ -270,6 +287,8 @@ export async function POST(request: Request) {
         });
 
         const filteredRows = fusedRows.slice(0, 24);
+        const usedRows = filteredRows.slice(0, 8);
+        sources = usedRows;
         // Debug logging: summarize retrieval results without dumping large payloads
         try {
           const truncatePreview = (value: unknown) => {
@@ -307,7 +326,7 @@ export async function POST(request: Request) {
         } catch (_e) {
           // Ignore logging failures
         }
-        retrievedContext = formatRetrievedContext(filteredRows.slice(0, 8));
+        retrievedContext = formatRetrievedContext(usedRows);
         const MAX_RETRIEVED_CONTEXT_CHARS = 12_000;
         if (retrievedContext.length > MAX_RETRIEVED_CONTEXT_CHARS) {
           retrievedContext =
@@ -340,6 +359,38 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream({
       execute: ({ writer: dataStream }) => {
+        if (sources.length > 0) {
+          const seen = new Set<string>();
+          const uniqueSources = [];
+          for (const s of sources) {
+            const sourceType = typeof s.sourceType === "string" ? s.sourceType : "";
+            const docId = typeof s.doc_id === "string" ? s.doc_id : "";
+            const blobUrl = typeof s.blob_url === "string" ? s.blob_url : "";
+            const filename = typeof s.filename === "string" ? s.filename : "";
+            const key = docId
+              ? `${sourceType}:${docId}`
+              : blobUrl
+                ? `${sourceType}:${blobUrl}`
+                : `${sourceType}:${filename}`;
+
+            if (seen.has(key)) continue;
+            seen.add(key);
+            uniqueSources.push({
+              sourceType,
+              docId: docId || undefined,
+              filename: filename || undefined,
+              blobUrl: blobUrl || undefined,
+              content:
+                typeof s.content === "string" ? s.content.slice(0, 200) : undefined,
+            });
+          }
+
+          dataStream.write({
+            type: "data-sources",
+            data: uniqueSources,
+          });
+        }
+
         const synergySystemPrompt =
           "You are Synergy, a helpful assistant answering questions based on retrieved context (Slack messages and uploaded docs). Use the provided context when it is relevant. If the context does not contain the answer, say so briefly and answer from general knowledge when appropriate. When talking about people, projects, or events, only use names and details that explicitly appear in the retrieved context or the conversation so far; do not invent or guess new names.";
 

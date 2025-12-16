@@ -3,13 +3,14 @@ import type { UseChatHelpers } from "@ai-sdk/react";
 import equal from "fast-deep-equal";
 import { memo, useState } from "react";
 import type { Vote } from "@/lib/db/schema";
-import type { ChatMessage } from "@/lib/types";
+import type { ChatMessage, RetrievedSource } from "@/lib/types";
 import { cn, sanitizeText } from "@/lib/utils";
 import { useDataStream } from "./data-stream-provider";
 import { DocumentToolResult } from "./document";
 import { DocumentPreview } from "./document-preview";
 import { MessageContent } from "./elements/message";
 import { Response } from "./elements/response";
+import { Source } from "./elements/source";
 import {
   Tool,
   ToolContent,
@@ -33,6 +34,7 @@ const PurePreviewMessage = ({
   regenerate,
   isReadonly,
   requiresScrollPadding: _requiresScrollPadding,
+  showCitations,
 }: {
   chatId: string;
   message: ChatMessage;
@@ -42,8 +44,35 @@ const PurePreviewMessage = ({
   regenerate: UseChatHelpers<ChatMessage>["regenerate"];
   isReadonly: boolean;
   requiresScrollPadding: boolean;
+  showCitations: boolean;
 }) => {
   const [mode, setMode] = useState<"view" | "edit">("view");
+
+  const existingSources = (
+    message.annotations?.find((a: any) => a?.type === "sources") as any
+  )?.data as RetrievedSource[] | undefined;
+
+  const sources = existingSources;
+  const uniqueSources = (() => {
+    if (!sources || sources.length === 0) return [];
+    const seen = new Set<string>();
+    const out: RetrievedSource[] = [];
+    for (const s of sources) {
+      const sourceType = typeof s.sourceType === "string" ? s.sourceType : "";
+      const docId = typeof s.docId === "string" ? s.docId : "";
+      const blobUrl = typeof s.blobUrl === "string" ? s.blobUrl : "";
+      const filename = typeof s.filename === "string" ? s.filename : "";
+      const key = docId
+        ? `${sourceType}:${docId}`
+        : blobUrl
+          ? `${sourceType}:${blobUrl}`
+          : `${sourceType}:${filename}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(s);
+    }
+    return out;
+  })();
 
   const attachmentsFromMessage = message.parts.filter(
     (part) => part.type === "file"
@@ -266,6 +295,42 @@ const PurePreviewMessage = ({
             return null;
           })}
 
+          {showCitations && uniqueSources.length > 0 && (
+            <div className="mt-4 flex flex-col gap-2">
+              <div className="text-xs font-medium text-muted-foreground">
+                Citations
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {uniqueSources.map((source, i) => {
+                  const title =
+                    source.filename ??
+                    (source.sourceType === "slack" ? "Slack" : "Source");
+                  const href = source.blobUrl;
+
+                  if (typeof href === "string" && href.length > 0) {
+                    return (
+                      <Source
+                        href={href}
+                        key={i}
+                        title={title}
+                        className="rounded-md border bg-muted/50 px-2 py-1 text-xs hover:bg-muted"
+                      />
+                    );
+                  }
+
+                  return (
+                    <div
+                      className="rounded-md border bg-muted/50 px-2 py-1 text-xs"
+                      key={i}
+                    >
+                      {title}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {!isReadonly && (
             <MessageActions
               chatId={chatId}
@@ -300,7 +365,9 @@ export const PreviewMessage = memo(
     if (!equal(prevProps.vote, nextProps.vote)) {
       return false;
     }
-
+    if (prevProps.showCitations !== nextProps.showCitations) {
+      return false;
+    }
     return false;
   }
 );

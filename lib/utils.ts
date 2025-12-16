@@ -19,8 +19,17 @@ export const fetcher = async (url: string) => {
   const response = await fetch(url);
 
   if (!response.ok) {
-    const { code, cause } = await response.json();
-    throw new ChatSDKError(code as ErrorCode, cause);
+    const cloned = response.clone();
+    try {
+      const { code, cause } = (await response.json()) as {
+        code: string;
+        cause?: string;
+      };
+      throw new ChatSDKError(code as ErrorCode, cause);
+    } catch {
+      const bodyText = await cloned.text().catch(() => "");
+      throw new ChatSDKError("bad_request:api", bodyText);
+    }
   }
 
   return response.json();
@@ -34,8 +43,17 @@ export async function fetchWithErrorHandlers(
     const response = await fetch(input, init);
 
     if (!response.ok) {
-      const { code, cause } = await response.json();
-      throw new ChatSDKError(code as ErrorCode, cause);
+      const cloned = response.clone();
+      try {
+        const { code, cause } = (await response.json()) as {
+          code: string;
+          cause?: string;
+        };
+        throw new ChatSDKError(code as ErrorCode, cause);
+      } catch {
+        const bodyText = await cloned.text().catch(() => "");
+        throw new ChatSDKError("bad_request:api", bodyText);
+      }
     }
 
     return response;

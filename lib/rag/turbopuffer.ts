@@ -85,10 +85,12 @@ export async function queryTurbopuffer({
   query,
   topK = 20,
   namespace,
+  filters,
 }: {
   query: string;
   topK?: number;
   namespace?: string;
+  filters?: unknown;
 }): Promise<TurbopufferRow[]> {
   if (!turbopufferApiKey) {
     throw new Error("Missing TURBOPUFFER_API_KEY");
@@ -114,6 +116,7 @@ export async function queryTurbopuffer({
         rank_by: ["vector", "ANN", vector],
         top_k: topK,
         include_attributes: true,
+        filters,
       }),
       signal: controller.signal,
     }
@@ -123,6 +126,9 @@ export async function queryTurbopuffer({
 
   if (!response.ok) {
     const message = await response.text();
+    if (message.includes("was not found")) {
+      return [];
+    }
     throw new Error(`Turbopuffer query failed: ${message}`);
   }
 

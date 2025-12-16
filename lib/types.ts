@@ -10,6 +10,18 @@ import type { AppUsage } from "./usage";
 
 export type DataPart = { type: "append-message"; message: string };
 
+export type RetrievedSource = {
+  sourceType: string;
+  docId?: string;
+  filename?: string;
+  blobUrl?: string;
+  content?: string;
+};
+
+export type ChatAnnotation =
+  | { type: "sources"; data: RetrievedSource[] }
+  | { type: string; data: unknown };
+
 export const messageMetadataSchema = z.object({
   createdAt: z.string(),
 });
@@ -43,13 +55,12 @@ export type CustomUIDataTypes = {
   clear: null;
   finish: null;
   usage: AppUsage;
+  sources: RetrievedSource[];
 };
 
-export type ChatMessage = UIMessage<
-  MessageMetadata,
-  CustomUIDataTypes,
-  ChatTools
->;
+export type ChatMessage = UIMessage<MessageMetadata, CustomUIDataTypes, ChatTools> & {
+  annotations?: ChatAnnotation[];
+};
 
 export type Attachment = {
   name: string;
