@@ -11,6 +11,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { EyeIcon, EyeOffIcon, LoaderIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -44,6 +45,11 @@ export function ViewDocs({
     }
   };
 
+  const truncateFilename = (filename: string, maxChars = 20) => {
+    if (filename.length <= maxChars) return filename;
+    return `${filename.slice(0, maxChars)}…`;
+  };
+
   return (
     <Sheet open={isOpen} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-[400px] sm:w-[540px] flex flex-col">
@@ -68,15 +74,27 @@ export function ViewDocs({
               <div className="space-y-4 pr-4">
                 {data?.docs?.map((doc) => {
                   const isIgnored = ignoredDocIds.includes(doc.id);
+                  const displayFilename = truncateFilename(doc.filename, 20);
+                  const isTruncated = displayFilename !== doc.filename;
                   return (
                     <div
                       key={doc.id}
                       className="flex items-center justify-between p-3 rounded-lg border bg-card text-card-foreground shadow-sm"
                     >
-                      <div className="flex flex-col gap-1 overflow-hidden">
-                        <span className="text-sm font-medium truncate" title={doc.filename}>
-                          {doc.filename}
-                        </span>
+                      <div className="flex flex-1 min-w-0 flex-col gap-1 overflow-hidden">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span
+                              className="text-sm font-medium truncate cursor-help select-none"
+                              title={isTruncated ? undefined : doc.filename}
+                            >
+                              {displayFilename}
+                            </span>
+                          </TooltipTrigger>
+                          {isTruncated && (
+                            <TooltipContent side="top">{doc.filename}</TooltipContent>
+                          )}
+                        </Tooltip>
                         <span className="text-xs text-muted-foreground">
                           {format(new Date(doc.createdAt), "PP")}
                         </span>

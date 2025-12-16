@@ -64,7 +64,7 @@ export const Source = ({
   ...props
 }: SourceProps) => (
   <a
-    className={cn("inline-flex items-center gap-2", className)}
+    className={cn("inline-flex min-w-0 items-center gap-2", className)}
     href={href}
     rel="noreferrer"
     target="_blank"
@@ -72,8 +72,10 @@ export const Source = ({
   >
     {children ?? (
       <>
-        <span className="block font-medium">{title}</span>
-        <SquareArrowOutUpRight className="size-3 opacity-70" />
+        <span className="block min-w-0 truncate font-medium" title={title}>
+          {title}
+        </span>
+        <SquareArrowOutUpRight className="size-3 shrink-0 opacity-70" />
       </>
     )}
   </a>

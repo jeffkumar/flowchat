@@ -18,6 +18,7 @@ import { ChevronDownIcon, PlusIcon } from "./icons";
 import { Settings2 } from "lucide-react";
 import { useSidebar } from "./ui/sidebar";
 import { ViewDocs } from "./view-docs";
+import { VisibilitySelector } from "./visibility-selector";
 import type { VisibilityType } from "./visibility-selector";
 
 function PureChatHeader({
@@ -70,10 +71,12 @@ function PureChatHeader({
         </Button>
       )}
 
-      {/* Visibility selector intentionally hidden for now */}
-
       {!isReadonly && (
         <div className="ml-auto flex items-center gap-1">
+          <VisibilitySelector
+            chatId={chatId}
+            selectedVisibilityType={selectedVisibilityType}
+          />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="gap-1">

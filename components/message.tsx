@@ -322,8 +322,9 @@ const PurePreviewMessage = ({
                     <div
                       className="rounded-md border bg-muted/50 px-2 py-1 text-xs"
                       key={i}
+                      title={title}
                     >
-                      {title}
+                      <span className="block max-w-[240px] truncate">{title}</span>
                     </div>
                   );
                 })}
