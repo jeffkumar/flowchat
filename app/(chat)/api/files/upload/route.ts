@@ -3,9 +3,13 @@ import { after, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { auth } from "@/app/(auth)/auth";
-import { isDevelopmentEnvironment } from "@/lib/constants";
+import {
+  isDevelopmentEnvironment,
+  preventDuplicateProjectDocFilenames,
+} from "@/lib/constants";
 import {
   createProjectDoc,
+  getProjectDocByProjectIdAndFilename,
   getOrCreateDefaultProjectForUser,
   getProjectByIdForUser,
   markProjectDocIndexError,
@@ -67,14 +71,8 @@ export async function POST(request: Request) {
 
     // Get filename from formData since Blob doesn't have name property
     const filename = (formData.get("file") as File).name;
-    const fileBuffer = await file.arrayBuffer();
 
     try {
-      const data = await put(`${filename}`, fileBuffer, {
-        access: "public",
-        contentType: file.type,
-      });
-
       let projectId: string;
       let projectSlug: string;
       let isDefaultProject = false;
@@ -104,6 +102,28 @@ export async function POST(request: Request) {
         projectSlug = "default";
         isDefaultProject = true;
       }
+
+      if (preventDuplicateProjectDocFilenames) {
+        const existing = await getProjectDocByProjectIdAndFilename({
+          projectId,
+          filename,
+        });
+        if (existing) {
+          return NextResponse.json(
+            {
+              error:
+                "This file has already been uploaded to this project with the same name.",
+            },
+            { status: 409 }
+          );
+        }
+      }
+
+      const fileBuffer = await file.arrayBuffer();
+      const data = await put(`${filename}`, fileBuffer, {
+        access: "public",
+        contentType: file.type,
+      });
 
       const doc = await createProjectDoc({
         projectId,

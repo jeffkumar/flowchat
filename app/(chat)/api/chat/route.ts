@@ -367,11 +367,16 @@ export async function POST(request: Request) {
             const docId = typeof s.doc_id === "string" ? s.doc_id : "";
             const blobUrl = typeof s.blob_url === "string" ? s.blob_url : "";
             const filename = typeof s.filename === "string" ? s.filename : "";
-            const key = docId
-              ? `${sourceType}:${docId}`
-              : blobUrl
-                ? `${sourceType}:${blobUrl}`
-                : `${sourceType}:${filename}`;
+            const projectId =
+              typeof (s as any).project_id === "string" ? (s as any).project_id : "";
+            const key =
+              sourceType === "docs" && projectId && filename
+                ? `${sourceType}:${projectId}:${filename}`
+                : docId
+                  ? `${sourceType}:${docId}`
+                  : blobUrl
+                    ? `${sourceType}:${blobUrl}`
+                    : `${sourceType}:${filename}`;
 
             if (seen.has(key)) continue;
             seen.add(key);

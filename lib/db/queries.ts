@@ -300,6 +300,28 @@ export async function createProjectDoc({
   }
 }
 
+export async function getProjectDocByProjectIdAndFilename({
+  projectId,
+  filename,
+}: {
+  projectId: string;
+  filename: string;
+}): Promise<ProjectDoc | null> {
+  try {
+    const [doc] = await db
+      .select()
+      .from(projectDoc)
+      .where(and(eq(projectDoc.projectId, projectId), eq(projectDoc.filename, filename)))
+      .limit(1);
+    return doc ?? null;
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to get project doc by project id and filename"
+    );
+  }
+}
+
 export async function getProjectDocsByProjectId({
   projectId,
 }: {

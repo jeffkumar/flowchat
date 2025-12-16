@@ -11,3 +11,12 @@ export const isTestEnvironment = Boolean(
 export const guestRegex = /^guest-\d+$/;
 
 export const DUMMY_PASSWORD = generateDummyPassword();
+
+/**
+ * Feature flag: prevent uploading a file to the same project if a file with the same
+ * filename already exists. Default: enabled.
+ *
+ * Set `PREVENT_DUPLICATE_PROJECT_DOC_FILENAMES=false` to disable.
+ */
+export const preventDuplicateProjectDocFilenames =
+  process.env.PREVENT_DUPLICATE_PROJECT_DOC_FILENAMES !== "false";

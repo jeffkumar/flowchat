@@ -89,7 +89,7 @@ export function Chat({
   const [ignoredDocIds, setIgnoredDocIds] = useState<string[]>([]);
   const ignoredDocIdsRef = useRef(ignoredDocIds);
 
-  const [showCitations, setShowCitations] = useState(false);
+  const [showCitations, setShowCitations] = useState(true);
   const [pendingSources, setPendingSources] = useState<RetrievedSource[] | null>(
     null
   );
