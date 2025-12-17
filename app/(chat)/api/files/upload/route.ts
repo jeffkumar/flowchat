@@ -56,6 +56,8 @@ export async function POST(request: Request) {
     const formData = await request.formData();
     const file = formData.get("file") as Blob;
     const providedProjectId = formData.get("projectId");
+    const rawCategory = formData.get("category");
+    const rawDescription = formData.get("description");
 
     if (!file) {
       return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
@@ -73,6 +75,14 @@ export async function POST(request: Request) {
 
     // Get filename from formData since Blob doesn't have name property
     const filename = (formData.get("file") as File).name;
+    const category =
+      typeof rawCategory === "string" && rawCategory.trim().length > 0
+        ? rawCategory.trim().slice(0, 120)
+        : null;
+    const description =
+      typeof rawDescription === "string" && rawDescription.trim().length > 0
+        ? rawDescription.trim().slice(0, 600)
+        : null;
 
     try {
       let projectId: string;
@@ -132,6 +142,8 @@ export async function POST(request: Request) {
         createdBy: session.user.id,
         blobUrl: data.url,
         filename,
+        category,
+        description,
         mimeType: file.type,
         sizeBytes: file.size,
       });
@@ -168,6 +180,8 @@ export async function POST(request: Request) {
               createdBy: session.user.id,
               organizationId: doc.organizationId,
               filename,
+              category: doc.category,
+              description: doc.description,
               mimeType: file.type,
               blobUrl: data.url,
               sourceCreatedAtMs: doc.createdAt.getTime(),

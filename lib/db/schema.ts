@@ -62,6 +62,8 @@ export const projectDoc = pgTable(
     organizationId: uuid("organizationId"),
     blobUrl: text("blobUrl").notNull(),
     filename: text("filename").notNull(),
+    category: text("category"),
+    description: text("description"),
     mimeType: text("mimeType").notNull(),
     sizeBytes: bigint("sizeBytes", { mode: "number" }).notNull(),
     turbopufferNamespace: text("turbopufferNamespace"),

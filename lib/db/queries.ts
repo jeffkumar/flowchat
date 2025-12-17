@@ -301,6 +301,8 @@ export async function createProjectDoc({
   organizationId,
   blobUrl,
   filename,
+  category,
+  description,
   mimeType,
   sizeBytes,
   turbopufferNamespace,
@@ -310,6 +312,8 @@ export async function createProjectDoc({
   organizationId?: string | null;
   blobUrl: string;
   filename: string;
+  category?: string | null;
+  description?: string | null;
   mimeType: string;
   sizeBytes: number;
   turbopufferNamespace?: string | null;
@@ -323,6 +327,8 @@ export async function createProjectDoc({
         organizationId: organizationId ?? null,
         blobUrl,
         filename,
+        category: category ?? null,
+        description: description ?? null,
         mimeType,
         sizeBytes,
         turbopufferNamespace: turbopufferNamespace ?? null,

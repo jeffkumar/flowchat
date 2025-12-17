@@ -11,7 +11,12 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownIcon, PlusIcon } from "./icons";
@@ -21,6 +26,8 @@ import { ViewDocs } from "./view-docs";
 import { ProjectDetails } from "./project-details";
 import type { VisibilityType } from "@/lib/types";
 
+export type RetrievalRangePreset = "all" | "1d" | "7d" | "30d" | "90d";
+
 function PureChatHeader({
   chatId,
   selectedVisibilityType,
@@ -29,6 +36,8 @@ function PureChatHeader({
   setSourceTypes,
   ignoredDocIds,
   setIgnoredDocIds,
+  retrievalRangePreset,
+  setRetrievalRangePreset,
 }: {
   chatId: string;
   selectedVisibilityType: VisibilityType;
@@ -37,6 +46,8 @@ function PureChatHeader({
   setSourceTypes: (next: Array<"slack" | "docs">) => void;
   ignoredDocIds: string[];
   setIgnoredDocIds: (ids: string[]) => void;
+  retrievalRangePreset: RetrievalRangePreset;
+  setRetrievalRangePreset: (preset: RetrievalRangePreset) => void;
 }) {
   const router = useRouter();
   const { open } = useSidebar();
@@ -99,6 +110,42 @@ function PureChatHeader({
                 Docs
               </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>Time range</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  <DropdownMenuRadioGroup
+                    value={retrievalRangePreset}
+                    onValueChange={(value) => {
+                      if (
+                        value === "all" ||
+                        value === "1d" ||
+                        value === "7d" ||
+                        value === "30d" ||
+                        value === "90d"
+                      ) {
+                        setRetrievalRangePreset(value);
+                      }
+                    }}
+                  >
+                    <DropdownMenuRadioItem value="all">
+                      All time
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="1d">
+                      Last day
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="7d">
+                      Last 7 days
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="30d">
+                      Last 30 days
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="90d">
+                      Last 90 days
+                    </DropdownMenuRadioItem>
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => setIsViewDocsOpen(true)}>
                 <Settings2 className="mr-2 h-4 w-4" />
                 Manage Documents...
@@ -132,6 +179,7 @@ export const ChatHeader = memo(PureChatHeader, (prevProps, nextProps) => {
     prevProps.selectedVisibilityType === nextProps.selectedVisibilityType &&
     prevProps.isReadonly === nextProps.isReadonly &&
     prevProps.sourceTypes === nextProps.sourceTypes &&
-    prevProps.ignoredDocIds === nextProps.ignoredDocIds
+    prevProps.ignoredDocIds === nextProps.ignoredDocIds &&
+    prevProps.retrievalRangePreset === nextProps.retrievalRangePreset
   );
 });

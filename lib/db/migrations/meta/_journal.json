@@ -78,6 +78,13 @@
       "when": 1765860593522,
       "tag": "0010_nifty_wrecking_crew",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1765940000000,
+      "tag": "0011_doc_metadata",
+      "breakpoints": true
     }
   ]
 }

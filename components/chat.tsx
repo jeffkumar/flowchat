@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { unstable_serialize } from "swr/infinite";
-import { ChatHeader } from "@/components/chat-header";
+import { ChatHeader, type RetrievalRangePreset } from "@/components/chat-header";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -86,6 +86,16 @@ export function Chat({
   ]);
   const sourceTypesRef = useRef(sourceTypes);
 
+  const [retrievalRangePreset, setRetrievalRangePreset] =
+    useState<RetrievalRangePreset>("all");
+  const retrievalRangePresetRef = useRef(retrievalRangePreset);
+
+  const browserTimeZone =
+    typeof Intl !== "undefined"
+      ? Intl.DateTimeFormat().resolvedOptions().timeZone
+      : "UTC";
+  const browserTimeZoneRef = useRef(browserTimeZone);
+
   const [ignoredDocIds, setIgnoredDocIds] = useState<string[]>([]);
   const ignoredDocIdsRef = useRef(ignoredDocIds);
 
@@ -121,6 +131,8 @@ export function Chat({
             sourceTypes: sourceTypesRef.current,
             projectId: selectedProjectIdRef.current,
             ignoredDocIds: ignoredDocIdsRef.current,
+            retrievalRangePreset: retrievalRangePresetRef.current,
+            retrievalTimeZone: browserTimeZoneRef.current,
             ...request.body,
           },
         };
@@ -221,6 +233,14 @@ export function Chat({
   }, [sourceTypes]);
 
   useEffect(() => {
+    retrievalRangePresetRef.current = retrievalRangePreset;
+  }, [retrievalRangePreset]);
+
+  useEffect(() => {
+    browserTimeZoneRef.current = browserTimeZone;
+  }, [browserTimeZone]);
+
+  useEffect(() => {
     ignoredDocIdsRef.current = ignoredDocIds;
   }, [ignoredDocIds]);
 
@@ -267,6 +287,8 @@ export function Chat({
           sourceTypes={sourceTypes}
           ignoredDocIds={ignoredDocIds}
           setIgnoredDocIds={setIgnoredDocIds}
+          retrievalRangePreset={retrievalRangePreset}
+          setRetrievalRangePreset={setRetrievalRangePreset}
         />
 
         <Messages

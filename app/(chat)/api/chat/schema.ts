@@ -31,6 +31,8 @@ export const postRequestBodySchema = z.object({
   projectId: z.string().uuid().optional(),
   sourceTypes: z.array(z.enum(["slack", "docs"])).optional(),
   ignoredDocIds: z.array(z.string()).optional(),
+  retrievalRangePreset: z.enum(["all", "1d", "7d", "30d", "90d"]).optional(),
+  retrievalTimeZone: z.string().min(1).max(64).optional(),
 });
 
 export type PostRequestBody = z.infer<typeof postRequestBodySchema>;

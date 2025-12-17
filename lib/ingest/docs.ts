@@ -117,6 +117,8 @@ export async function ingestUploadedDocToTurbopuffer({
   createdBy,
   organizationId,
   filename,
+  category,
+  description,
   mimeType,
   blobUrl,
   sourceCreatedAtMs,
@@ -129,6 +131,8 @@ export async function ingestUploadedDocToTurbopuffer({
   createdBy: string;
   organizationId?: string | null;
   filename: string;
+  category?: string | null;
+  description?: string | null;
   mimeType: string;
   blobUrl: string;
   sourceCreatedAtMs: number;
@@ -164,9 +168,16 @@ export async function ingestUploadedDocToTurbopuffer({
   const fileHash = crypto.createHash("sha1").update(fileBuffer).digest("hex");
   const rows: TurbopufferUpsertRow[] = [];
 
+  const metadataLines = [
+    filename ? `filename: ${filename}` : "",
+    category ? `category: ${category}` : "",
+    description ? `description: ${description}` : "",
+  ].filter((line) => line.length > 0);
+  const metadataPrefix = metadataLines.length > 0 ? `${metadataLines.join("\n")}\n\n` : "";
+
   for (let index = 0; index < chunks.length; index += 1) {
     const chunk = chunks[index];
-    const vector = await createEmbedding(chunk);
+    const vector = await createEmbedding(`${metadataPrefix}${chunk}`);
     // Turbopuffer requires id strings < 64 bytes. Use a stable, short hash.
     const idHash = crypto
       .createHash("sha256")
@@ -189,6 +200,8 @@ export async function ingestUploadedDocToTurbopuffer({
       created_by: createdBy,
       organization_id: organizationId ?? null,
       filename,
+      doc_category: category ?? null,
+      doc_description: description ?? null,
       mime_type: mimeType,
       blob_url: blobUrl,
       chunk_index: index,

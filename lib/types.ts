@@ -14,6 +14,8 @@ export type RetrievedSource = {
   sourceType: string;
   docId?: string;
   filename?: string;
+  category?: string;
+  description?: string;
   blobUrl?: string;
   content?: string;
 };

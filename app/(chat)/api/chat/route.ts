@@ -2,10 +2,12 @@ import { geolocation } from "@vercel/functions";
 import {
   convertToModelMessages,
   createUIMessageStream,
+  generateText,
   JsonToSseTransformStream,
   smoothStream,
   stepCountIs,
   streamText,
+  tool,
 } from "ai";
 import { unstable_cache as cache } from "next/cache";
 import { after } from "next/server";
@@ -16,6 +18,7 @@ import {
 import type { ModelCatalog } from "tokenlens/core";
 import { fetchModels } from "tokenlens/fetch";
 import { getUsage } from "tokenlens/helpers";
+import { z } from "zod";
 import { auth, type UserType } from "@/app/(auth)/auth";
 import type { VisibilityType } from "@/lib/types";
 import { entitlementsByUserType } from "@/lib/ai/entitlements";
@@ -59,6 +62,271 @@ import { type PostRequestBody, postRequestBodySchema } from "./schema";
 export const maxDuration = 60;
 
 let globalStreamContext: ResumableStreamContext | null = null;
+
+type RetrievalRangePreset = "all" | "1d" | "7d" | "30d" | "90d";
+
+type RelativeDay = "today" | "yesterday" | "dayBeforeYesterday";
+
+const TIME_RANGE_HINT_RE =
+  /\b(last|past|yesterday|today|since|between|from|in the last|\d+\s*(day|week|month|year)s?)\b/i;
+
+function startMsForPreset(preset: RetrievalRangePreset | undefined, nowMs: number) {
+  if (!preset || preset === "all") {
+    return null;
+  }
+  const dayMs = 24 * 60 * 60 * 1000;
+  if (preset === "1d") return nowMs - 1 * dayMs;
+  if (preset === "7d") return nowMs - 7 * dayMs;
+  if (preset === "30d") return nowMs - 30 * dayMs;
+  if (preset === "90d") return nowMs - 90 * dayMs;
+  return null;
+}
+
+async function inferRetrievalRangePreset({
+  userText,
+}: {
+  userText: string;
+}): Promise<RetrievalRangePreset> {
+  let selected: RetrievalRangePreset = "all";
+
+  await generateText({
+    model: myProvider.languageModel("chat-model"),
+    system:
+      "Choose the best retrieval time range preset for the user's request. " +
+      "If the user does not specify a time range, choose 'all'. " +
+      "If the user asks for 'last day', 'yesterday', or 'last 24 hours', choose '1d'. " +
+      "If the user asks for a range that doesn't map exactly, choose the closest *broader* preset (e.g. 3 days -> 7d). " +
+      "You MUST call the provided tool and nothing else.",
+    messages: [{ role: "user", content: userText }],
+    tools: {
+      selectTimeRange: tool({
+        description: "Select the retrieval time range preset.",
+        inputSchema: z.object({
+          preset: z.enum(["all", "1d", "7d", "30d", "90d"]),
+        }),
+        execute: async ({ preset }) => {
+          selected = preset;
+          return { preset };
+        },
+      }),
+    },
+    toolChoice: { type: "tool", toolName: "selectTimeRange" },
+    temperature: 0,
+    maxOutputTokens: 50,
+    stopWhen: stepCountIs(1),
+  });
+
+  return selected;
+}
+
+function getZonedParts(utcMs: number, timeZone: string) {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const parts = dtf.formatToParts(new Date(utcMs));
+  const value = (type: string) =>
+    Number(parts.find((p) => p.type === type)?.value ?? "NaN");
+  return {
+    year: value("year"),
+    month: value("month"),
+    day: value("day"),
+    hour: value("hour"),
+    minute: value("minute"),
+    second: value("second"),
+  };
+}
+
+function zonedDateTimeToUtcMs({
+  year,
+  month,
+  day,
+  hour,
+  minute,
+  second,
+  timeZone,
+}: {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  timeZone: string;
+}) {
+  // Iteratively solve for the UTC instant that renders to the desired local time in `timeZone`.
+  let utcMs = Date.UTC(year, month - 1, day, hour, minute, second);
+  const desiredLocalMs = Date.UTC(year, month - 1, day, hour, minute, second);
+  for (let i = 0; i < 3; i += 1) {
+    const actual = getZonedParts(utcMs, timeZone);
+    const actualLocalMs = Date.UTC(
+      actual.year,
+      actual.month - 1,
+      actual.day,
+      actual.hour,
+      actual.minute,
+      actual.second
+    );
+    const diff = desiredLocalMs - actualLocalMs;
+    utcMs += diff;
+    if (diff === 0) break;
+  }
+  return utcMs;
+}
+
+function startOfLocalDayUtcMs({
+  year,
+  month,
+  day,
+  timeZone,
+}: {
+  year: number;
+  month: number;
+  day: number;
+  timeZone: string;
+}) {
+  return zonedDateTimeToUtcMs({
+    year,
+    month,
+    day,
+    hour: 0,
+    minute: 0,
+    second: 0,
+    timeZone,
+  });
+}
+
+function addDaysToYmd({ year, month, day }: { year: number; month: number; day: number }, days: number) {
+  const d = new Date(Date.UTC(year, month - 1, day));
+  d.setUTCDate(d.getUTCDate() + days);
+  return {
+    year: d.getUTCFullYear(),
+    month: d.getUTCMonth() + 1,
+    day: d.getUTCDate(),
+  };
+}
+
+function windowForRelativeDay({
+  nowMs,
+  timeZone,
+  which,
+}: {
+  nowMs: number;
+  timeZone: string;
+  which: RelativeDay;
+}): { startMs: number; endMs: number } {
+  const nowLocal = getZonedParts(nowMs, timeZone);
+  const offsetDays =
+    which === "today" ? 0 : which === "yesterday" ? -1 : -2;
+  const target = addDaysToYmd(
+    { year: nowLocal.year, month: nowLocal.month, day: nowLocal.day },
+    offsetDays
+  );
+  const next = addDaysToYmd(target, 1);
+  const startMs = startOfLocalDayUtcMs({ ...target, timeZone });
+  const endMs = startOfLocalDayUtcMs({ ...next, timeZone });
+  return { startMs, endMs };
+}
+
+async function inferRelativeDay({
+  userText,
+}: {
+  userText: string;
+}): Promise<RelativeDay | null> {
+  let selected: RelativeDay | null = null;
+  await generateText({
+    model: myProvider.languageModel("chat-model"),
+    system:
+      "Determine whether the user is asking for a specific relative day. " +
+      "If they mean a specific day window, choose one of: today, yesterday, dayBeforeYesterday. " +
+      "If they are NOT asking for a specific single-day window, choose 'none'. " +
+      "You MUST call the provided tool and nothing else.",
+    messages: [{ role: "user", content: userText }],
+    tools: {
+      selectRelativeDay: tool({
+        description: "Select a relative day window (or none).",
+        inputSchema: z.object({
+          which: z.enum(["none", "today", "yesterday", "dayBeforeYesterday"]),
+        }),
+        execute: async ({ which }) => {
+          selected = which === "none" ? null : which;
+          return { which };
+        },
+      }),
+    },
+    toolChoice: { type: "tool", toolName: "selectRelativeDay" },
+    temperature: 0,
+    maxOutputTokens: 50,
+    stopWhen: stepCountIs(1),
+  });
+  return selected;
+}
+
+function timestampMsFromRow(row: unknown): number | null {
+  if (!row || typeof row !== "object") {
+    return null;
+  }
+  const r = row as Record<string, unknown>;
+  const sourceCreatedAtMs = r.sourceCreatedAtMs;
+  if (typeof sourceCreatedAtMs === "number" && Number.isFinite(sourceCreatedAtMs)) {
+    return sourceCreatedAtMs;
+  }
+  if (typeof sourceCreatedAtMs === "string" && sourceCreatedAtMs.length > 0) {
+    const parsed = Number(sourceCreatedAtMs);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  const ts = r.ts;
+  if (typeof ts === "string" && ts.length > 0) {
+    const parsedSeconds = Number(ts);
+    if (Number.isFinite(parsedSeconds)) return Math.floor(parsedSeconds * 1000);
+  }
+  return null;
+}
+
+function extractLastMentionName(text: string): string | null {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const match =
+    normalized.match(
+      /\bwhat did\s+(.+?)\s+last\s+(mention|say|talk about)\b/i
+    ) ??
+    normalized.match(/\bwhat was\s+the last thing\s+(.+?)\s+(mentioned|said)\b/i);
+  const raw = match?.[1]?.trim();
+  if (!raw) return null;
+  // Strip trailing punctuation and common filler.
+  const cleaned = raw.replace(/[?.!,;:]+$/g, "").trim();
+  if (!cleaned) return null;
+  return cleaned;
+}
+
+function formatNewestSlackMatch({
+  name,
+  row,
+  tsMs,
+}: {
+  name: string;
+  row: Record<string, unknown>;
+  tsMs: number;
+}): string {
+  const userName = typeof row.user_name === "string" ? row.user_name : name;
+  const channelName = typeof row.channel_name === "string" ? row.channel_name : "";
+  const url = typeof row.url === "string" ? row.url : "";
+  const content = typeof row.content === "string" ? row.content : "";
+  const iso = new Date(tsMs).toISOString();
+  const headerParts = [
+    "Most recent Slack message (in retrieved set)",
+    userName ? `author=${userName}` : "",
+    channelName ? `channel=#${channelName}` : "",
+    `at=${iso}`,
+    url ? `url=${url}` : "",
+  ].filter((p) => p.length > 0);
+  return `${headerParts.join(" · ")}\n${content}`;
+}
 
 const getTokenlensCatalog = cache(
   async (): Promise<ModelCatalog | undefined> => {
@@ -115,6 +383,8 @@ export async function POST(request: Request) {
       projectId: providedProjectId,
       sourceTypes,
       ignoredDocIds,
+      retrievalRangePreset,
+      retrievalTimeZone,
     }: {
       id: string;
       message: ChatMessage;
@@ -123,6 +393,8 @@ export async function POST(request: Request) {
       projectId?: string;
       sourceTypes?: Array<"slack" | "docs">;
       ignoredDocIds?: string[];
+      retrievalRangePreset?: RetrievalRangePreset;
+      retrievalTimeZone?: string;
     } = requestBody;
 
     const session = await auth();
@@ -233,6 +505,32 @@ export async function POST(request: Request) {
     let sources: any[] = [];
     if (userText) {
       try {
+        const nowMs = Date.now();
+        const effectiveTimeZone =
+          typeof retrievalTimeZone === "string" && retrievalTimeZone.length > 0
+            ? retrievalTimeZone
+            : "UTC";
+
+        const requestedPreset = retrievalRangePreset;
+
+        const relativeDay =
+          /day before yesterday/i.test(userText) ||
+          /\byesterday\b/i.test(userText) ||
+          /\btoday\b/i.test(userText)
+            ? await inferRelativeDay({ userText })
+            : null;
+
+        // Preset inference is useful for broad ranges like "last week", but it should NOT override
+        // explicit single-day windows (today/yesterday/day before yesterday).
+        const effectivePreset: RetrievalRangePreset =
+          relativeDay
+            ? "all"
+            : requestedPreset && requestedPreset !== "all"
+              ? requestedPreset
+              : TIME_RANGE_HINT_RE.test(userText)
+                ? await inferRetrievalRangePreset({ userText })
+                : requestedPreset ?? "all";
+
         const requestedSourceTypes = (
           Array.isArray(sourceTypes) ? sourceTypes : undefined
         ) as SourceType[] | undefined;
@@ -248,16 +546,67 @@ export async function POST(request: Request) {
           namespaces,
           requestedSourceTypes,
           ignoredDocIds,
+          retrievalRangePreset: effectivePreset,
+          retrievalRangePresetRequested: requestedPreset,
+          retrievalTimeZone: effectiveTimeZone,
+          retrievalRelativeDay: relativeDay,
         });
 
         const perNamespaceTopK = 24;
+        const presetStartMs = startMsForPreset(effectivePreset, nowMs);
+        const window =
+          relativeDay && effectivePreset === "all"
+            ? windowForRelativeDay({
+                nowMs,
+                timeZone: effectiveTimeZone,
+                which: relativeDay,
+              })
+            : null;
+        const rangeStartMs = window ? window.startMs : presetStartMs;
+        const rangeEndMs = window ? window.endMs : nowMs;
+
+        if (window) {
+          const startLocal = new Intl.DateTimeFormat("en-US", {
+            timeZone: effectiveTimeZone,
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+          }).format(new Date(window.startMs));
+          const endLocal = new Intl.DateTimeFormat("en-US", {
+            timeZone: effectiveTimeZone,
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+          }).format(new Date(window.endMs));
+          console.log("Chat Retrieval Relative Day Window:", {
+            retrievalRelativeDay: relativeDay,
+            retrievalTimeZone: effectiveTimeZone,
+            startLocal,
+            endLocal,
+            startMs: window.startMs,
+            endMs: window.endMs,
+          });
+        }
 
         const rowsByNamespace = await Promise.all(
           namespaces.map(async (ns) => {
+            const filterParts: unknown[] = [];
+
+            if (ignoredDocIds && ignoredDocIds.length > 0) {
+              filterParts.push(["Not", ["doc_id", "In", ignoredDocIds]]);
+            }
+
+            if (rangeStartMs !== null) {
+              filterParts.push(["sourceCreatedAtMs", "Gte", rangeStartMs]);
+              filterParts.push(["sourceCreatedAtMs", "Lt", rangeEndMs]);
+            }
+
             const filters =
-              ignoredDocIds && ignoredDocIds.length > 0
-                ? ["Not", ["doc_id", "In", ignoredDocIds]]
-                : undefined;
+              filterParts.length === 0
+                ? undefined
+                : filterParts.length === 1
+                  ? filterParts[0]
+                  : ["And", filterParts];
 
             const nsRows = await queryTurbopuffer({
               query: userText,
@@ -286,8 +635,63 @@ export async function POST(request: Request) {
           return da - db;
         });
 
-        const filteredRows = fusedRows.slice(0, 24);
-        const usedRows = filteredRows.slice(0, 8);
+        const timeFilteredRows =
+          rangeStartMs === null
+            ? fusedRows
+            : fusedRows.filter((row) => {
+                const tsMs = timestampMsFromRow(row);
+                return tsMs !== null && tsMs >= rangeStartMs && tsMs < rangeEndMs;
+              });
+
+        console.log("Chat Retrieval Time Filter:", {
+          retrievalRangePreset: effectivePreset,
+          retrievalRangePresetRequested: requestedPreset,
+          rangeStartMs,
+          rangeEndMs,
+          nowMs,
+          fusedRowsCount: fusedRows.length,
+          timeFilteredRowsCount: timeFilteredRows.length,
+        });
+
+        const filteredRows = timeFilteredRows.slice(0, 24);
+        let usedRows = filteredRows.slice(0, 8);
+
+        const lastMentionName = extractLastMentionName(userText);
+        if (lastMentionName) {
+          const needle = lastMentionName.toLowerCase();
+          let bestRow: Record<string, unknown> | null = null;
+          let bestTsMs = -1;
+
+          for (const row of timeFilteredRows) {
+            const r = row as Record<string, unknown>;
+            const sourceType = typeof r.sourceType === "string" ? r.sourceType : "";
+            if (sourceType !== "slack") continue;
+
+            const userName = typeof r.user_name === "string" ? r.user_name : "";
+            const userEmail = typeof r.user_email === "string" ? r.user_email : "";
+            const matchesName =
+              (userName && userName.toLowerCase().includes(needle)) ||
+              (userEmail && userEmail.toLowerCase().includes(needle));
+            if (!matchesName) continue;
+
+            const tsMs = timestampMsFromRow(r);
+            if (tsMs === null) continue;
+            if (tsMs > bestTsMs) {
+              bestTsMs = tsMs;
+              bestRow = r;
+            }
+          }
+
+          if (bestRow && bestTsMs > 0) {
+            usedRows = [bestRow as any];
+            retrievedContext = formatNewestSlackMatch({
+              name: lastMentionName,
+              row: bestRow,
+              tsMs: bestTsMs,
+            });
+          }
+        }
+
         sources = usedRows;
         // Debug logging: summarize retrieval results without dumping large payloads
         try {
@@ -326,7 +730,9 @@ export async function POST(request: Request) {
         } catch (_e) {
           // Ignore logging failures
         }
-        retrievedContext = formatRetrievedContext(usedRows);
+        if (!retrievedContext) {
+          retrievedContext = formatRetrievedContext(usedRows);
+        }
         const MAX_RETRIEVED_CONTEXT_CHARS = 12_000;
         if (retrievedContext.length > MAX_RETRIEVED_CONTEXT_CHARS) {
           retrievedContext =
@@ -367,6 +773,12 @@ export async function POST(request: Request) {
             const docId = typeof s.doc_id === "string" ? s.doc_id : "";
             const blobUrl = typeof s.blob_url === "string" ? s.blob_url : "";
             const filename = typeof s.filename === "string" ? s.filename : "";
+            const category =
+              typeof (s as any).doc_category === "string" ? (s as any).doc_category : "";
+            const description =
+              typeof (s as any).doc_description === "string"
+                ? (s as any).doc_description
+                : "";
             const projectId =
               typeof (s as any).project_id === "string" ? (s as any).project_id : "";
             const key =
@@ -384,6 +796,8 @@ export async function POST(request: Request) {
               sourceType,
               docId: docId || undefined,
               filename: filename || undefined,
+              category: category || undefined,
+              description: description || undefined,
               blobUrl: blobUrl || undefined,
               content:
                 typeof s.content === "string" ? s.content.slice(0, 200) : undefined,
