@@ -68,7 +68,7 @@ type RetrievalRangePreset = "all" | "1d" | "7d" | "30d" | "90d";
 type RelativeDay = "today" | "yesterday" | "dayBeforeYesterday";
 
 const TIME_RANGE_HINT_RE =
-  /\b(last|past|yesterday|today|since|between|from|in the last|\d+\s*(day|week|month|year)s?)\b/i;
+  /\b(last|past|yesterday|today|since|between|from|in the last|\d+\s*(day|week|month|year)s?|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{1,2}\/\d{1,2}|\d{4}-\d{2}-\d{2})\b/i;
 
 function startMsForPreset(preset: RetrievalRangePreset | undefined, nowMs: number) {
   if (!preset || preset === "all") {
@@ -82,41 +82,72 @@ function startMsForPreset(preset: RetrievalRangePreset | undefined, nowMs: numbe
   return null;
 }
 
-async function inferRetrievalRangePreset({
-  userText,
-}: {
-  userText: string;
-}): Promise<RetrievalRangePreset> {
-  let selected: RetrievalRangePreset = "all";
+type WeekdayToken = "sun" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat";
 
-  await generateText({
-    model: myProvider.languageModel("chat-model"),
-    system:
-      "Choose the best retrieval time range preset for the user's request. " +
-      "If the user does not specify a time range, choose 'all'. " +
-      "If the user asks for 'last day', 'yesterday', or 'last 24 hours', choose '1d'. " +
-      "If the user asks for a range that doesn't map exactly, choose the closest *broader* preset (e.g. 3 days -> 7d). " +
-      "You MUST call the provided tool and nothing else.",
-    messages: [{ role: "user", content: userText }],
-    tools: {
-      selectTimeRange: tool({
-        description: "Select the retrieval time range preset.",
-        inputSchema: z.object({
-          preset: z.enum(["all", "1d", "7d", "30d", "90d"]),
-        }),
-        execute: async ({ preset }) => {
-          selected = preset;
-          return { preset };
-        },
-      }),
-    },
-    toolChoice: { type: "tool", toolName: "selectTimeRange" },
-    temperature: 0,
-    maxOutputTokens: 50,
-    stopWhen: stepCountIs(1),
-  });
+type WeekdayIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6; // 0=Sun ... 6=Sat
 
-  return selected;
+type TimeWindowKind =
+  | "none"
+  | "preset"
+  | "relativeDay"
+  | "absoluteDate"
+  | "lastWeekday"
+  | "lastWeekSegment";
+
+type TimeWindowIntent =
+  | { kind: "none"; matchedText?: string }
+  | { kind: "preset"; preset: RetrievalRangePreset; matchedText?: string }
+  | { kind: "relativeDay"; relativeDay: RelativeDay; matchedText?: string }
+  | {
+      kind: "absoluteDate";
+      month: number;
+      day: number;
+      year?: number;
+      matchedText?: string;
+    }
+  | { kind: "lastWeekday"; weekday: WeekdayToken; matchedText?: string }
+  | {
+      kind: "lastWeekSegment";
+      segment: "wed-sun" | "thu-sat";
+      matchedText?: string;
+    };
+
+function escapeRegExp(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripMatchedText(fullText: string, matchedText: string | undefined) {
+  const needle = typeof matchedText === "string" ? matchedText.trim() : "";
+  if (!needle) return fullText;
+  const re = new RegExp(escapeRegExp(needle), "gi");
+  return fullText.replace(re, " ").replace(/\s+/g, " ").trim();
+}
+
+type RetrievalTimeFilterMode = "sourceCreatedAtMs" | "rowTimestamp";
+
+function parseCsvEnv(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+function getRetrievalTimeFilterModeInfoForProject(projectId: string | undefined): {
+  mode: RetrievalTimeFilterMode;
+  defaultMode: RetrievalTimeFilterMode;
+  projectAllowlisted: boolean;
+} {
+  // NOTE: We ultimately want all sources to populate `sourceCreatedAtMs` so Turbopuffer can
+  // do server-side filtering. Until then, allow per-project fallback to row timestamps (`ts`).
+  const defaultMode: RetrievalTimeFilterMode =
+    process.env.RETRIEVAL_TIME_FILTER_MODE === "rowTimestamp"
+      ? "rowTimestamp"
+      : "sourceCreatedAtMs";
+  const allowlist = parseCsvEnv(process.env.RETRIEVAL_ROW_TIMESTAMP_PROJECT_IDS);
+  const projectAllowlisted = Boolean(projectId && allowlist.includes(projectId));
+  const mode: RetrievalTimeFilterMode = projectAllowlisted ? "rowTimestamp" : defaultMode;
+  return { mode, defaultMode, projectAllowlisted };
 }
 
 function getZonedParts(utcMs: number, timeZone: string) {
@@ -234,37 +265,291 @@ function windowForRelativeDay({
   return { startMs, endMs };
 }
 
-async function inferRelativeDay({
+function getZonedWeekdayIndex(utcMs: number, timeZone: string): WeekdayIndex | null {
+  const dtf = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" });
+  const weekday =
+    dtf.formatToParts(new Date(utcMs)).find((p) => p.type === "weekday")?.value ??
+    "";
+  const key = weekday.toLowerCase().slice(0, 3);
+  if (key === "sun") return 0;
+  if (key === "mon") return 1;
+  if (key === "tue") return 2;
+  if (key === "wed") return 3;
+  if (key === "thu") return 4;
+  if (key === "fri") return 5;
+  if (key === "sat") return 6;
+  return null;
+}
+
+function weekdayTokenToIndex(token: WeekdayToken): WeekdayIndex {
+  if (token === "sun") return 0;
+  if (token === "mon") return 1;
+  if (token === "tue") return 2;
+  if (token === "wed") return 3;
+  if (token === "thu") return 4;
+  if (token === "fri") return 5;
+  return 6;
+}
+
+function windowForLastWeekday({
+  nowMs,
+  timeZone,
+  targetDow,
+}: {
+  nowMs: number;
+  timeZone: string;
+  targetDow: WeekdayIndex;
+}): { startMs: number; endMs: number } | null {
+  const nowLocal = getZonedParts(nowMs, timeZone);
+  const nowDow = getZonedWeekdayIndex(nowMs, timeZone);
+  if (nowDow === null) return null;
+
+  // "last Friday" means the previous Friday, not "today" if today is Friday.
+  let deltaDays = (nowDow - targetDow + 7) % 7;
+  if (deltaDays === 0) deltaDays = 7;
+
+  const target = addDaysToYmd(
+    { year: nowLocal.year, month: nowLocal.month, day: nowLocal.day },
+    -deltaDays
+  );
+  const next = addDaysToYmd(target, 1);
+  return {
+    startMs: startOfLocalDayUtcMs({ ...target, timeZone }),
+    endMs: startOfLocalDayUtcMs({ ...next, timeZone }),
+  };
+}
+
+function windowForLastWeekSegment({
+  nowMs,
+  timeZone,
+  startDow,
+  endDow,
+}: {
+  nowMs: number;
+  timeZone: string;
+  startDow: WeekdayIndex;
+  endDow: WeekdayIndex;
+}): { startMs: number; endMs: number } | null {
+  const nowLocal = getZonedParts(nowMs, timeZone);
+  const nowDow = getZonedWeekdayIndex(nowMs, timeZone);
+  if (nowDow === null) return null;
+
+  // Find the previous occurrence of the segment's "endDow"
+  let deltaToEnd = (nowDow - endDow + 7) % 7;
+  if (deltaToEnd === 0) deltaToEnd = 7;
+
+  const endDay = addDaysToYmd(
+    { year: nowLocal.year, month: nowLocal.month, day: nowLocal.day },
+    -deltaToEnd
+  );
+
+  const spanDays = ((endDow - startDow + 7) % 7) + 1; // inclusive span
+  const startDay = addDaysToYmd(endDay, -(spanDays - 1));
+  const endExclusive = addDaysToYmd(endDay, 1);
+
+  return {
+    startMs: startOfLocalDayUtcMs({ ...startDay, timeZone }),
+    endMs: startOfLocalDayUtcMs({ ...endExclusive, timeZone }),
+  };
+}
+
+function isValidYmd({
+  year,
+  month,
+  day,
+}: {
+  year: number;
+  month: number;
+  day: number;
+}): boolean {
+  const d = new Date(Date.UTC(year, month - 1, day));
+  return (
+    d.getUTCFullYear() === year &&
+    d.getUTCMonth() + 1 === month &&
+    d.getUTCDate() === day
+  );
+}
+
+function inferYearForMonthDay({
+  nowMs,
+  timeZone,
+  month,
+  day,
+}: {
+  nowMs: number;
+  timeZone: string;
+  month: number;
+  day: number;
+}): number | null {
+  const nowLocal = getZonedParts(nowMs, timeZone);
+  const candidate = nowLocal.year;
+  if (!isValidYmd({ year: candidate, month, day })) {
+    return null;
+  }
+  const candidateStart = startOfLocalDayUtcMs({
+    year: candidate,
+    month,
+    day,
+    timeZone,
+  });
+  // If the requested date hasn't happened yet this year (in local time), pick last year.
+  if (candidateStart > nowMs) {
+    const prev = candidate - 1;
+    return isValidYmd({ year: prev, month, day }) ? prev : null;
+  }
+  return candidate;
+}
+
+function computeWindowFromIntent({
+  intent,
+  nowMs,
+  timeZone,
+}: {
+  intent: TimeWindowIntent;
+  nowMs: number;
+  timeZone: string;
+}): { startMs: number; endMs: number } | null {
+  if (intent.kind === "relativeDay") {
+    return windowForRelativeDay({ nowMs, timeZone, which: intent.relativeDay });
+  }
+  if (intent.kind === "lastWeekday") {
+    return windowForLastWeekday({
+      nowMs,
+      timeZone,
+      targetDow: weekdayTokenToIndex(intent.weekday),
+    });
+  }
+  if (intent.kind === "lastWeekSegment") {
+    if (intent.segment === "wed-sun") {
+      return windowForLastWeekSegment({ nowMs, timeZone, startDow: 3, endDow: 0 });
+    }
+    return windowForLastWeekSegment({ nowMs, timeZone, startDow: 4, endDow: 6 });
+  }
+  if (intent.kind === "absoluteDate") {
+    const year =
+      typeof intent.year === "number" && Number.isFinite(intent.year)
+        ? Math.floor(intent.year)
+        : inferYearForMonthDay({
+            nowMs,
+            timeZone,
+            month: intent.month,
+            day: intent.day,
+          });
+    if (year === null) return null;
+    if (!isValidYmd({ year, month: intent.month, day: intent.day })) return null;
+    const startMs = startOfLocalDayUtcMs({
+      year,
+      month: intent.month,
+      day: intent.day,
+      timeZone,
+    });
+    const next = addDaysToYmd({ year, month: intent.month, day: intent.day }, 1);
+    const endMs = startOfLocalDayUtcMs({ ...next, timeZone });
+    return { startMs, endMs };
+  }
+  return null;
+}
+
+function validateTimeWindowIntent(intent: TimeWindowIntent): boolean {
+  if (intent.kind === "none") return true;
+  if (intent.kind === "preset") return true;
+  if (intent.kind === "relativeDay") return true;
+  if (intent.kind === "absoluteDate") return true;
+  if (intent.kind === "lastWeekday") return true;
+  if (intent.kind === "lastWeekSegment") return true;
+  return false;
+}
+
+async function inferTimeWindowIntent({
   userText,
+  requestedPreset,
 }: {
   userText: string;
-}): Promise<RelativeDay | null> {
-  let selected: RelativeDay | null = null;
+  requestedPreset: RetrievalRangePreset | undefined;
+}): Promise<TimeWindowIntent> {
+  let selected: TimeWindowIntent = { kind: "none" };
+
+  const schema = z.object({
+    kind: z.enum([
+      "none",
+      "preset",
+      "relativeDay",
+      "absoluteDate",
+      "lastWeekday",
+      "lastWeekSegment",
+    ]),
+    preset: z.enum(["all", "1d", "7d", "30d", "90d"]).optional(),
+    relativeDay: z.enum(["today", "yesterday", "dayBeforeYesterday"]).optional(),
+    month: z.number().int().min(1).max(12).optional(),
+    day: z.number().int().min(1).max(31).optional(),
+    year: z.number().int().min(1970).max(2100).optional(),
+    weekday: z.enum(["sun", "mon", "tue", "wed", "thu", "fri", "sat"]).optional(),
+    segment: z.enum(["wed-sun", "thu-sat"]).optional(),
+    matchedText: z.string().max(120).optional(),
+  });
+
   await generateText({
     model: myProvider.languageModel("chat-model"),
     system:
-      "Determine whether the user is asking for a specific relative day. " +
-      "If they mean a specific day window, choose one of: today, yesterday, dayBeforeYesterday. " +
-      "If they are NOT asking for a specific single-day window, choose 'none'. " +
+      "Extract a time window intent for retrieval.\n" +
+      "- If no time constraint is implied, choose kind='none'.\n" +
+      "- If the user asks for a specific day window, choose kind='relativeDay' or kind='lastWeekday'.\n" +
+      "- If the user asks for an absolute date like 'Dec 2nd', '12/2', or '2025-12-02', choose kind='absoluteDate' with month/day and optional year.\n" +
+      "- If the user asks for 'end of last week' and implies a segment (e.g. Wed-Sun or Thu-Sat), choose kind='lastWeekSegment'.\n" +
+      "- If the user asks for a broad range like 'last week' or 'past 30 days', choose kind='preset' with the closest broader preset.\n" +
+      "- Provide matchedText as the smallest phrase to remove from the embedding query (optional).\n" +
+      `- The UI requestedPreset is: ${requestedPreset ?? "none"}.\n` +
       "You MUST call the provided tool and nothing else.",
     messages: [{ role: "user", content: userText }],
     tools: {
-      selectRelativeDay: tool({
-        description: "Select a relative day window (or none).",
-        inputSchema: z.object({
-          which: z.enum(["none", "today", "yesterday", "dayBeforeYesterday"]),
-        }),
-        execute: async ({ which }) => {
-          selected = which === "none" ? null : which;
-          return { which };
+      selectTimeWindow: tool({
+        description: "Select a structured time window intent for retrieval.",
+        inputSchema: schema,
+        execute: async (input) => {
+          const parsed = schema.safeParse(input);
+          if (!parsed.success) {
+            selected = { kind: "none" };
+            return { kind: "none" as const };
+          }
+
+          const v = parsed.data;
+          if (v.kind === "preset") {
+            selected = { kind: "preset", preset: v.preset ?? "all", matchedText: v.matchedText };
+          } else if (v.kind === "relativeDay" && v.relativeDay) {
+            selected = {
+              kind: "relativeDay",
+              relativeDay: v.relativeDay,
+              matchedText: v.matchedText,
+            };
+          } else if (v.kind === "absoluteDate" && v.month && v.day) {
+            selected = {
+              kind: "absoluteDate",
+              month: v.month,
+              day: v.day,
+              year: v.year,
+              matchedText: v.matchedText,
+            };
+          } else if (v.kind === "lastWeekday" && v.weekday) {
+            selected = { kind: "lastWeekday", weekday: v.weekday, matchedText: v.matchedText };
+          } else if (v.kind === "lastWeekSegment" && v.segment) {
+            selected = { kind: "lastWeekSegment", segment: v.segment, matchedText: v.matchedText };
+          } else {
+            selected = { kind: "none", matchedText: v.matchedText };
+          }
+
+          if (!validateTimeWindowIntent(selected)) {
+            selected = { kind: "none" };
+          }
+          return selected;
         },
       }),
     },
-    toolChoice: { type: "tool", toolName: "selectRelativeDay" },
+    toolChoice: { type: "tool", toolName: "selectTimeWindow" },
     temperature: 0,
-    maxOutputTokens: 50,
+    maxOutputTokens: 120,
     stopWhen: stepCountIs(1),
   });
+
   return selected;
 }
 
@@ -512,24 +797,28 @@ export async function POST(request: Request) {
             : "UTC";
 
         const requestedPreset = retrievalRangePreset;
+        const timeFilterModeInfo = getRetrievalTimeFilterModeInfoForProject(activeProjectId);
+        const timeFilterMode = timeFilterModeInfo.mode;
 
-        const relativeDay =
-          /day before yesterday/i.test(userText) ||
-          /\byesterday\b/i.test(userText) ||
-          /\btoday\b/i.test(userText)
-            ? await inferRelativeDay({ userText })
-            : null;
+        const hasTimeHint = TIME_RANGE_HINT_RE.test(userText);
+        const intent = hasTimeHint
+          ? await inferTimeWindowIntent({ userText, requestedPreset: requestedPreset ?? "all" })
+          : ({ kind: "none" } satisfies TimeWindowIntent);
 
-        // Preset inference is useful for broad ranges like "last week", but it should NOT override
-        // explicit single-day windows (today/yesterday/day before yesterday).
+        // Compute a calendar window first (relative day, last weekday, or segment). If none, fall back to preset.
+        const window = computeWindowFromIntent({
+          intent,
+          nowMs,
+          timeZone: effectiveTimeZone,
+        });
         const effectivePreset: RetrievalRangePreset =
-          relativeDay
+          window
             ? "all"
-            : requestedPreset && requestedPreset !== "all"
-              ? requestedPreset
-              : TIME_RANGE_HINT_RE.test(userText)
-                ? await inferRetrievalRangePreset({ userText })
-                : requestedPreset ?? "all";
+            : intent.kind === "preset"
+              ? intent.preset
+              : requestedPreset && requestedPreset !== "all"
+                ? requestedPreset
+                : "all";
 
         const requestedSourceTypes = (
           Array.isArray(sourceTypes) ? sourceTypes : undefined
@@ -546,24 +835,24 @@ export async function POST(request: Request) {
           namespaces,
           requestedSourceTypes,
           ignoredDocIds,
+          retrievalTimeIntent: intent,
+          retrievalTimeFilterMode: timeFilterMode,
+          retrievalTimeFilterModeDefault: timeFilterModeInfo.defaultMode,
+          retrievalTimeFilterModeProjectAllowlisted: timeFilterModeInfo.projectAllowlisted,
           retrievalRangePreset: effectivePreset,
           retrievalRangePresetRequested: requestedPreset,
           retrievalTimeZone: effectiveTimeZone,
-          retrievalRelativeDay: relativeDay,
+          retrievalRelativeDay: intent.kind === "relativeDay" ? intent.relativeDay : null,
         });
 
-        const perNamespaceTopK = 24;
         const presetStartMs = startMsForPreset(effectivePreset, nowMs);
-        const window =
-          relativeDay && effectivePreset === "all"
-            ? windowForRelativeDay({
-                nowMs,
-                timeZone: effectiveTimeZone,
-                which: relativeDay,
-              })
-            : null;
         const rangeStartMs = window ? window.startMs : presetStartMs;
         const rangeEndMs = window ? window.endMs : nowMs;
+        const rowTimestampTopK = 160;
+        const perNamespaceTopK =
+          timeFilterMode === "rowTimestamp" && rangeStartMs !== null
+            ? rowTimestampTopK
+            : 24;
 
         if (window) {
           const startLocal = new Intl.DateTimeFormat("en-US", {
@@ -579,7 +868,8 @@ export async function POST(request: Request) {
             day: "2-digit",
           }).format(new Date(window.endMs));
           console.log("Chat Retrieval Relative Day Window:", {
-            retrievalRelativeDay: relativeDay,
+            retrievalRelativeDay:
+              intent.kind === "relativeDay" ? intent.relativeDay : null,
             retrievalTimeZone: effectiveTimeZone,
             startLocal,
             endLocal,
@@ -588,44 +878,99 @@ export async function POST(request: Request) {
           });
         }
 
-        const rowsByNamespace = await Promise.all(
-          namespaces.map(async (ns) => {
-            const filterParts: unknown[] = [];
+        const retrievalQuery = (() => {
+          const cleaned = stripMatchedText(userText, intent.matchedText);
+          return cleaned.length > 0 ? cleaned : userText;
+        })();
+        console.log("Chat Retrieval Query:", {
+          userTextLength: userText.length,
+          retrievalQueryLength: retrievalQuery.length,
+          retrievalQueryPreview:
+            retrievalQuery.length > 200 ? `${retrievalQuery.slice(0, 200)}…` : retrievalQuery,
+        });
 
-            if (ignoredDocIds && ignoredDocIds.length > 0) {
-              filterParts.push(["Not", ["doc_id", "In", ignoredDocIds]]);
-            }
+        const queryNamespace = async ({
+          ns,
+          topK,
+          includeSourceCreatedAtMsFilter,
+        }: {
+          ns: string;
+          topK: number;
+          includeSourceCreatedAtMsFilter: boolean;
+        }) => {
+          const filterParts: unknown[] = [];
 
-            if (rangeStartMs !== null) {
-              filterParts.push(["sourceCreatedAtMs", "Gte", rangeStartMs]);
-              filterParts.push(["sourceCreatedAtMs", "Lt", rangeEndMs]);
-            }
+          if (ignoredDocIds && ignoredDocIds.length > 0) {
+            filterParts.push(["Not", ["doc_id", "In", ignoredDocIds]]);
+          }
 
-            const filters =
-              filterParts.length === 0
-                ? undefined
-                : filterParts.length === 1
-                  ? filterParts[0]
-                  : ["And", filterParts];
+          if (includeSourceCreatedAtMsFilter && rangeStartMs !== null) {
+            filterParts.push(["sourceCreatedAtMs", "Gte", rangeStartMs]);
+            filterParts.push(["sourceCreatedAtMs", "Lt", rangeEndMs]);
+          }
 
-            const nsRows = await queryTurbopuffer({
-              query: userText,
+          const filters =
+            filterParts.length === 0
+              ? undefined
+              : filterParts.length === 1
+                ? filterParts[0]
+                : ["And", filterParts];
+
+          const nsRows = await queryTurbopuffer({
+            query: retrievalQuery,
+            topK,
+            namespace: ns,
+            filters,
+          });
+
+          const inferredSourceType = inferSourceTypeFromNamespace(ns);
+          return nsRows.map((r) => ({
+            ...r,
+            sourceType:
+              typeof (r as any).sourceType === "string"
+                ? (r as any).sourceType
+                : (inferredSourceType ?? ""),
+          }));
+        };
+
+        const shouldUseSourceCreatedAtMsFilter =
+          timeFilterMode === "sourceCreatedAtMs" && rangeStartMs !== null;
+
+        let appliedTimeFilterMode: RetrievalTimeFilterMode = timeFilterMode;
+
+        let rowsByNamespace = await Promise.all(
+          namespaces.map(async (ns) =>
+            queryNamespace({
+              ns,
               topK: perNamespaceTopK,
-              namespace: ns,
-              filters,
-            });
-
-            const inferredSourceType = inferSourceTypeFromNamespace(ns);
-
-            return nsRows.map((r) => ({
-              ...r,
-              sourceType:
-                typeof (r as any).sourceType === "string"
-                  ? (r as any).sourceType
-                  : (inferredSourceType ?? ""),
-            }));
-          })
+              includeSourceCreatedAtMsFilter: shouldUseSourceCreatedAtMsFilter,
+            })
+          )
         );
+
+        // Auto-fallback: if server-side `sourceCreatedAtMs` filtering yields no candidates,
+        // retry without that filter and rely on per-row timestamps (`ts`/`sourceCreatedAtMs`)
+        // in the post-filter step. This avoids requiring per-project allowlisting.
+        const initialRowsCount = rowsByNamespace.reduce((sum, nsRows) => sum + nsRows.length, 0);
+        if (initialRowsCount === 0 && shouldUseSourceCreatedAtMsFilter) {
+          appliedTimeFilterMode = "rowTimestamp";
+          console.log("Chat Retrieval Time Filter Fallback:", {
+            reason: "no_rows_with_sourceCreatedAtMs_filter",
+            rangeStartMs,
+            rangeEndMs,
+            namespaces,
+            topK: rowTimestampTopK,
+          });
+          rowsByNamespace = await Promise.all(
+            namespaces.map(async (ns) =>
+              queryNamespace({
+                ns,
+                topK: rowTimestampTopK,
+                includeSourceCreatedAtMsFilter: false,
+              })
+            )
+          );
+        }
 
         const fusedRows = rowsByNamespace.flat().sort((a, b) => {
           const da =
@@ -646,6 +991,7 @@ export async function POST(request: Request) {
         console.log("Chat Retrieval Time Filter:", {
           retrievalRangePreset: effectivePreset,
           retrievalRangePresetRequested: requestedPreset,
+          retrievalTimeFilterModeApplied: appliedTimeFilterMode,
           rangeStartMs,
           rangeEndMs,
           nowMs,
@@ -700,7 +1046,49 @@ export async function POST(request: Request) {
               return null;
             }
             const oneLine = value.replace(/\s+/g, " ").trim();
-            return oneLine.length > 50 ? `${oneLine.slice(0, 50)}…` : oneLine;
+            return oneLine.length > 150 ? `${oneLine.slice(0, 150)}…` : oneLine;
+          };
+          const summarizeValue = (value: unknown) => {
+            if (value === null) return null;
+            if (typeof value === "string") {
+              const oneLine = value.replace(/\s+/g, " ").trim();
+              return oneLine.length > 200 ? `${oneLine.slice(0, 200)}…` : oneLine;
+            }
+            if (typeof value === "number") return Number.isFinite(value) ? value : null;
+            if (typeof value === "boolean") return value;
+            if (Array.isArray(value)) {
+              return { type: "array", length: value.length };
+            }
+            if (typeof value === "object") {
+              return { type: "object" };
+            }
+            return { type: typeof value };
+          };
+          const summarizeRow = (row: unknown) => {
+            if (!row || typeof row !== "object") {
+              return { type: typeof row };
+            }
+            const r = row as Record<string, unknown>;
+            const keys = Object.keys(r).sort();
+            const attributes: Record<string, unknown> = {};
+
+            let included = 0;
+            for (const key of keys) {
+              if (key === "content") continue;
+              if (key === "vector") continue;
+              if (key === "$dist") continue;
+              attributes[key] = summarizeValue(r[key]);
+              included += 1;
+              if (included >= 40) break;
+            }
+
+            const content = typeof r.content === "string" ? r.content : "";
+            return {
+              keys,
+              attributes,
+              contentLength: content.length,
+              contentPreview: truncatePreview(content),
+            };
           };
           const byNamespaceCounts = rowsByNamespace.map((nsRows, i) => ({
             namespace: namespaces[i],
@@ -724,7 +1112,31 @@ export async function POST(request: Request) {
                   : typeof (r as any).source === "string"
                     ? (r as any).source
                     : null,
-              preview: truncatePreview(r.content),
+              preview: truncatePreview((r as any).content),
+              docId: typeof (r as any).doc_id === "string" ? (r as any).doc_id : null,
+              url: typeof (r as any).url === "string" ? (r as any).url : null,
+              filename:
+                typeof (r as any).filename === "string" ? (r as any).filename : null,
+              blobUrl:
+                typeof (r as any).blob_url === "string" ? (r as any).blob_url : null,
+              projectId:
+                typeof (r as any).project_id === "string" ? (r as any).project_id : null,
+              sourceCreatedAtMs:
+                typeof (r as any).sourceCreatedAtMs === "number"
+                  ? (r as any).sourceCreatedAtMs
+                  : typeof (r as any).sourceCreatedAtMs === "string"
+                    ? (r as any).sourceCreatedAtMs
+                    : null,
+              ts: typeof (r as any).ts === "string" ? (r as any).ts : null,
+              channelName:
+                typeof (r as any).channel_name === "string"
+                  ? (r as any).channel_name
+                  : null,
+              userName:
+                typeof (r as any).user_name === "string" ? (r as any).user_name : null,
+              userEmail:
+                typeof (r as any).user_email === "string" ? (r as any).user_email : null,
+              row: summarizeRow(r),
             })),
           });
         } catch (_e) {
