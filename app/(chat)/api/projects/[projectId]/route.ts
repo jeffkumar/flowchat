@@ -8,7 +8,10 @@ import {
 } from "@/lib/db/queries";
 import { del } from "@vercel/blob";
 import { deleteByFilterFromTurbopuffer } from "@/lib/rag/turbopuffer";
-import { namespacesForSourceTypes } from "@/lib/rag/source-routing";
+import {
+  inferSourceTypeFromNamespace,
+  namespacesForSourceTypes,
+} from "@/lib/rag/source-routing";
 
 export async function DELETE(
   _request: Request,
@@ -55,9 +58,13 @@ export async function DELETE(
       namespaces.map(async (namespace) => {
         if (!namespace) return;
         try {
+          const inferredSourceType = inferSourceTypeFromNamespace(namespace);
+          if (!inferredSourceType) return;
           await deleteByFilterFromTurbopuffer({
             namespace,
-            filters: ["doc_id", "Ne", null],
+            // Avoid `null` comparisons (Turbopuffer FiltersInput rejects them).
+            // In per-project namespaces, this matches all rows for that source type.
+            filters: ["sourceType", "Eq", inferredSourceType],
           });
         } catch (error) {
           console.warn(

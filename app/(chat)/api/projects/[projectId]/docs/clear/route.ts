@@ -46,7 +46,9 @@ export async function POST(
   if (docsNamespace) {
     const { rowsDeleted } = await deleteByFilterFromTurbopuffer({
       namespace: docsNamespace,
-      filters: ["doc_id", "Ne", null],
+      // Avoid `null` comparisons (Turbopuffer FiltersInput rejects them) and
+      // ensure we only clear rows for this project (default namespaces are shared).
+      filters: ["And", [["sourceType", "Eq", "docs"], ["project_id", "Eq", project.id]]],
     });
     turbopufferRowsDeleted = rowsDeleted;
   }

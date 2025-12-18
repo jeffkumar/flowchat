@@ -52,7 +52,9 @@ async function writeToTurbopuffer({
     if (message.includes("was not found")) {
       return { rows_deleted: 0, rows_remaining: false };
     }
-    throw new Error(`Turbopuffer write failed: ${message}`);
+    // throw new Error(`Turbopuffer write failed: ${message}`);
+    console.error(`Turbopuffer write failed: ${message}`);
+    return { rows_deleted: 0, rows_remaining: false };
   }
 
   const json = (await response.json().catch(() => ({}))) as TurbopufferWriteResponse;
