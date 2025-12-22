@@ -9,10 +9,9 @@ const app = new App({
 
 // --- Turbopuffer + OpenAI helpers -------------------------------------------------
 
-const openaiApiKey = process.env.OPENAI_API_KEY;
 const turbopufferApiKey = process.env.TURBOPUFFER_API_KEY;
 const turbopufferNamespace =
-  process.env.TURBOPUFFER_NAMESPACE || "_synergy_slack";
+  process.env.TURBOPUFFER_NAMESPACE || "_synergy_slackv2";
 
 function toSlackMarkdown(text) {
   if (typeof text !== "string") {
@@ -24,8 +23,41 @@ function toSlackMarkdown(text) {
 }
 
 async function createEmbedding(input) {
+  const basetenApiKey = process.env.BASETEN_API_KEY;
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+
+  if (basetenApiKey) {
+    const response = await fetch(
+      "https://model-7wl7dm7q.api.baseten.co/environments/production/predict",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Api-Key ${basetenApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "mixedbread-ai/mxbai-embed-large-v1",
+          input,
+          encoding_format: "float",
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(`Baseten embedding request failed: ${message}`);
+    }
+
+    const json = await response.json();
+    const first = json.data && json.data[0];
+    if (!first || !Array.isArray(first.embedding)) {
+      throw new Error("Invalid embeddings response from Baseten");
+    }
+    return first.embedding;
+  }
+
   if (!openaiApiKey) {
-    throw new Error("Missing OPENAI_API_KEY");
+    throw new Error("Missing OPENAI_API_KEY or BASETEN_API_KEY");
   }
 
   const response = await fetch("https://api.openai.com/v1/embeddings", {
@@ -233,7 +265,7 @@ async function fetchAllChannelMessages(client, channelId) {
   return allMessages;
 }
 
-const chatModel = process.env.OPENAI_CHAT_MODEL || "gpt-5.1";
+// const chatModel = process.env.OPENAI_CHAT_MODEL || "gpt-5.1";
 
 async function queryTurbopuffer(query, topK = 20) {
   if (!turbopufferApiKey) {
@@ -307,8 +339,9 @@ function formatRetrievedContext(rows) {
 }
 
 async function answerWithRag(question) {
-  if (!openaiApiKey) {
-    throw new Error("Missing OPENAI_API_KEY");
+  const basetenApiKey = process.env.BASETEN_API_KEY;
+  if (!basetenApiKey) {
+    throw new Error("Missing BASETEN_API_KEY");
   }
 
   const rows = await queryTurbopuffer(question);
@@ -319,14 +352,14 @@ async function answerWithRag(question) {
     rowCount: rows.length,
   });
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const response = await fetch("https://inference.baseten.co/v1/chat/completions", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${openaiApiKey}`,
+      Authorization: `Api-Key ${basetenApiKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: chatModel,
+      model: "deepseek-ai/DeepSeek-V3.2",
       messages: [
         {
           role: "system",
@@ -336,15 +369,12 @@ async function answerWithRag(question) {
         {
           role: "system",
           content: context
-            ? `Here is retrieved Slack context:\n\n${context}`
+            ? `Here is retrieved context:\n\n${context}`
             : "No relevant Slack messages were retrieved for this question.",
         },
-        {
-          role: "user",
-          content: question,
-        },
+        { role: "user", content: question },
       ],
-      temperature: 0.2,
+      stream: false,
     }),
   });
 
@@ -354,13 +384,9 @@ async function answerWithRag(question) {
   }
 
   const json = await response.json();
-  const choice =
-    json.choices && json.choices.length > 0 ? json.choices[0] : undefined;
-  if (!choice || !choice.message || !choice.message.content) {
-    throw new Error("Invalid chat completion response");
-  }
+  const answer = json.choices[0]?.message?.content || "No answer generated.";
 
-  return choice.message.content;
+  return answer;
 }
 
 // --- Live ingestion for every new message ----------------------------------------

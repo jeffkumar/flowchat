@@ -62,8 +62,41 @@ async function writeToTurbopuffer({
 }
 
 export async function createEmbedding(input: string): Promise<number[]> {
+  const basetenApiKey = process.env.BASETEN_API_KEY;
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+
+  if (basetenApiKey) {
+    const response = await fetch(
+      "https://model-7wl7dm7q.api.baseten.co/environments/production/predict",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Api-Key ${basetenApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "mixedbread-ai/mxbai-embed-large-v1",
+          input,
+          encoding_format: "float",
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(`Baseten embedding request failed: ${message}`);
+    }
+
+    const json = (await response.json()) as OpenAIEmbeddingResponse;
+    const first = json.data[0];
+    if (!first || !Array.isArray(first.embedding)) {
+      throw new Error("Invalid embeddings response from Baseten");
+    }
+    return first.embedding;
+  }
+
   if (!openaiApiKey) {
-    throw new Error("Missing OPENAI_API_KEY");
+    throw new Error("Missing OPENAI_API_KEY or BASETEN_API_KEY");
   }
 
   const response = await fetch("https://api.openai.com/v1/embeddings", {

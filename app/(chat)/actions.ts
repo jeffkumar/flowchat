@@ -22,10 +22,21 @@ export async function generateTitleFromUserMessage({
 }: {
   message: UIMessage;
 }) {
+  const textContent = getTextFromMessage(message);
+  
+  // Baseten's DeepSeek model may have issues with structured/multimedia input
+  // even if provided as a simple prompt string if the underlying provider logic sends it as a complex object.
+  // We ensure it is sent as a simple user message.
+  
   const { text: title } = await generateText({
     model: myProvider.languageModel("title-model"),
     system: titlePrompt,
-    prompt: getTextFromMessage(message),
+    messages: [
+      {
+        role: "user",
+        content: textContent,
+      },
+    ],
   });
 
   return title;

@@ -10,18 +10,18 @@ function assertEqual(actual: unknown, expected: unknown, label: string) {
 
 assertEqual(
   namespacesForSourceTypes(["slack"]),
-  ["_synergy_slack"],
+  ["_synergy_slackv2"],
   "slack-only"
 );
-assertEqual(namespacesForSourceTypes(["docs"]), ["_synergy_docs"], "docs-only");
+assertEqual(namespacesForSourceTypes(["docs"]), ["_synergy_docsv2"], "docs-only");
 assertEqual(
   namespacesForSourceTypes(["slack", "docs"]),
-  ["_synergy_slack", "_synergy_docs"],
+  ["_synergy_slackv2", "_synergy_docsv2"],
   "all"
 );
 assertEqual(
   namespacesForSourceTypes(undefined),
-  ["_synergy_slack", "_synergy_docs"],
+  ["_synergy_slackv2", "_synergy_docsv2"],
   "default"
 );
 

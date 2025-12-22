@@ -18,4 +18,9 @@ export const chatModels: ChatModel[] = [
     description:
       "Uses advanced chain-of-thought reasoning for complex problems",
   },
+  {
+    id: "deepseek-v3",
+    name: "DeepSeek V3",
+    description: "High-performance model from Baseten",
+  },
 ];

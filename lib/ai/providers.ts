@@ -15,6 +15,14 @@ const openai = useOpenAI
     })
   : null;
 
+const basetenApiKey = process.env.BASETEN_API_KEY;
+const baseten = basetenApiKey
+  ? createOpenAI({
+      apiKey: basetenApiKey,
+      baseURL: "https://inference.baseten.co/v1",
+    })
+  : null;
+
 export const myProvider = isTestEnvironment
   ? (() => {
       const {
@@ -29,28 +37,39 @@ export const myProvider = isTestEnvironment
           "chat-model-reasoning": reasoningModel,
           "title-model": titleModel,
           "artifact-model": artifactModel,
+          "deepseek-v3": chatModel,
         },
       });
     })()
-  : useOpenAI
-    ? customProvider({
-        languageModels: {
-          // OpenAI direct (no Vercel AI Gateway required)
-          "chat-model": openai!("gpt-5.1"),
-          "chat-model-reasoning": openai!("gpt-5.1"),
-          "title-model": openai!("gpt-5.1"),
-          "artifact-model": openai!("gpt-5.1"),
-        },
-      })
-    : customProvider({
-        languageModels: {
-          // Default to xAI via Vercel AI Gateway
-          "chat-model": gateway.languageModel("xai/grok-2-vision-1212"),
-          "chat-model-reasoning": wrapLanguageModel({
-            model: gateway.languageModel("xai/grok-3-mini"),
-            middleware: extractReasoningMiddleware({ tagName: "think" }),
-          }),
-          "title-model": gateway.languageModel("xai/grok-2-1212"),
-          "artifact-model": gateway.languageModel("xai/grok-2-1212"),
-        },
-      });
+  : customProvider({
+      languageModels: {
+        "chat-model": useOpenAI
+          ? openai!("gpt-5.1")
+          : baseten
+            ? baseten.chat("deepseek-ai/DeepSeek-V3.2")
+            : gateway.languageModel("xai/grok-2-vision-1212"),
+        "chat-model-reasoning": useOpenAI
+          ? openai!("gpt-5.1")
+          : baseten
+            ? baseten.chat("deepseek-ai/DeepSeek-V3.2")
+            : wrapLanguageModel({
+                model: gateway.languageModel("xai/grok-3-mini"),
+                middleware: extractReasoningMiddleware({ tagName: "think" }),
+              }),
+        "title-model": useOpenAI
+          ? openai!("gpt-5.1")
+          : baseten
+            ? baseten.chat("deepseek-ai/DeepSeek-V3.2")
+            : gateway.languageModel("xai/grok-2-1212"),
+        "artifact-model": useOpenAI
+          ? openai!("gpt-5.1")
+          : baseten
+            ? baseten.chat("deepseek-ai/DeepSeek-V3.2")
+            : gateway.languageModel("xai/grok-2-1212"),
+        ...(baseten
+          ? {
+              "deepseek-v3": baseten.chat("deepseek-ai/DeepSeek-V3.2"),
+            }
+          : {}),
+      },
+    });

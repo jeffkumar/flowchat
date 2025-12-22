@@ -43,9 +43,10 @@ def read_env():
             load_dotenv()
 
     openai_key = os.getenv("OPENAI_API_KEY")
+    baseten_key = os.getenv("BASETEN_API_KEY")
     turbopuffer_key = os.getenv("TURBOPUFFER_API_KEY")
     namespace = os.getenv("TURBOPUFFER_NAMESPACE", "_synergy_lava_ridge")
-    return openai_key, turbopuffer_key, namespace
+    return openai_key, baseten_key, turbopuffer_key, namespace
 
 
 def list_pdfs(directory: Path) -> List[Path]:
@@ -106,6 +107,24 @@ def embed_batch_openai(api_key: str, texts: List[str]) -> List[List[float]]:
     return [item["embedding"] for item in data["data"]]
 
 
+def embed_batch_baseten(api_key: str, texts: List[str]) -> List[List[float]]:
+    url = "https://model-7wl7dm7q.api.baseten.co/environments/production/predict"
+    headers = {
+        "Authorization": f"Api-Key {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "mixedbread-ai/mxbai-embed-large-v1",
+        "input": texts,
+        "encoding_format": "float",
+    }
+    res = requests.post(url, headers=headers, json=payload, timeout=60)
+    if res.status_code >= 400:
+        raise RuntimeError(f"Baseten embedding failed: {res.status_code} {res.text}")
+    data = res.json()
+    return [item["embedding"] for item in data["data"]]
+
+
 def upsert_rows_turbopuffer(
     api_key: str,
     namespace: str,
@@ -137,6 +156,7 @@ def ingest_pdf(
     source_link: str,
     *,
     openai_key: Optional[str],
+    baseten_key: Optional[str],
     turbopuffer_key: Optional[str],
     namespace: str,
     dry_run: bool,
@@ -178,9 +198,12 @@ def ingest_pdf(
                 # Use zeros to avoid network usage in dry-run
                 vectors = [[0.0] * 1536 for _ in batch]
             else:
-                if not openai_key:
-                    raise RuntimeError("OPENAI_API_KEY is not set but embeddings are requested.")
-                vectors = embed_batch_openai(openai_key, batch)
+                if baseten_key:
+                    vectors = embed_batch_baseten(baseten_key, batch)
+                elif openai_key:
+                    vectors = embed_batch_openai(openai_key, batch)
+                else:
+                    raise RuntimeError("No API Key set (OPENAI_API_KEY or BASETEN_API_KEY) but embeddings are requested.")
 
             for j, text in enumerate(batch):
                 chunk_index = i + j
@@ -242,7 +265,7 @@ def main():
 
     args = parser.parse_args()
 
-    openai_key, turbopuffer_key, env_namespace = read_env()
+    openai_key, baseten_key, turbopuffer_key, env_namespace = read_env()
     namespace = args.namespace or env_namespace
 
     directory = Path(args.dir).expanduser().resolve()
@@ -276,6 +299,7 @@ def main():
                 project_name=args.project,
                 source_link=args.link,
                 openai_key=openai_key,
+                baseten_key=baseten_key,
                 turbopuffer_key=turbopuffer_key,
                 namespace=namespace,
                 dry_run=args.dry_run,

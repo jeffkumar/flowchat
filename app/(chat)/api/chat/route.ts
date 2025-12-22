@@ -123,6 +123,47 @@ function stripMatchedText(fullText: string, matchedText: string | undefined) {
   return fullText.replace(re, " ").replace(/\s+/g, " ").trim();
 }
 
+function messageContentToText(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  // AI SDK / OpenAI provider can represent multimodal content as an array of parts.
+  // Baseten chat completions currently only support plain text content.
+  if (Array.isArray(content)) {
+    const textParts: string[] = [];
+    for (const part of content) {
+      if (!part || typeof part !== "object") continue;
+      const p = part as Record<string, unknown>;
+      if (p.type === "text" && typeof p.text === "string") {
+        textParts.push(p.text);
+      } else if (p.type === "input_text" && typeof p.text === "string") {
+        textParts.push(p.text);
+      }
+    }
+    return textParts.join("\n").trim();
+  }
+
+  return "";
+}
+
+function coerceMessagesToTextOnly(messages: unknown[]): unknown[] {
+  return messages
+    .map((m) => {
+      if (!m || typeof m !== "object") return null;
+      const msg = m as Record<string, unknown>;
+      const role = msg.role;
+      if (role !== "user" && role !== "assistant" && role !== "system") {
+        return null;
+      }
+      const content = messageContentToText(msg.content);
+      // Drop messages that become empty after stripping non-text parts.
+      if (!content) return null;
+      return { ...msg, content };
+    })
+    .filter((m): m is Record<string, unknown> => Boolean(m));
+}
+
 type RetrievalTimeFilterMode = "sourceCreatedAtMs" | "rowTimestamp";
 
 function parseCsvEnv(value: string | undefined): string[] {
@@ -1236,30 +1277,39 @@ export async function POST(request: Request) {
             ]
           : baseMessages;
 
+        const basetenApiKey = process.env.BASETEN_API_KEY;
+        const textOnlyMessages = basetenApiKey
+          ? coerceMessagesToTextOnly(messagesWithContext as unknown[])
+          : messagesWithContext;
+
         const result = streamText({
           model: myProvider.languageModel(selectedChatModel),
           system: synergySystemPrompt,
-          messages: messagesWithContext,
+          messages: textOnlyMessages as any,
           stopWhen: stepCountIs(5),
           experimental_activeTools:
-            selectedChatModel === "chat-model-reasoning"
+            basetenApiKey
               ? []
-              : [
-                  "getWeather",
-                  "createDocument",
-                  "updateDocument",
-                  "requestSuggestions",
-                ],
+              : selectedChatModel === "chat-model-reasoning"
+                ? []
+                : [
+                    "getWeather",
+                    "createDocument",
+                    "updateDocument",
+                    "requestSuggestions",
+                  ],
           experimental_transform: smoothStream({ chunking: "word" }),
-          tools: {
-            getWeather,
-            createDocument: createDocument({ session, dataStream }),
-            updateDocument: updateDocument({ session, dataStream }),
-            requestSuggestions: requestSuggestions({
-              session,
-              dataStream,
-            }),
-          },
+          tools: basetenApiKey
+            ? {}
+            : {
+                getWeather,
+                createDocument: createDocument({ session, dataStream }),
+                updateDocument: updateDocument({ session, dataStream }),
+                requestSuggestions: requestSuggestions({
+                  session,
+                  dataStream,
+                }),
+              },
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,
             functionId: "stream-text",

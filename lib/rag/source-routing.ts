@@ -12,12 +12,12 @@ export function namespacesForSourceTypes(
 
   const slackNs =
     isDefaultProject || !projectId
-      ? "_synergy_slack"
-      : `_synergy_${projectId}_slack`;
+      ? "_synergy_slackv2"
+      : `_synergy_${projectId}_slackv2`;
   const docsNs =
     isDefaultProject || !projectId
-      ? "_synergy_docs"
-      : `_synergy_${projectId}_docs`;
+      ? "_synergy_docsv2"
+      : `_synergy_${projectId}_docsv2`;
 
   if (requested.length === 1 && requested[0] === "slack") {
     return [slackNs];
@@ -31,7 +31,8 @@ export function namespacesForSourceTypes(
 export function inferSourceTypeFromNamespace(
   namespace: string
 ): SourceType | null {
-  if (namespace.endsWith("_slack")) return "slack";
-  if (namespace.endsWith("_docs")) return "docs";
+  if (namespace.endsWith("_slack") || namespace.endsWith("_slackv2"))
+    return "slack";
+  if (namespace.endsWith("_docs") || namespace.endsWith("_docsv2")) return "docs";
   return null;
 }

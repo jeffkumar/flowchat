@@ -1,6 +1,5 @@
 import json
 import os
-import openai
 import requests
 from dotenv import load_dotenv
 
@@ -10,8 +9,12 @@ def query_bias_patterns():
     """Query Turbopuffer for bias patterns in manager responses"""
     print("🎯 Searching for bias patterns in Slack messages...")
     
-    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    
+    # Use Baseten for embedding if available, otherwise fall back to logic that requires an embedding function
+    baseten_key = os.getenv("BASETEN_API_KEY")
+    if not baseten_key:
+        print("❌ BASETEN_API_KEY not found. Cannot generate embeddings.")
+        return
+
     # Search queries that capture different response types
     queries = [
         "client retention rates",     
@@ -22,11 +25,26 @@ def query_bias_patterns():
     for query in queries:
         print(f"\n🔍 Query: '{query}'")
         
-        # Create query embedding
-        embedding = client.embeddings.create(
-            model="text-embedding-3-small", 
-            input=query
-        ).data[0].embedding
+        # Create query embedding via Baseten
+        try:
+            emb_res = requests.post(
+                "https://model-7wl7dm7q.api.baseten.co/environments/production/predict",
+                headers={
+                    "Authorization": f"Api-Key {baseten_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "mixedbread-ai/mxbai-embed-large-v1",
+                    "input": query,
+                    "encoding_format": "float"
+                },
+                timeout=30
+            )
+            emb_res.raise_for_status()
+            embedding = emb_res.json()["data"][0]["embedding"]
+        except Exception as e:
+            print(f"❌ Embedding generation failed: {e}")
+            continue
         
         # Query Turbopuffer
         response = requests.post(

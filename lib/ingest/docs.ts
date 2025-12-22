@@ -138,10 +138,10 @@ export async function ingestUploadedDocToTurbopuffer({
   sourceCreatedAtMs: number;
   fileBuffer: Buffer;
 }) {
-  // Store docs in per-project namespaces. Default project uses legacy namespace.
+  // Store docs in per-project namespaces. Use the v2 docs suffix to avoid vector dimension mismatches.
   const namespace = isDefaultProject
-    ? "_synergy_docs"
-    : `_synergy_${projectId}_docs`;
+    ? "_synergy_docsv2"
+    : `_synergy_${projectId}_docsv2`;
   const indexedAtMs = Date.now();
 
   let fullText = "";
