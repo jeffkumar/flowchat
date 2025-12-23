@@ -58,50 +58,52 @@ async function extractTextFromPdf(buffer: Buffer) {
     };
   }
 
-  const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as any;
-  // Turbopack can break pdf.js's default worker resolution in Next dev/server builds.
-  // Point pdf.js at the real worker file on disk to avoid ".next/.../pdf.worker.mjs" lookups.
   try {
-    const workerFsPath = path.join(
-      process.cwd(),
-      "node_modules",
-      "pdfjs-dist",
-      "legacy",
-      "build",
-      "pdf.worker.mjs"
+    const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as any;
+    // Point pdf.js at the worker file on disk (helps in some Next environments).
+    try {
+      const workerFsPath = path.join(
+        process.cwd(),
+        "node_modules",
+        "pdfjs-dist",
+        "legacy",
+        "build",
+        "pdf.worker.mjs"
+      );
+      pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(workerFsPath).toString();
+    } catch {
+      // Best-effort
+    }
+
+    const data = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    const loadingTask = pdfjs.getDocument({ data, disableWorker: true });
+    const doc = await loadingTask.promise;
+
+    const pageNumbers = Array.from({ length: doc.numPages }, (_, i) => i + 1);
+    const pageTexts = await Promise.all(
+      pageNumbers.map(async (pageNumber) => {
+        const page = await doc.getPage(pageNumber);
+        const content = await page.getTextContent();
+        const items: Array<{ str?: unknown }> = Array.isArray(content?.items)
+          ? content.items
+          : [];
+        return items
+          .map((item) => (typeof item.str === "string" ? item.str : ""))
+          .join(" ");
+      })
     );
-    pdfjs.GlobalWorkerOptions.workerSrc =
-      pathToFileURL(workerFsPath).toString();
+
+    return pageTexts.join("\n").trim();
   } catch {
-    // Best-effort: if this fails, pdf.js may still work in environments where worker resolution is correct.
+    const pdfParseModule = (await import("pdf-parse")) as unknown as {
+      default?: unknown;
+    };
+    const pdfParse = (pdfParseModule.default ?? pdfParseModule) as (input: Buffer) => Promise<{
+      text?: unknown;
+    }>;
+    const parsed = await pdfParse(buffer);
+    return (typeof parsed.text === "string" ? parsed.text : "").trim();
   }
-
-  // pdfjs-dist requires Uint8Array; Buffer can trip runtime checks in some builds.
-  const data = new Uint8Array(
-    buffer.buffer,
-    buffer.byteOffset,
-    buffer.byteLength
-  );
-  // In Next.js dev (Turbopack), pdf.js worker bundling can fail and crash ingestion.
-  // We only need text extraction, so disable the worker and run parsing in-process.
-  const loadingTask = pdfjs.getDocument({ data, disableWorker: true });
-  const doc = await loadingTask.promise;
-
-  const pageNumbers = Array.from({ length: doc.numPages }, (_, i) => i + 1);
-  const pageTexts = await Promise.all(
-    pageNumbers.map(async (pageNumber) => {
-      const page = await doc.getPage(pageNumber);
-      const content = await page.getTextContent();
-      const items: Array<{ str?: unknown }> = Array.isArray(content?.items)
-        ? content.items
-        : [];
-      return items
-        .map((item) => (typeof item.str === "string" ? item.str : ""))
-        .join(" ");
-    })
-  );
-
-  return pageTexts.join("\n").trim();
 }
 
 async function extractPagesFromPdf(buffer: Buffer): Promise<string[]> {
@@ -127,46 +129,53 @@ async function extractPagesFromPdf(buffer: Buffer): Promise<string[]> {
     };
   }
 
-  const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as any;
   try {
-    const workerFsPath = path.join(
-      process.cwd(),
-      "node_modules",
-      "pdfjs-dist",
-      "legacy",
-      "build",
-      "pdf.worker.mjs"
+    const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as any;
+    try {
+      const workerFsPath = path.join(
+        process.cwd(),
+        "node_modules",
+        "pdfjs-dist",
+        "legacy",
+        "build",
+        "pdf.worker.mjs"
+      );
+      pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(workerFsPath).toString();
+    } catch {
+      // Best-effort
+    }
+
+    const data = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    const loadingTask = pdfjs.getDocument({ data, disableWorker: true });
+    const doc = await loadingTask.promise;
+
+    const pageNumbers = Array.from({ length: doc.numPages }, (_, i) => i + 1);
+    const pageTexts = await Promise.all(
+      pageNumbers.map(async (pageNumber) => {
+        const page = await doc.getPage(pageNumber);
+        const content = await page.getTextContent();
+        const items: Array<{ str?: unknown }> = Array.isArray(content?.items)
+          ? content.items
+          : [];
+        return items
+          .map((item) => (typeof item.str === "string" ? item.str : ""))
+          .join(" ")
+          .trim();
+      })
     );
-    pdfjs.GlobalWorkerOptions.workerSrc =
-      pathToFileURL(workerFsPath).toString();
+
+    return pageTexts.filter((t) => t.length > 0);
   } catch {
-    // Best-effort
+    const pdfParseModule = (await import("pdf-parse")) as unknown as {
+      default?: unknown;
+    };
+    const pdfParse = (pdfParseModule.default ?? pdfParseModule) as (input: Buffer) => Promise<{
+      text?: unknown;
+    }>;
+    const parsed = await pdfParse(buffer);
+    const text = (typeof parsed.text === "string" ? parsed.text : "").trim();
+    return text ? [text] : [];
   }
-
-  const data = new Uint8Array(
-    buffer.buffer,
-    buffer.byteOffset,
-    buffer.byteLength
-  );
-  const loadingTask = pdfjs.getDocument({ data, disableWorker: true });
-  const doc = await loadingTask.promise;
-
-  const pageNumbers = Array.from({ length: doc.numPages }, (_, i) => i + 1);
-  const pageTexts = await Promise.all(
-    pageNumbers.map(async (pageNumber) => {
-      const page = await doc.getPage(pageNumber);
-      const content = await page.getTextContent();
-      const items: Array<{ str?: unknown }> = Array.isArray(content?.items)
-        ? content.items
-        : [];
-      return items
-        .map((item) => (typeof item.str === "string" ? item.str : ""))
-        .join(" ")
-        .trim();
-    })
-  );
-
-  return pageTexts.filter((t) => t.length > 0);
 }
 
 async function extractTextFromDocx(buffer: Buffer) {
