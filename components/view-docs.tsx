@@ -131,11 +131,9 @@ export function ViewDocs({
     <Sheet open={isOpen} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-[400px] sm:w-[540px] flex flex-col">
         <SheetHeader>
-          <SheetTitle>
-            Project Documents{projectName ? ` · ${projectName}` : ""}
-          </SheetTitle>
+          <SheetTitle>{projectName || "Project"}</SheetTitle>
           <SheetDescription>
-            Manage visibility of documents for this chat.
+            Manage documents for this chat.
           </SheetDescription>
         </SheetHeader>
 

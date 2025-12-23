@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { ShareIcon as ShareSourceIcon } from "@/components/icons";
+import { OneDriveIcon } from "@/components/icons";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,7 +27,13 @@ import {
   History,
   RefreshCw,
   Loader2,
+  ChevronDown,
 } from "lucide-react";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 
 type MicrosoftStatus =
   | { connected: false }
@@ -497,9 +503,14 @@ export function MicrosoftIntegrationCard() {
     <Card className="p-4">
       <div className="flex items-start justify-between gap-4">
         <div className="space-y-1">
-          <div className="text-sm font-medium">Microsoft (SharePoint / Teams)</div>
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <span className="text-onedrive" title="SharePoint / Teams / OneDrive">
+              <OneDriveIcon size={16} />
+            </span>
+            <span>Microsoft (SharePoint / Teams / OneDrive)</span>
+          </div>
           <div className="text-xs text-muted-foreground">
-            Connect to SharePoint-backed Teams libraries and import PDF/DOCX files.
+            Connect to SharePoint/Teams/OneDrive and import PDF/DOCX files.
           </div>
         </div>
 
@@ -579,30 +590,41 @@ export function MicrosoftIntegrationCard() {
           </div>
 
           {/* Paste Link */}
-          <div className="space-y-2">
-            <div className="text-xs font-medium">Or paste a SharePoint link</div>
-            <div className="flex items-end gap-2">
-              <Input
-                className="flex-1"
-                onChange={(e) => setSharePointUrl(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    void jumpToSharePointUrl();
-                  }
-                }}
-                placeholder="https://company.sharepoint.com/sites/..."
-                value={sharePointUrl}
-              />
+          <Collapsible className="space-y-2">
+            <CollapsibleTrigger asChild>
               <Button
-                disabled={isBusy}
-                onClick={() => void jumpToSharePointUrl()}
+                className="group h-auto justify-between px-0 py-0 text-xs font-medium"
                 type="button"
-                variant="secondary"
+                variant="ghost"
               >
-                Open
+                <span>Or paste a SharePoint link</span>
+                <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
               </Button>
-            </div>
-          </div>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-2">
+              <div className="flex items-end gap-2">
+                <Input
+                  className="flex-1"
+                  onChange={(e) => setSharePointUrl(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      void jumpToSharePointUrl();
+                    }
+                  }}
+                  placeholder="https://company.sharepoint.com/sites/..."
+                  value={sharePointUrl}
+                />
+                <Button
+                  disabled={isBusy}
+                  onClick={() => void jumpToSharePointUrl()}
+                  type="button"
+                  variant="secondary"
+                >
+                  Open
+                </Button>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
 
           {/* Synced files (table) */}
           {selectedProjectId && (syncedDocsData?.docs ?? []).length > 0 && (

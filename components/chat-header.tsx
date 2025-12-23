@@ -10,15 +10,10 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ChevronDownIcon, PlusIcon } from "./icons";
+import { PlusIcon } from "./icons";
 import { Settings, Settings2 } from "lucide-react";
 import { useSidebar } from "./ui/sidebar";
 import { ViewDocs } from "./view-docs";
@@ -32,16 +27,12 @@ function PureChatHeader({
   isReadonly,
   ignoredDocIds,
   setIgnoredDocIds,
-  retrievalRangePreset,
-  setRetrievalRangePreset,
 }: {
   chatId: string;
   selectedVisibilityType: VisibilityType;
   isReadonly: boolean;
   ignoredDocIds: string[];
   setIgnoredDocIds: (ids: string[]) => void;
-  retrievalRangePreset: RetrievalRangePreset;
-  setRetrievalRangePreset: (preset: RetrievalRangePreset) => void;
 }) {
   const router = useRouter();
   const { open } = useSidebar();
@@ -80,51 +71,15 @@ function PureChatHeader({
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-1"> 
+              <Button className="gap-1" size="sm" type="button" variant="outline">
                 <Settings size={14} className="text-muted-foreground" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-64">
               <DropdownMenuLabel>Settings</DropdownMenuLabel>
               <div className="px-2 pb-2 text-xs text-muted-foreground">
-                Configure retrieval and documents for this chat.
+                Configure documents for this chat.
               </div>
-              <DropdownMenuSeparator />
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>Time range</DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>
-                  <DropdownMenuRadioGroup
-                    value={retrievalRangePreset}
-                    onValueChange={(value) => {
-                      if (
-                        value === "all" ||
-                        value === "1d" ||
-                        value === "7d" ||
-                        value === "30d" ||
-                        value === "90d"
-                      ) {
-                        setRetrievalRangePreset(value);
-                      }
-                    }}
-                  >
-                    <DropdownMenuRadioItem value="all">
-                      All time
-                    </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="1d">
-                      Last day
-                    </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="7d">
-                      Last 7 days
-                    </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="30d">
-                      Last 30 days
-                    </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="90d">
-                      Last 90 days
-                    </DropdownMenuRadioItem>
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => setIsViewDocsOpen(true)}>
                 <Settings2 className="mr-2 h-4 w-4" />

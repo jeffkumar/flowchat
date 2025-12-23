@@ -7,6 +7,16 @@ import { useEffect, useRef, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { unstable_serialize } from "swr/infinite";
 import { ChatHeader, type RetrievalRangePreset } from "@/components/chat-header";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -37,6 +47,25 @@ import type { VisibilityType } from "@/lib/types";
 
 function getSourceTypes(includeSlack: boolean): Array<"slack" | "docs"> {
   return includeSlack ? ["slack", "docs"] : ["docs"];
+}
+
+function labelForPreset(preset: RetrievalRangePreset) {
+  switch (preset) {
+    case "all":
+      return "All time";
+    case "1d":
+      return "Last day";
+    case "7d":
+      return "Last 7 days";
+    case "30d":
+      return "Last 30 days";
+    case "90d":
+      return "Last 90 days";
+    default: {
+      const _exhaustive: never = preset;
+      return _exhaustive;
+    }
+  }
 }
 
 export function Chat({
@@ -289,8 +318,6 @@ export function Chat({
           selectedVisibilityType={initialVisibilityType}
           ignoredDocIds={ignoredDocIds}
           setIgnoredDocIds={setIgnoredDocIds}
-          retrievalRangePreset={retrievalRangePreset}
-          setRetrievalRangePreset={setRetrievalRangePreset}
         />
 
         <Messages
@@ -309,7 +336,7 @@ export function Chat({
         <div className="sticky bottom-0 z-1 mx-auto flex w-full max-w-4xl flex-col gap-2 border-t-0 bg-background dark:bg-auth-charcoal px-2 pb-3 md:px-4 md:pb-4">
           {!isReadonly && (
             <>
-              <div className="flex items-center gap-2 px-1">
+              <div className="flex items-center justify-between gap-2 px-1">
                 <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
                   <input
                     type="checkbox"
@@ -319,6 +346,43 @@ export function Chat({
                   />
                   Show citations
                 </label>
+
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      className="h-5 px-2 text-[10px] text-muted-foreground"
+                      size="sm"
+                      type="button"
+                      variant="ghost"
+                    >
+                      {labelForPreset(retrievalRangePreset)}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-40" side="top">
+                    <DropdownMenuLabel>Time range</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuRadioGroup
+                      value={retrievalRangePreset}
+                      onValueChange={(value) => {
+                        if (
+                          value === "all" ||
+                          value === "1d" ||
+                          value === "7d" ||
+                          value === "30d" ||
+                          value === "90d"
+                        ) {
+                          setRetrievalRangePreset(value);
+                        }
+                      }}
+                    >
+                      <DropdownMenuRadioItem value="all">All time</DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="1d">Last day</DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="7d">Last 7 days</DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="30d">Last 30 days</DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="90d">Last 90 days</DropdownMenuRadioItem>
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
               <MultimodalInput
                 attachments={attachments}

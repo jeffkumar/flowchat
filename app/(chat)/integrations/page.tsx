@@ -30,11 +30,11 @@ async function IntegrationsPage() {
           </p>
         </div>
 
-        <SlackRetrievalToggle />
-
         <div className="mt-6 space-y-4">
           <MicrosoftIntegrationCard />
         </div>
+
+        <SlackRetrievalToggle />
       </div>
     </>
   );

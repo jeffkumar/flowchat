@@ -9,25 +9,17 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Settings, Settings2 } from "lucide-react";
 import { ViewDocs } from "@/components/view-docs";
 import { useProjectSelector } from "@/hooks/use-project-selector";
-import { useRetrievalSettings } from "@/hooks/use-retrieval-settings";
-import type { RetrievalRangePreset } from "@/components/chat-header";
 
 export function IntegrationsHeader() {
   const [isViewDocsOpen, setIsViewDocsOpen] = useState(false);
   const [ignoredDocIds, setIgnoredDocIds] = useState<string[]>([]);
   const { selectedProject } = useProjectSelector();
-  const { retrievalRangePreset, setRetrievalRangePreset } = useRetrievalSettings();
 
   return (
     <>
@@ -51,32 +43,6 @@ export function IntegrationsHeader() {
               <div className="px-2 pb-2 text-xs text-muted-foreground">
                 Configure retrieval and documents for this project.
               </div>
-              <DropdownMenuSeparator />
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>Time range</DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>
-                  <DropdownMenuRadioGroup
-                    value={retrievalRangePreset}
-                    onValueChange={(value) => {
-                      if (
-                        value === "all" ||
-                        value === "1d" ||
-                        value === "7d" ||
-                        value === "30d" ||
-                        value === "90d"
-                      ) {
-                        setRetrievalRangePreset(value as RetrievalRangePreset);
-                      }
-                    }}
-                  >
-                    <DropdownMenuRadioItem value="all">All time</DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="1d">Last day</DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="7d">Last 7 days</DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="30d">Last 30 days</DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="90d">Last 90 days</DropdownMenuRadioItem>
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => setIsViewDocsOpen(true)}>
                 <Settings2 className="mr-2 h-4 w-4" />
