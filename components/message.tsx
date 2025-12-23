@@ -302,10 +302,15 @@ const PurePreviewMessage = ({
               </div>
               <div className="flex flex-wrap gap-2">
                 {uniqueSources.map((source, i) => {
-                  const title =
+                  const baseTitle =
                     source.filename ??
                     (source.sourceType === "slack" ? "Slack" : "Source");
                   const href = source.blobUrl;
+                  const isSharePoint =
+                    source.sourceType === "docs" &&
+                    typeof href === "string" &&
+                    href.toLowerCase().includes("sharepoint.com");
+                  const title = isSharePoint ? `SharePoint: ${baseTitle}` : baseTitle;
 
                   if (typeof href === "string" && href.length > 0) {
                     return (

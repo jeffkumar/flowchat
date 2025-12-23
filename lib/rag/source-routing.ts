@@ -1,3 +1,5 @@
+import { useGlobalSlack } from "@/lib/env";
+
 export type SourceType = "slack" | "docs";
 
 export function namespacesForSourceTypes(
@@ -10,8 +12,9 @@ export function namespacesForSourceTypes(
       ? sourceTypes
       : (["slack", "docs"] as const);
 
-  const slackNs =
-    isDefaultProject || !projectId
+  const slackNs = useGlobalSlack
+    ? "_synergy_slack"
+    : isDefaultProject || !projectId
       ? "_synergy_slackv2"
       : `_synergy_${projectId}_slackv2`;
   const docsNs =

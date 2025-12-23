@@ -69,6 +69,7 @@ export const projectDoc = pgTable(
     turbopufferNamespace: text("turbopufferNamespace"),
     indexedAt: timestamp("indexedAt"),
     indexingError: text("indexingError"),
+    metadata: jsonb("metadata"),
     createdAt: timestamp("createdAt").notNull(),
   },
   (table) => ({
@@ -239,3 +240,69 @@ export const stream = pgTable(
 );
 
 export type Stream = InferSelectModel<typeof stream>;
+
+export const integrationConnection = pgTable(
+  "IntegrationConnection",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => user.id),
+    provider: varchar("provider", { enum: ["microsoft", "google"] }).notNull(),
+    accountEmail: text("accountEmail"),
+    providerAccountId: text("providerAccountId"),
+    tenantId: text("tenantId"),
+    scopes: jsonb("scopes").$type<string[]>().notNull(),
+    accessTokenEnc: text("accessTokenEnc"),
+    refreshTokenEnc: text("refreshTokenEnc"),
+    expiresAt: timestamp("expiresAt"),
+    revokedAt: timestamp("revokedAt"),
+    createdAt: timestamp("createdAt").notNull(),
+    updatedAt: timestamp("updatedAt").notNull(),
+  },
+  (table) => ({
+    userProviderIdx: index("integration_connection_user_provider_idx").on(
+      table.userId,
+      table.provider
+    ),
+    providerAccountUnique: uniqueIndex(
+      "integration_connection_provider_account_unique"
+    ).on(table.provider, table.tenantId, table.providerAccountId),
+  })
+);
+
+export type IntegrationConnection = InferSelectModel<typeof integrationConnection>;
+
+export const projectIntegrationSource = pgTable(
+  "ProjectIntegrationSource",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    projectId: uuid("projectId")
+      .notNull()
+      .references(() => project.id),
+    createdBy: uuid("createdBy")
+      .notNull()
+      .references(() => user.id),
+    provider: varchar("provider", { enum: ["microsoft", "google"] }).notNull(),
+    resourceType: varchar("resourceType", {
+      enum: ["sharepoint_folder", "google_drive_folder"],
+    }).notNull(),
+    siteId: text("siteId"),
+    driveId: text("driveId"),
+    itemId: text("itemId"),
+    syncEnabled: boolean("syncEnabled").notNull().default(false),
+    cursor: text("cursor"),
+    createdAt: timestamp("createdAt").notNull(),
+    updatedAt: timestamp("updatedAt").notNull(),
+  },
+  (table) => ({
+    projectIdx: index("project_integration_source_project_idx").on(table.projectId),
+    createdByIdx: index("project_integration_source_created_by_idx").on(
+      table.createdBy
+    ),
+  })
+);
+
+export type ProjectIntegrationSource = InferSelectModel<
+  typeof projectIntegrationSource
+>;

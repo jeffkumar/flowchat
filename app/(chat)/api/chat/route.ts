@@ -161,7 +161,7 @@ function coerceMessagesToTextOnly(messages: unknown[]): unknown[] {
       if (!content) return null;
       return { ...msg, content };
     })
-    .filter((m): m is Record<string, unknown> => Boolean(m));
+    .filter((m) => m !== null);
 }
 
 type RetrievalTimeFilterMode = "sourceCreatedAtMs" | "rowTimestamp";
@@ -1040,7 +1040,24 @@ export async function POST(request: Request) {
           timeFilteredRowsCount: timeFilteredRows.length,
         });
 
-        const filteredRows = timeFilteredRows.slice(0, 24);
+        const cappedRows: typeof timeFilteredRows = [];
+        const docIdCounts = new Map<string, number>();
+        for (const row of timeFilteredRows) {
+          const sourceType =
+            typeof (row as any).sourceType === "string" ? (row as any).sourceType : "";
+          if (sourceType === "docs") {
+            const docId =
+              typeof (row as any).doc_id === "string" ? (row as any).doc_id : null;
+            if (docId) {
+              const count = docIdCounts.get(docId) ?? 0;
+              if (count >= 10) continue;
+              docIdCounts.set(docId, count + 1);
+            }
+          }
+          cappedRows.push(row);
+        }
+
+        const filteredRows = cappedRows.slice(0, 24);
         let usedRows = filteredRows.slice(0, 8);
 
         const lastMentionName = extractLastMentionName(userText);
@@ -1194,7 +1211,7 @@ export async function POST(request: Request) {
         }
       } catch (err) {
         // Retrieval is best-effort; proceed without external context on failure
-        console.warn("Turbopuffer retrieval failed", err);
+        console.warn("Retrieval failed (embeddings/turbopuffer)", err);
       }
     }
 
@@ -1225,6 +1242,11 @@ export async function POST(request: Request) {
             const sourceType = typeof s.sourceType === "string" ? s.sourceType : "";
             const docId = typeof s.doc_id === "string" ? s.doc_id : "";
             const blobUrl = typeof s.blob_url === "string" ? s.blob_url : "";
+            const sourceUrl = typeof (s as any).source_url === "string" ? (s as any).source_url : "";
+            const preferredUrl =
+              sourceType === "docs" && sourceUrl.toLowerCase().includes("sharepoint.com")
+                ? sourceUrl
+                : blobUrl;
             const filename = typeof s.filename === "string" ? s.filename : "";
             const category =
               typeof (s as any).doc_category === "string" ? (s as any).doc_category : "";
@@ -1251,7 +1273,7 @@ export async function POST(request: Request) {
               filename: filename || undefined,
               category: category || undefined,
               description: description || undefined,
-              blobUrl: blobUrl || undefined,
+              blobUrl: preferredUrl || undefined,
               content:
                 typeof s.content === "string" ? s.content.slice(0, 200) : undefined,
             });

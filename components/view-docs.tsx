@@ -42,7 +42,7 @@ export function ViewDocs({
   ignoredDocIds,
   setIgnoredDocIds,
 }: ViewDocsProps) {
-  const { selectedProjectId } = useProjectSelector();
+  const { selectedProjectId, selectedProject } = useProjectSelector();
   const [docToDelete, setDocToDelete] = useState<ProjectDoc | null>(null);
   const [showClearAllDialog, setShowClearAllDialog] = useState(false);
 
@@ -63,6 +63,8 @@ export function ViewDocs({
     if (filename.length <= maxChars) return filename;
     return `${filename.slice(0, maxChars)}…`;
   };
+
+  const projectName = selectedProject?.name ?? "";
 
   const deleteDoc = (doc: ProjectDoc) => {
     if (!selectedProjectId) {
@@ -129,7 +131,9 @@ export function ViewDocs({
     <Sheet open={isOpen} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-[400px] sm:w-[540px] flex flex-col">
         <SheetHeader>
-          <SheetTitle>Project Documents</SheetTitle>
+          <SheetTitle>
+            Project Documents{projectName ? ` · ${projectName}` : ""}
+          </SheetTitle>
           <SheetDescription>
             Manage visibility of documents for this chat.
           </SheetDescription>
@@ -151,6 +155,15 @@ export function ViewDocs({
                   const isIgnored = ignoredDocIds.includes(doc.id);
                   const displayFilename = truncateFilename(doc.filename, 20);
                   const isTruncated = displayFilename !== doc.filename;
+                  const metadata =
+                    doc.metadata && typeof doc.metadata === "object"
+                      ? (doc.metadata as Record<string, unknown>)
+                      : null;
+                  const sourceWebUrl =
+                    metadata && typeof metadata.sourceWebUrl === "string"
+                      ? metadata.sourceWebUrl
+                      : "";
+                  const isSharePoint = sourceWebUrl.toLowerCase().includes("sharepoint.com");
                   return (
                     <div
                       key={doc.id}
@@ -173,6 +186,16 @@ export function ViewDocs({
                         <span className="text-xs text-muted-foreground">
                           {format(new Date(doc.createdAt), "PP")}
                         </span>
+                        {isSharePoint && (
+                          <a
+                            className="text-xs text-muted-foreground underline underline-offset-2"
+                            href={sourceWebUrl}
+                            rel="noopener noreferrer"
+                            target="_blank"
+                          >
+                            SharePoint
+                          </a>
+                        )}
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         <Button

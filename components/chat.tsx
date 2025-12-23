@@ -26,6 +26,7 @@ import { ChatSDKError } from "@/lib/errors";
 import type { Attachment, ChatMessage, RetrievedSource } from "@/lib/types";
 import type { AppUsage } from "@/lib/usage";
 import { fetcher, fetchWithErrorHandlers, generateUUID } from "@/lib/utils";
+import { useRetrievalSettings } from "@/hooks/use-retrieval-settings";
 import { Artifact } from "./artifact";
 import { useDataStream } from "./data-stream-provider";
 import { Messages } from "./messages";
@@ -33,6 +34,10 @@ import { MultimodalInput } from "./multimodal-input";
 import { getChatHistoryPaginationKey } from "./sidebar-history";
 import { toast } from "./toast";
 import type { VisibilityType } from "@/lib/types";
+
+function getSourceTypes(includeSlack: boolean): Array<"slack" | "docs"> {
+  return includeSlack ? ["slack", "docs"] : ["docs"];
+}
 
 export function Chat({
   id,
@@ -80,14 +85,13 @@ export function Chat({
   const { selectedProjectId } = useProjectSelector();
   const selectedProjectIdRef = useRef(selectedProjectId);
 
-  const [sourceTypes, setSourceTypes] = useState<Array<"slack" | "docs">>([
-    "slack",
-    "docs",
-  ]);
+  const {
+    includeSlack,
+    retrievalRangePreset,
+    setRetrievalRangePreset,
+  } = useRetrievalSettings();
+  const sourceTypes = getSourceTypes(includeSlack);
   const sourceTypesRef = useRef(sourceTypes);
-
-  const [retrievalRangePreset, setRetrievalRangePreset] =
-    useState<RetrievalRangePreset>("all");
   const retrievalRangePresetRef = useRef(retrievalRangePreset);
 
   const browserTimeZone =
@@ -230,7 +234,7 @@ export function Chat({
 
   useEffect(() => {
     sourceTypesRef.current = sourceTypes;
-  }, [sourceTypes]);
+  }, [sourceTypes, includeSlack]);
 
   useEffect(() => {
     retrievalRangePresetRef.current = retrievalRangePreset;
@@ -283,8 +287,6 @@ export function Chat({
           chatId={id}
           isReadonly={isReadonly}
           selectedVisibilityType={initialVisibilityType}
-          setSourceTypes={setSourceTypes}
-          sourceTypes={sourceTypes}
           ignoredDocIds={ignoredDocIds}
           setIgnoredDocIds={setIgnoredDocIds}
           retrievalRangePreset={retrievalRangePreset}

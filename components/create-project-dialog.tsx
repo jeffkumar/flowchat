@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
 import { Button } from "@/components/ui/button";
@@ -25,6 +26,8 @@ export function CreateProjectDialog({
   open,
   onOpenChange,
 }: CreateProjectDialogProps) {
+  const router = useRouter();
+  const pathname = usePathname();
   const [name, setName] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { mutate, setSelectedProjectId } = useProjectSelector();
@@ -51,6 +54,10 @@ export function CreateProjectDialog({
       toast.success("Project created");
       onOpenChange(false);
       setName("");
+      if (pathname.startsWith("/chat/")) {
+        router.push("/");
+        router.refresh();
+      }
     } catch (error) {
       toast.error("Failed to create project");
     } finally {

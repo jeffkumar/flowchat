@@ -8,9 +8,48 @@ type OpenAIEmbeddingResponse = {
   data: Array<{ embedding: number[] }>;
 };
 
-const openaiApiKey = process.env.OPENAI_API_KEY;
 const turbopufferApiKey = process.env.TURBOPUFFER_API_KEY;
 const turbopufferNamespace = process.env.TURBOPUFFER_NAMESPACE;
+
+type EmbeddingsProvider = "auto" | "openai" | "baseten";
+
+function getEmbeddingsProviderFromEnv(): EmbeddingsProvider {
+  const raw = process.env.EMBEDDINGS_PROVIDER;
+  const value = raw?.trim().toLowerCase();
+  if (!value) return "openai";
+  if (value === "auto" || value === "openai" || value === "baseten") {
+    return value;
+  }
+  throw new Error(
+    `Invalid EMBEDDINGS_PROVIDER="${raw}". Expected "openai" | "baseten" | "auto".`
+  );
+}
+
+const EMBEDDINGS_TIMEOUT_MS = 20_000;
+const EMBEDDINGS_MAX_RETRIES = 2;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => {
+    clearTimeout(timeoutId);
+  });
+}
+
+function shouldRetryEmbeddingsResponse(status: number): boolean {
+  // Retry transient server-side errors.
+  return status >= 500;
+}
 
 type TurbopufferWriteResponse = {
   rows_deleted?: number;
@@ -62,44 +101,65 @@ async function writeToTurbopuffer({
 }
 
 export async function createEmbedding(input: string): Promise<number[]> {
+  const provider = getEmbeddingsProviderFromEnv();
   const basetenApiKey = process.env.BASETEN_API_KEY;
   const openaiApiKey = process.env.OPENAI_API_KEY;
 
-  if (basetenApiKey) {
-    const response = await fetch(
-      "https://model-7wl7dm7q.api.baseten.co/environments/production/predict",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Api-Key ${basetenApiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "mixedbread-ai/mxbai-embed-large-v1",
-          input,
-          encoding_format: "float",
-        }),
+  const shouldUseBaseten = provider === "baseten" || (provider === "auto" && Boolean(basetenApiKey));
+
+  if (shouldUseBaseten) {
+    if (!basetenApiKey) {
+      throw new Error('EMBEDDINGS_PROVIDER="baseten" requires BASETEN_API_KEY');
+    }
+
+    const url =
+      "https://model-7wl7dm7q.api.baseten.co/environments/production/predict";
+    const init: RequestInit = {
+      method: "POST",
+      headers: {
+        Authorization: `Api-Key ${basetenApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "mixedbread-ai/mxbai-embed-large-v1",
+        input,
+        encoding_format: "float",
+      }),
+    };
+
+    const attempt = async (retry: number): Promise<number[]> => {
+      const response = await fetchWithTimeout(url, init, EMBEDDINGS_TIMEOUT_MS);
+      if (!response.ok) {
+        const message = await response.text();
+        if (retry < EMBEDDINGS_MAX_RETRIES && shouldRetryEmbeddingsResponse(response.status)) {
+          await delay(250 * 3 ** retry);
+          return attempt(retry + 1);
+        }
+        throw new Error(
+          `[embeddings:baseten] request failed (status ${response.status}): ${message}`
+        );
       }
-    );
 
-    if (!response.ok) {
-      const message = await response.text();
-      throw new Error(`Baseten embedding request failed: ${message}`);
-    }
+      const json = (await response.json()) as OpenAIEmbeddingResponse;
+      const first = json.data[0];
+      if (!first || !Array.isArray(first.embedding)) {
+        throw new Error("[embeddings:baseten] invalid response");
+      }
+      return first.embedding;
+    };
 
-    const json = (await response.json()) as OpenAIEmbeddingResponse;
-    const first = json.data[0];
-    if (!first || !Array.isArray(first.embedding)) {
-      throw new Error("Invalid embeddings response from Baseten");
-    }
-    return first.embedding;
+    return attempt(0);
   }
 
   if (!openaiApiKey) {
-    throw new Error("Missing OPENAI_API_KEY or BASETEN_API_KEY");
+    if (provider === "openai") {
+      throw new Error('EMBEDDINGS_PROVIDER="openai" requires OPENAI_API_KEY');
+    }
+    throw new Error("Missing OPENAI_API_KEY (or set EMBEDDINGS_PROVIDER=baseten with BASETEN_API_KEY)");
   }
 
-  const response = await fetch("https://api.openai.com/v1/embeddings", {
+  const url = "https://api.openai.com/v1/embeddings";
+  const init: RequestInit = {
     method: "POST",
     headers: {
       Authorization: `Bearer ${openaiApiKey}`,
@@ -108,20 +168,32 @@ export async function createEmbedding(input: string): Promise<number[]> {
     body: JSON.stringify({
       model: "text-embedding-3-small",
       input,
+      encoding_format: "float",
     }),
-  });
+  };
 
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(`Embedding request failed: ${message}`);
-  }
+  const attempt = async (retry: number): Promise<number[]> => {
+    const response = await fetchWithTimeout(url, init, EMBEDDINGS_TIMEOUT_MS);
+    if (!response.ok) {
+      const message = await response.text();
+      if (retry < EMBEDDINGS_MAX_RETRIES && shouldRetryEmbeddingsResponse(response.status)) {
+        await delay(250 * 3 ** retry);
+        return attempt(retry + 1);
+      }
+      throw new Error(
+        `[embeddings:openai] request failed (status ${response.status}): ${message}`
+      );
+    }
 
-  const json = (await response.json()) as OpenAIEmbeddingResponse;
-  const first = json.data[0];
-  if (!first || !Array.isArray(first.embedding)) {
-    throw new Error("Invalid embeddings response");
-  }
-  return first.embedding;
+    const json = (await response.json()) as OpenAIEmbeddingResponse;
+    const first = json.data[0];
+    if (!first || !Array.isArray(first.embedding)) {
+      throw new Error("[embeddings:openai] invalid response");
+    }
+    return first.embedding;
+  };
+
+  return attempt(0);
 }
 
 export async function upsertRowsToTurbopuffer({
@@ -231,8 +303,13 @@ export function formatRetrievedContext(rows: TurbopufferRow[]): string {
     .map((row, index) => {
       const contentValue = row.content ?? "";
       const content = String(contentValue);
+      const sourceType =
+        typeof (row as unknown as Record<string, unknown>).sourceType === "string"
+          ? ((row as unknown as Record<string, unknown>).sourceType as string)
+          : "";
+      const maxChars = sourceType === "docs" ? 3000 : 1000;
       const truncated =
-        content.length > 1000 ? `${content.slice(0, 1000)}…` : content;
+        content.length > maxChars ? `${content.slice(0, maxChars)}…` : content;
       const channelName =
         typeof row.channel_name === "string" ? row.channel_name : "";
       const userName = typeof row.user_name === "string" ? row.user_name : "";

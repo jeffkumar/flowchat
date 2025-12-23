@@ -1,4 +1,5 @@
 import { namespacesForSourceTypes } from "@/lib/rag/source-routing";
+import { useGlobalSlack } from "@/lib/env";
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
   const a = JSON.stringify(actual);
@@ -8,20 +9,22 @@ function assertEqual(actual: unknown, expected: unknown, label: string) {
   }
 }
 
+const expectedSlackNamespace = useGlobalSlack ? "_synergy_slack" : "_synergy_slackv2";
+
 assertEqual(
   namespacesForSourceTypes(["slack"]),
-  ["_synergy_slackv2"],
+  [expectedSlackNamespace],
   "slack-only"
 );
 assertEqual(namespacesForSourceTypes(["docs"]), ["_synergy_docsv2"], "docs-only");
 assertEqual(
   namespacesForSourceTypes(["slack", "docs"]),
-  ["_synergy_slackv2", "_synergy_docsv2"],
+  [expectedSlackNamespace, "_synergy_docsv2"],
   "all"
 );
 assertEqual(
   namespacesForSourceTypes(undefined),
-  ["_synergy_slackv2", "_synergy_docsv2"],
+  [expectedSlackNamespace, "_synergy_docsv2"],
   "default"
 );
 

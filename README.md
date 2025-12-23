@@ -58,6 +58,18 @@ You will need to use the environment variables [defined in `.env.example`](.env.
 
 > Note: You should not commit your `.env` file or it will expose secrets that will allow others to control access to your various AI and authentication provider accounts.
 
+### Embeddings provider (Baseten vs OpenAI)
+
+This project uses embeddings for ingestion and retrieval. You can choose which embeddings provider to use via the `EMBEDDINGS_PROVIDER` env var:
+
+- `EMBEDDINGS_PROVIDER=openai`: force OpenAI embeddings (requires `OPENAI_API_KEY`)
+- `EMBEDDINGS_PROVIDER=baseten`: force Baseten embeddings (requires `BASETEN_API_KEY`)
+- `EMBEDDINGS_PROVIDER=auto`: Baseten if `BASETEN_API_KEY` is set, otherwise OpenAI
+
+If `EMBEDDINGS_PROVIDER` is not set, it defaults to `openai`.
+
+Important: **don’t mix embedding providers within the same Turbopuffer namespace** (vector dimensions/models differ). If you switch providers, **clear and re-ingest** the relevant namespace before expecting good retrieval.
+
 1. Install Vercel CLI: `npm i -g vercel`
 2. Link local instance with Vercel and GitHub accounts (creates `.vercel` directory): `vercel link`
 3. Download your environment variables: `vercel env pull`

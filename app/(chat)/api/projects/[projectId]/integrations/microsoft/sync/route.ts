@@ -1,0 +1,110 @@
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import { auth } from "@/app/(auth)/auth";
+import {
+  getProjectByIdForUser,
+  getProjectDocsByProjectId,
+} from "@/lib/db/queries";
+import { syncMicrosoftDriveItemsToProjectDocs } from "@/lib/integrations/microsoft/sync-microsoft-docs";
+
+const BodySchema = z.object({
+  driveId: z.string().min(1),
+  items: z.array(
+    z.object({
+      itemId: z.string().min(1),
+      filename: z.string().min(1),
+    })
+  ).min(1).max(50),
+});
+
+export async function GET(
+  request: Request,
+  { params }: { params: Promise<{ projectId: string }> }
+) {
+  const session = await auth();
+  if (!session?.user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { projectId } = await params;
+  const project = await getProjectByIdForUser({
+    projectId,
+    userId: session.user.id,
+  });
+  if (!project) {
+    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  }
+
+  try {
+    const docs = await getProjectDocsByProjectId({ projectId });
+    
+    // Filter for docs that have Microsoft metadata
+    const syncedDocs = docs
+      .filter((doc) => {
+        const meta = doc.metadata as Record<string, unknown> | null;
+        return meta && typeof meta.driveId === "string" && typeof meta.itemId === "string";
+      })
+      .map((doc) => {
+        const meta = doc.metadata as Record<string, unknown>;
+        return {
+          docId: doc.id,
+          filename: doc.filename,
+          itemId: meta.itemId as string,
+          driveId: meta.driveId as string,
+          lastSyncedAt: (meta.lastSyncedAt as string) || doc.createdAt.toISOString(),
+          lastModifiedDateTime: meta.lastModifiedDateTime as string | undefined,
+        };
+      });
+
+    return NextResponse.json({ docs: syncedDocs }, { status: 200 });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to list synced docs";
+    const cause =
+      error instanceof Error && typeof error.cause === "string" ? error.cause : null;
+    console.error("Microsoft sync list error:", message, cause ? `cause: ${cause}` : "");
+    // Don’t break the UI if DB reads fail; return empty list with a warning.
+    return NextResponse.json({ docs: [], warning: cause ?? message }, { status: 200 });
+  }
+}
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ projectId: string }> }
+) {
+  const session = await auth();
+  if (!session?.user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { projectId } = await params;
+  const project = await getProjectByIdForUser({
+    projectId,
+    userId: session.user.id,
+  });
+  if (!project) {
+    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = BodySchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  }
+
+  const results = await syncMicrosoftDriveItemsToProjectDocs({
+    userId: session.user.id,
+    project,
+    driveId: parsed.data.driveId,
+    items: parsed.data.items,
+  });
+
+  return NextResponse.json({ results }, { status: 200 });
+}
+

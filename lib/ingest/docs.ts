@@ -15,7 +15,7 @@ function safeProjectSlug(input: string) {
   return slug.replace(/^_+|_+$/g, "") || "default";
 }
 
-function chunkText(text: string, maxLen = 1800, overlap = 200) {
+function chunkText(text: string, maxLen = 2400, overlap = 200) {
   const chunks: string[] = [];
   const n = text.length;
   if (n === 0 || maxLen <= 0) {
@@ -104,6 +104,71 @@ async function extractTextFromPdf(buffer: Buffer) {
   return pageTexts.join("\n").trim();
 }
 
+async function extractPagesFromPdf(buffer: Buffer): Promise<string[]> {
+  // Reuse the same extraction logic, but keep per-page boundaries for chunking.
+  // This intentionally duplicates minimal logic to avoid changing existing behavior for non-PDF inputs.
+  const g = globalThis as unknown as Record<string, unknown>;
+  if (typeof g.DOMMatrix === "undefined") {
+    g.DOMMatrix = class DOMMatrix {
+      // eslint-disable-next-line @typescript-eslint/no-useless-constructor
+      constructor() {}
+    };
+  }
+  if (typeof g.ImageData === "undefined") {
+    g.ImageData = class ImageData {
+      // eslint-disable-next-line @typescript-eslint/no-useless-constructor
+      constructor() {}
+    };
+  }
+  if (typeof g.Path2D === "undefined") {
+    g.Path2D = class Path2D {
+      // eslint-disable-next-line @typescript-eslint/no-useless-constructor
+      constructor() {}
+    };
+  }
+
+  const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as any;
+  try {
+    const workerFsPath = path.join(
+      process.cwd(),
+      "node_modules",
+      "pdfjs-dist",
+      "legacy",
+      "build",
+      "pdf.worker.mjs"
+    );
+    pdfjs.GlobalWorkerOptions.workerSrc =
+      pathToFileURL(workerFsPath).toString();
+  } catch {
+    // Best-effort
+  }
+
+  const data = new Uint8Array(
+    buffer.buffer,
+    buffer.byteOffset,
+    buffer.byteLength
+  );
+  const loadingTask = pdfjs.getDocument({ data, disableWorker: true });
+  const doc = await loadingTask.promise;
+
+  const pageNumbers = Array.from({ length: doc.numPages }, (_, i) => i + 1);
+  const pageTexts = await Promise.all(
+    pageNumbers.map(async (pageNumber) => {
+      const page = await doc.getPage(pageNumber);
+      const content = await page.getTextContent();
+      const items: Array<{ str?: unknown }> = Array.isArray(content?.items)
+        ? content.items
+        : [];
+      return items
+        .map((item) => (typeof item.str === "string" ? item.str : ""))
+        .join(" ")
+        .trim();
+    })
+  );
+
+  return pageTexts.filter((t) => t.length > 0);
+}
+
 async function extractTextFromDocx(buffer: Buffer) {
   const result = await mammoth.extractRawText({ buffer });
   return (result.value ?? "").trim();
@@ -121,6 +186,7 @@ export async function ingestUploadedDocToTurbopuffer({
   description,
   mimeType,
   blobUrl,
+  sourceUrl,
   sourceCreatedAtMs,
   fileBuffer,
 }: {
@@ -135,6 +201,7 @@ export async function ingestUploadedDocToTurbopuffer({
   description?: string | null;
   mimeType: string;
   blobUrl: string;
+  sourceUrl?: string | null;
   sourceCreatedAtMs: number;
   fileBuffer: Buffer;
 }) {
@@ -145,13 +212,16 @@ export async function ingestUploadedDocToTurbopuffer({
   const indexedAtMs = Date.now();
 
   let fullText = "";
+  let chunks: string[] = [];
   if (mimeType === "application/pdf") {
-    fullText = await extractTextFromPdf(fileBuffer);
+    chunks = await extractPagesFromPdf(fileBuffer);
+    fullText = chunks.join("\n").trim();
   } else if (
     mimeType ===
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   ) {
     fullText = await extractTextFromDocx(fileBuffer);
+    chunks = chunkText(fullText);
   } else {
     throw new Error(`Unsupported mimeType for ingestion: ${mimeType}`);
   }
@@ -160,7 +230,6 @@ export async function ingestUploadedDocToTurbopuffer({
     throw new Error("No extractable text found");
   }
 
-  const chunks = chunkText(fullText);
   if (chunks.length === 0) {
     throw new Error("No chunks produced");
   }
@@ -193,6 +262,8 @@ export async function ingestUploadedDocToTurbopuffer({
           ? `${chunk.slice(0, MAX_CONTENT_CHARS)}…`
           : chunk,
       sourceType: "docs",
+      doc_source: sourceUrl && sourceUrl.toLowerCase().includes("sharepoint.com") ? "sharepoint" : "upload",
+      source_url: sourceUrl ?? null,
       sourceCreatedAtMs,
       indexedAtMs,
       doc_id: docId,

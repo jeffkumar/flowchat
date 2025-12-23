@@ -10,6 +10,7 @@ import {
   gte,
   inArray,
   lt,
+  sql,
   type SQL,
 } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -24,10 +25,14 @@ import {
   chat,
   type DBMessage,
   document,
+  integrationConnection,
   message,
+  type IntegrationConnection,
   type Project,
   type ProjectDoc,
   project,
+  projectIntegrationSource,
+  type ProjectIntegrationSource,
   projectDoc,
   type Suggestion,
   stream,
@@ -306,6 +311,7 @@ export async function createProjectDoc({
   mimeType,
   sizeBytes,
   turbopufferNamespace,
+  metadata,
 }: {
   projectId: string;
   createdBy: string;
@@ -317,6 +323,7 @@ export async function createProjectDoc({
   mimeType: string;
   sizeBytes: number;
   turbopufferNamespace?: string | null;
+  metadata?: Record<string, unknown> | null;
 }): Promise<ProjectDoc> {
   try {
     const [created] = await db
@@ -332,6 +339,7 @@ export async function createProjectDoc({
         mimeType,
         sizeBytes,
         turbopufferNamespace: turbopufferNamespace ?? null,
+        metadata: metadata ?? null,
         createdAt: new Date(),
       })
       .returning();
@@ -341,10 +349,10 @@ export async function createProjectDoc({
     }
 
     return created;
-  } catch (_error) {
+  } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
-      "Failed to create project doc"
+      error instanceof Error ? error.message : "Failed to create project doc"
     );
   }
 }
@@ -382,10 +390,12 @@ export async function getProjectDocsByProjectId({
       .from(projectDoc)
       .where(eq(projectDoc.projectId, projectId))
       .orderBy(desc(projectDoc.createdAt));
-  } catch (_error) {
+  } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
-      "Failed to get project docs by project id"
+      error instanceof Error
+        ? error.message
+        : "Failed to get project docs by project id"
     );
   }
 }
@@ -491,10 +501,12 @@ export async function markProjectDocIndexed({
         indexingError: null,
       })
       .where(eq(projectDoc.id, docId));
-  } catch (_error) {
+  } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
-      "Failed to mark project doc indexed"
+      error instanceof Error
+        ? error.message
+        : "Failed to mark project doc indexed"
     );
   }
 }
@@ -513,10 +525,178 @@ export async function markProjectDocIndexError({
         indexingError: error,
       })
       .where(eq(projectDoc.id, docId));
+  } catch (caught) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      caught instanceof Error
+        ? caught.message
+        : "Failed to mark project doc indexing error"
+    );
+  }
+}
+
+export async function upsertIntegrationConnection({
+  userId,
+  provider,
+  accountEmail,
+  providerAccountId,
+  tenantId,
+  scopes,
+  accessTokenEnc,
+  refreshTokenEnc,
+  expiresAt,
+}: {
+  userId: string;
+  provider: "microsoft" | "google";
+  accountEmail?: string | null;
+  providerAccountId?: string | null;
+  tenantId?: string | null;
+  scopes: string[];
+  accessTokenEnc?: string | null;
+  refreshTokenEnc?: string | null;
+  expiresAt?: Date | null;
+}): Promise<IntegrationConnection> {
+  try {
+    const now = new Date();
+    const [created] = await db
+      .insert(integrationConnection)
+      .values({
+        userId,
+        provider,
+        accountEmail: accountEmail ?? null,
+        providerAccountId: providerAccountId ?? null,
+        tenantId: tenantId ?? null,
+        scopes,
+        accessTokenEnc: accessTokenEnc ?? null,
+        refreshTokenEnc: refreshTokenEnc ?? null,
+        expiresAt: expiresAt ?? null,
+        revokedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [
+          integrationConnection.provider,
+          integrationConnection.tenantId,
+          integrationConnection.providerAccountId,
+        ],
+        set: {
+          userId,
+          accountEmail: accountEmail ?? null,
+          scopes,
+          accessTokenEnc: accessTokenEnc ?? null,
+          refreshTokenEnc: refreshTokenEnc ?? null,
+          expiresAt: expiresAt ?? null,
+          revokedAt: null,
+          updatedAt: now,
+        },
+      })
+      .returning();
+
+    if (!created) {
+      throw new Error("IntegrationConnection upsert returned no row");
+    }
+
+    return created;
   } catch (_error) {
     throw new ChatSDKError(
       "bad_request:database",
-      "Failed to mark project doc indexing error"
+      "Failed to upsert integration connection"
+    );
+  }
+}
+
+export async function getIntegrationConnectionForUser({
+  userId,
+  provider,
+}: {
+  userId: string;
+  provider: "microsoft" | "google";
+}): Promise<IntegrationConnection | null> {
+  try {
+    const [found] = await db
+      .select()
+      .from(integrationConnection)
+      .where(
+        and(
+          eq(integrationConnection.userId, userId),
+          eq(integrationConnection.provider, provider)
+        )
+      )
+      .orderBy(desc(integrationConnection.updatedAt))
+      .limit(1);
+    return found ?? null;
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to get integration connection"
+    );
+  }
+}
+
+export async function revokeIntegrationConnection({
+  connectionId,
+}: {
+  connectionId: string;
+}) {
+  try {
+    return await db
+      .update(integrationConnection)
+      .set({ revokedAt: new Date(), updatedAt: new Date() })
+      .where(eq(integrationConnection.id, connectionId));
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to revoke integration connection"
+    );
+  }
+}
+
+export async function createProjectIntegrationSource({
+  projectId,
+  createdBy,
+  provider,
+  resourceType,
+  siteId,
+  driveId,
+  itemId,
+}: {
+  projectId: string;
+  createdBy: string;
+  provider: "microsoft" | "google";
+  resourceType: "sharepoint_folder" | "google_drive_folder";
+  siteId?: string | null;
+  driveId?: string | null;
+  itemId?: string | null;
+}): Promise<ProjectIntegrationSource> {
+  try {
+    const now = new Date();
+    const [created] = await db
+      .insert(projectIntegrationSource)
+      .values({
+        projectId,
+        createdBy,
+        provider,
+        resourceType,
+        siteId: siteId ?? null,
+        driveId: driveId ?? null,
+        itemId: itemId ?? null,
+        syncEnabled: false,
+        cursor: null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+
+    if (!created) {
+      throw new Error("ProjectIntegrationSource insert returned no row");
+    }
+
+    return created;
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to create project integration source"
     );
   }
 }
@@ -1039,6 +1219,57 @@ export async function getStreamIdsByChatId({ chatId }: { chatId: string }) {
     throw new ChatSDKError(
       "bad_request:database",
       "Failed to get stream ids by chat id"
+    );
+  }
+}
+
+export async function getProjectDocByMicrosoftItemId({
+  projectId,
+  itemId,
+}: {
+  projectId: string;
+  itemId: string;
+}): Promise<ProjectDoc | null> {
+  try {
+    const [doc] = await db
+      .select()
+      .from(projectDoc)
+      .where(
+        and(
+          eq(projectDoc.projectId, projectId),
+          sql`${projectDoc.metadata}->>'itemId' = ${itemId}`
+        )
+      )
+      .limit(1);
+    return doc ?? null;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error
+        ? error.message
+        : "Failed to get project doc by microsoft item id"
+    );
+  }
+}
+
+export async function updateProjectDoc({
+  docId,
+  data,
+}: {
+  docId: string;
+  data: Partial<ProjectDoc>;
+}) {
+  try {
+    const [updated] = await db
+      .update(projectDoc)
+      .set(data)
+      .where(eq(projectDoc.id, docId))
+      .returning();
+    return updated;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to update project doc"
     );
   }
 }

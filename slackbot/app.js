@@ -10,8 +10,12 @@ const app = new App({
 // --- Turbopuffer + OpenAI helpers -------------------------------------------------
 
 const turbopufferApiKey = process.env.TURBOPUFFER_API_KEY;
+const useGlobalSlack = String(process.env.USE_GLOBAL_SLACK || "")
+  .trim()
+  .toLowerCase() === "true";
+const defaultSlackNamespace = useGlobalSlack ? "_synergy_slack" : "_synergy_slackv2";
 const turbopufferNamespace =
-  process.env.TURBOPUFFER_NAMESPACE || "_synergy_slackv2";
+  process.env.TURBOPUFFER_NAMESPACE || defaultSlackNamespace;
 
 function toSlackMarkdown(text) {
   if (typeof text !== "string") {

@@ -184,6 +184,7 @@ export async function POST(request: Request) {
               description: doc.description,
               mimeType: file.type,
               blobUrl: data.url,
+              sourceUrl: null,
               sourceCreatedAtMs: doc.createdAt.getTime(),
               fileBuffer: buffer,
             });
