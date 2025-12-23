@@ -58,7 +58,10 @@ export async function GET(request: Request) {
 
     let nextLink: string | null = url.toString();
     while (nextLink && all.length < 2000) {
-      const data = await graphJson<GraphItemsResponse>(session.user.id, nextLink);
+      const data: GraphItemsResponse = await graphJson<GraphItemsResponse>(
+        session.user.id,
+        nextLink
+      );
       const batch = (data.value ?? [])
         .map((i) => ({
           id: typeof i.id === "string" ? i.id : null,

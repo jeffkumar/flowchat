@@ -105,7 +105,6 @@ export const ChatHeader = memo(PureChatHeader, (prevProps, nextProps) => {
     prevProps.chatId === nextProps.chatId &&
     prevProps.selectedVisibilityType === nextProps.selectedVisibilityType &&
     prevProps.isReadonly === nextProps.isReadonly &&
-    prevProps.ignoredDocIds === nextProps.ignoredDocIds &&
-    prevProps.retrievalRangePreset === nextProps.retrievalRangePreset
+    prevProps.ignoredDocIds === nextProps.ignoredDocIds
   );
 });

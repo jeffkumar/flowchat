@@ -18,8 +18,6 @@ import { ingestUploadedDocToTurbopuffer } from "@/lib/ingest/docs";
 import { deleteByFilterFromTurbopuffer } from "@/lib/rag/turbopuffer";
 import { getMicrosoftAccessTokenForUser } from "@/lib/integrations/microsoft/graph";
 
-export const runtime = "nodejs";
-
 const BodySchema = z.object({
   driveId: z.string().min(1),
   itemIds: z.array(z.string().min(1)).min(1).max(10),
