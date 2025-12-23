@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { OneDriveIcon } from "@/components/icons";
+import { OneDriveIcon, ShareIcon as ShareSourceIcon } from "@/components/icons";
 import {
   AlertDialog,
   AlertDialogAction,
