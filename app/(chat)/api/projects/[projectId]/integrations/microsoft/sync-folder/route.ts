@@ -21,6 +21,18 @@ type GraphChild = {
   file?: object;
 };
 
+const SUPPORTED_FILE_EXTENSIONS = new Set(["pdf", "doc", "docx"]);
+
+function isSupportedMicrosoftFileName(name: string | undefined): boolean {
+  if (!name) return false;
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  const lastDot = trimmed.lastIndexOf(".");
+  if (lastDot <= 0 || lastDot === trimmed.length - 1) return false;
+  const ext = trimmed.slice(lastDot + 1).toLowerCase();
+  return SUPPORTED_FILE_EXTENSIONS.has(ext);
+}
+
 function chunk<T>(items: T[], size: number) {
   const result: T[][] = [];
   for (let i = 0; i < items.length; i += size) {
@@ -78,7 +90,9 @@ async function listFolderChildrenRecursive({
         if (child.folder) {
           pendingFolders.push(child.id);
         } else if (child.file) {
-          files.push({ itemId: child.id, filename: child.name });
+          if (isSupportedMicrosoftFileName(child.name)) {
+            files.push({ itemId: child.id, filename: child.name });
+          }
         }
       }
 

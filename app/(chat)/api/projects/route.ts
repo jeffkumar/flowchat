@@ -7,6 +7,7 @@ import {
   getOrCreateDefaultProjectForUser,
   getProjectsByUserId,
 } from "@/lib/db/queries";
+import { ChatSDKError } from "@/lib/errors";
 
 const createProjectSchema = z.object({
   name: z.string().trim().min(1).max(200),
@@ -19,11 +20,21 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Ensure the default project exists so callers can rely on it.
-  await getOrCreateDefaultProjectForUser({ userId: session.user.id });
-  const projects = await getProjectsByUserId(session.user.id);
+  try {
+    // Ensure the default project exists so callers can rely on it.
+    await getOrCreateDefaultProjectForUser({ userId: session.user.id });
+    const projects = await getProjectsByUserId(session.user.id);
 
-  return NextResponse.json({ projects }, { status: 200 });
+    return NextResponse.json({ projects }, { status: 200 });
+  } catch (error) {
+    if (error instanceof ChatSDKError) {
+      return error.toResponse();
+    }
+    return new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to load projects"
+    ).toResponse();
+  }
 }
 
 export async function POST(request: Request) {

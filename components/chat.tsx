@@ -123,6 +123,9 @@ export function Chat({
   const sourceTypesRef = useRef(sourceTypes);
   const retrievalRangePresetRef = useRef(retrievalRangePreset);
 
+  // Keep refs in sync during render so a quick toggle + send doesn't use stale values.
+  sourceTypesRef.current = sourceTypes;
+
   const browserTimeZone =
     typeof Intl !== "undefined"
       ? Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -260,10 +263,6 @@ export function Chat({
   useEffect(() => {
     selectedProjectIdRef.current = selectedProjectId;
   }, [selectedProjectId]);
-
-  useEffect(() => {
-    sourceTypesRef.current = sourceTypes;
-  }, [sourceTypes, includeSlack]);
 
   useEffect(() => {
     retrievalRangePresetRef.current = retrievalRangePreset;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import type { RetrievalRangePreset } from "@/components/chat-header";
 
 const INCLUDE_SLACK_STORAGE_KEY = "synergy_retrieval_include_slack";
@@ -36,7 +36,11 @@ function sanitizeIncludeSlack(value: unknown): boolean | null {
 }
 
 function sanitizeRangePreset(value: unknown): RetrievalRangePreset | null {
-  return value === "all" || value === "1d" || value === "7d" || value === "30d" || value === "90d"
+  return value === "all" ||
+    value === "1d" ||
+    value === "7d" ||
+    value === "30d" ||
+    value === "90d"
     ? value
     : null;
 }
@@ -63,23 +67,8 @@ function readRangePresetFromStorage(): RetrievalRangePreset | null {
 }
 
 export function useRetrievalSettings() {
-  const [includeSlack, setIncludeSlack] = useState(
-    () => readIncludeSlackFromStorage() ?? true
-  );
-  const [retrievalRangePreset, setRetrievalRangePreset] =
-    useState<RetrievalRangePreset>(() => readRangePresetFromStorage() ?? "all");
-
-  useEffect(() => {
-    const syncFromStorage = () => {
-      const nextIncludeSlack = readIncludeSlackFromStorage();
-      if (nextIncludeSlack !== null) {
-        setIncludeSlack((prev) => (prev !== nextIncludeSlack ? nextIncludeSlack : prev));
-      }
-      const nextPreset = readRangePresetFromStorage();
-      if (nextPreset) {
-        setRetrievalRangePreset((prev) => (prev !== nextPreset ? nextPreset : prev));
-      }
-    };
+  const subscribe = useCallback((onStoreChange: () => void) => {
+    if (typeof window === "undefined") return () => {};
 
     const onSettingsChanged = (event: Event) => {
       const custom = event as CustomEvent<{ key?: unknown }>;
@@ -90,7 +79,7 @@ export function useRetrievalSettings() {
         key === RANGE_PRESET_STORAGE_KEY ||
         key === SOURCE_TYPES_STORAGE_KEY
       ) {
-        syncFromStorage();
+        onStoreChange();
       }
     };
 
@@ -101,7 +90,7 @@ export function useRetrievalSettings() {
         event.key === RANGE_PRESET_STORAGE_KEY ||
         event.key === SOURCE_TYPES_STORAGE_KEY
       ) {
-        syncFromStorage();
+        onStoreChange();
       }
     };
 
@@ -113,15 +102,32 @@ export function useRetrievalSettings() {
     };
   }, []);
 
-  useEffect(() => {
-    writeJson(INCLUDE_SLACK_STORAGE_KEY, includeSlack);
-  }, [includeSlack]);
+  const includeSlack = useSyncExternalStore<boolean>(
+    subscribe,
+    () => readIncludeSlackFromStorage() ?? true,
+    () => true
+  );
 
-  useEffect(() => {
-    writeJson(RANGE_PRESET_STORAGE_KEY, retrievalRangePreset);
-  }, [retrievalRangePreset]);
+  const retrievalRangePreset = useSyncExternalStore<RetrievalRangePreset>(
+    subscribe,
+    () => readRangePresetFromStorage() ?? "all",
+    () => "all"
+  );
 
-  return { includeSlack, setIncludeSlack, retrievalRangePreset, setRetrievalRangePreset };
+  const setIncludeSlack = useCallback((next: boolean) => {
+    writeJson(INCLUDE_SLACK_STORAGE_KEY, next);
+  }, []);
+
+  const setRetrievalRangePreset = useCallback((next: RetrievalRangePreset) => {
+    writeJson(RANGE_PRESET_STORAGE_KEY, next);
+  }, []);
+
+  return {
+    includeSlack,
+    setIncludeSlack,
+    retrievalRangePreset,
+    setRetrievalRangePreset,
+  };
 }
 
 

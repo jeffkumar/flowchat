@@ -74,10 +74,25 @@ type SyncedDoc = {
 };
 
 const MAX_LABEL_CHARS = 200;
+const SUPPORTED_FILE_EXTENSIONS = new Set(["pdf", "doc", "docx"]);
 
 function truncateLabel(value: string, maxChars = MAX_LABEL_CHARS): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}…`;
+}
+
+function isSupportedMicrosoftFileName(name: string | null): boolean {
+  if (!name) return false;
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  const lastDot = trimmed.lastIndexOf(".");
+  if (lastDot <= 0 || lastDot === trimmed.length - 1) return false;
+  const ext = trimmed.slice(lastDot + 1).toLowerCase();
+  return SUPPORTED_FILE_EXTENSIONS.has(ext);
+}
+
+function filterMicrosoftItemsForDisplay(items: Item[]): Item[] {
+  return items.filter((item) => item.isFolder || isSupportedMicrosoftFileName(item.name));
 }
 
 function safeDecodeURIComponent(value: string): string {
@@ -206,7 +221,7 @@ export function MicrosoftIntegrationCard() {
       url.searchParams.set("driveId", driveId);
       if (folderId) url.searchParams.set("itemId", folderId);
       const res = (await fetcher(url.pathname + url.search)) as { items: Item[] };
-      setItems(res.items ?? []);
+      setItems(filterMicrosoftItemsForDisplay(res.items ?? []));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to list items");
     } finally {
@@ -222,7 +237,7 @@ export function MicrosoftIntegrationCard() {
       const res = (await fetcher(
         `/api/integrations/microsoft/search?q=${encodeURIComponent(globalSearchQuery.trim())}`
       )) as { items: Item[] };
-      setSearchResults(res.items ?? []);
+      setSearchResults(filterMicrosoftItemsForDisplay(res.items ?? []));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Search failed");
     } finally {
@@ -484,6 +499,11 @@ export function MicrosoftIntegrationCard() {
         saveRecentLocation({ driveId: res.driveId, folderId: res.item.id, name: res.item.name ?? "Folder" });
         toast.success("Opened folder");
         setSharePointUrl(""); // clear input on success
+        return;
+      }
+
+      if (!isSupportedMicrosoftFileName(res.item.name)) {
+        toast.error("Only PDF or Word documents (.pdf, .doc, .docx) are supported.");
         return;
       }
 
@@ -902,7 +922,7 @@ export function MicrosoftIntegrationCard() {
 
               <ScrollArea className="h-64 rounded-md border bg-background">
                 <div className="divide-y">
-                  {items.map((item) => {
+                  {filterMicrosoftItemsForDisplay(items).map((item) => {
                     const label = item.name ?? item.id;
                     const displayLabel = truncateLabel(label);
                     const syncKey = `${selectedDriveId}:${item.id}`;

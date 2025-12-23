@@ -50,6 +50,25 @@ export class ChatSDKError extends Error {
     this.surface = surface as Surface;
     this.message = getMessageByErrorCode(errorCode);
     this.statusCode = getStatusCodeByType(this.type);
+
+    // Normalize DB connectivity issues into a 503 (these are not user bad requests).
+    if (this.surface === "database") {
+      const normalizedCause = typeof this.cause === "string" ? this.cause.toLowerCase() : "";
+      const isConnectivityIssue =
+        normalizedCause.includes("connect_timeout") ||
+        normalizedCause.includes("timeout") ||
+        normalizedCause.includes("econnrefused") ||
+        normalizedCause.includes("enotfound") ||
+        normalizedCause.includes("eai_again") ||
+        normalizedCause.includes("network");
+
+      if (isConnectivityIssue) {
+        this.type = "offline";
+        this.statusCode = getStatusCodeByType(this.type);
+      } else if (this.type === "bad_request") {
+        this.statusCode = 500;
+      }
+    }
   }
 
   toResponse() {
@@ -66,7 +85,7 @@ export class ChatSDKError extends Error {
       });
 
       return Response.json(
-        { code: "", message: "Something went wrong. Please try again later." },
+        { code, message: "Something went wrong. Please try again later." },
         { status: statusCode }
       );
     }

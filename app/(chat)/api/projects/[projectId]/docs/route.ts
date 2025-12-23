@@ -5,6 +5,7 @@ import {
   getProjectByIdForUser,
   getProjectDocsByProjectId,
 } from "@/lib/db/queries";
+import { ChatSDKError } from "@/lib/errors";
 
 export async function GET(
   _request: NextRequest,
@@ -16,17 +17,27 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { projectId } = await params;
-  const project = await getProjectByIdForUser({
-    projectId,
-    userId: session.user.id,
-  });
+  try {
+    const { projectId } = await params;
+    const project = await getProjectByIdForUser({
+      projectId,
+      userId: session.user.id,
+    });
 
-  if (!project) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
+    if (!project) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    const docs = await getProjectDocsByProjectId({ projectId });
+
+    return NextResponse.json({ docs }, { status: 200 });
+  } catch (error) {
+    if (error instanceof ChatSDKError) {
+      return error.toResponse();
+    }
+    return new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to load project docs"
+    ).toResponse();
   }
-
-  const docs = await getProjectDocsByProjectId({ projectId });
-
-  return NextResponse.json({ docs }, { status: 200 });
 }

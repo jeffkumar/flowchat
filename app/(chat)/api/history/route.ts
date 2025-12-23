@@ -24,15 +24,25 @@ export async function GET(request: NextRequest) {
     return new ChatSDKError("unauthorized:chat").toResponse();
   }
 
-  const chats = await getChatsByUserId({
-    id: session.user.id,
-    projectId: projectId || undefined,
-    limit,
-    startingAfter,
-    endingBefore,
-  });
+  try {
+    const chats = await getChatsByUserId({
+      id: session.user.id,
+      projectId: projectId || undefined,
+      limit,
+      startingAfter,
+      endingBefore,
+    });
 
-  return Response.json(chats);
+    return Response.json(chats);
+  } catch (error) {
+    if (error instanceof ChatSDKError) {
+      return error.toResponse();
+    }
+    return new ChatSDKError(
+      "bad_request:history",
+      error instanceof Error ? error.message : "Failed to fetch chat history"
+    ).toResponse();
+  }
 }
 
 export async function DELETE() {

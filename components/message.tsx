@@ -74,6 +74,95 @@ const PurePreviewMessage = ({
     return out;
   })();
 
+  const usedCitationSources = (() => {
+    if (!showCitations || uniqueSources.length === 0) return [];
+    if (message.role !== "assistant") return [];
+
+    const indices = new Set<number>();
+    for (const part of message.parts) {
+      if (part.type !== "text") continue;
+      const text = typeof part.text === "string" ? part.text : "";
+      // Use a citation marker that won't be treated as Markdown footnotes.
+      // Example: 【1】 refers to the 1st source in the provided sources list.
+      const matches = text.matchAll(/【(\d+)】/g);
+      for (const match of matches) {
+        const raw = match[1];
+        if (!raw) continue;
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n < 1) continue;
+        indices.add(n);
+      }
+    }
+
+    if (indices.size === 0) return [];
+
+    const sorted = Array.from(indices).sort((a, b) => a - b);
+    const used: RetrievedSource[] = [];
+    for (const n of sorted) {
+      const source = uniqueSources[n - 1];
+      if (source) used.push(source);
+    }
+    return used;
+  })();
+
+  const shouldEnumerateCitations = usedCitationSources.length > 1;
+
+  const sanitizeCitationMarkers = (text: string): string => {
+    if (message.role !== "assistant") return text;
+    if (!showCitations) {
+      return text.replace(/【(\d+)】/g, "");
+    }
+    // During streaming, sources may not be attached yet. Strip markers to avoid
+    // showing confusing citation indices that can't be resolved.
+    if (uniqueSources.length === 0) {
+      return text.replace(/【(\d+)】/g, "");
+    }
+
+    return text.replace(/【(\d+)】/g, (full, raw: string) => {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 1) return "";
+      return n <= uniqueSources.length ? full : "";
+    });
+  };
+
+  // Keep 1:1 indexing with `uniqueSources` so marker 【N】 always maps to source N.
+  const citationHrefsByIndex = uniqueSources.map((s) =>
+    typeof s.blobUrl === "string" ? s.blobUrl : ""
+  );
+  const citationHrefs = citationHrefsByIndex.filter((href) => href.length > 0);
+  const citationHrefsKey = citationHrefsByIndex.join("|");
+
+  const getSourceLabel = (source: RetrievedSource | undefined): string => {
+    if (source?.sourceType === "slack") {
+      return source.channelName ? `#${source.channelName}` : "Slack";
+    }
+
+    const name = source?.filename ?? "";
+    const lastDot = name.lastIndexOf(".");
+    const ext =
+      lastDot >= 0 && lastDot < name.length - 1 ? name.slice(lastDot + 1) : "";
+    const upper = ext.trim().toUpperCase();
+    if (upper === "PDF" || upper === "DOC" || upper === "DOCX") return upper;
+
+    return "Source";
+  };
+
+  const linkifyCitationMarkers = (text: string): string => {
+    if (!showCitations) return text;
+    if (message.role !== "assistant") return text;
+    if (uniqueSources.length === 0) return text;
+
+    return text.replace(/【(\d+)】/g, (full, raw: string) => {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 1 || n > uniqueSources.length) return "";
+      const href = citationHrefsByIndex.at(n - 1);
+      if (!href) return full;
+      const labelPart = getSourceLabel(uniqueSources.at(n - 1));
+      const label = shouldEnumerateCitations ? `${n} ${labelPart}` : labelPart;
+      return `[${label}](${href})`;
+    });
+  };
+
   const attachmentsFromMessage = message.parts.filter(
     (part) => part.type === "file"
   );
@@ -147,6 +236,8 @@ const PurePreviewMessage = ({
 
             if (type === "text") {
               if (mode === "view") {
+                const safe = sanitizeCitationMarkers(sanitizeText(part.text));
+                const text = linkifyCitationMarkers(safe);
                 return (
                   <div key={key}>
                     <MessageContent
@@ -163,7 +254,12 @@ const PurePreviewMessage = ({
                           : undefined
                       }
                     >
-                      <Response>{sanitizeText(part.text)}</Response>
+                      <Response
+                        citationHrefs={showCitations ? citationHrefs : undefined}
+                        citationHrefsKey={showCitations ? citationHrefsKey : undefined}
+                      >
+                        {text}
+                      </Response>
                     </MessageContent>
                   </div>
                 );
@@ -295,41 +391,57 @@ const PurePreviewMessage = ({
             return null;
           })}
 
-          {showCitations && uniqueSources.length > 0 && (
+          {usedCitationSources.length > 0 && (
             <div className="mt-4 flex flex-col gap-2">
               <div className="text-xs font-medium text-muted-foreground">
                 Citations
               </div>
               <div className="flex flex-wrap gap-2">
-                {uniqueSources.map((source, i) => {
+                {usedCitationSources.map((source, i) => {
+                  const indexInUnique = uniqueSources.indexOf(source);
+                  const citationNumber = indexInUnique >= 0 ? indexInUnique + 1 : i + 1;
                   const baseTitle =
-                    source.filename ??
-                    (source.sourceType === "slack" ? "Slack" : "Source");
+                    source.sourceType === "slack"
+                      ? source.channelName
+                        ? `#${source.channelName}`
+                        : "Slack"
+                      : source.filename ?? "Source";
                   const href = source.blobUrl;
                   const isSharePoint =
                     source.sourceType === "docs" &&
                     typeof href === "string" &&
                     href.toLowerCase().includes("sharepoint.com");
-                  const title = isSharePoint ? `SharePoint: ${baseTitle}` : baseTitle;
+                  const title = baseTitle;
 
                   if (typeof href === "string" && href.length > 0) {
                     return (
                       <Source
                         href={href}
+                        aria-label={
+                          shouldEnumerateCitations
+                            ? `Open source ${citationNumber}: ${
+                                isSharePoint ? `SharePoint: ${title}` : title
+                              }`
+                            : `Open source: ${isSharePoint ? `SharePoint: ${title}` : title}`
+                        }
+                        className="rounded-full border bg-muted/50 px-3 py-1 text-xs font-medium hover:bg-muted"
                         key={i}
                         title={title}
-                        className="rounded-md border bg-muted/50 px-2 py-1 text-xs hover:bg-muted"
-                      />
+                      >
+                        {shouldEnumerateCitations ? `${citationNumber}. ${title}` : title}
+                      </Source>
                     );
                   }
 
                   return (
                     <div
-                      className="rounded-md border bg-muted/50 px-2 py-1 text-xs"
+                      className="rounded-full border bg-muted/50 px-3 py-1 text-xs font-medium"
                       key={i}
                       title={title}
                     >
-                      <span className="block max-w-[240px] truncate">{title}</span>
+                      <span className="block max-w-[240px] truncate">
+                        {shouldEnumerateCitations ? `${citationNumber}. ${title}` : title}
+                      </span>
                     </div>
                   );
                 })}

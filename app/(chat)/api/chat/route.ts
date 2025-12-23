@@ -70,6 +70,10 @@ type RelativeDay = "today" | "yesterday" | "dayBeforeYesterday";
 const TIME_RANGE_HINT_RE =
   /\b(last|past|yesterday|today|since|between|from|in the last|\d+\s*(day|week|month|year)s?|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{1,2}\/\d{1,2}|\d{4}-\d{2}-\d{2})\b/i;
 
+// Heuristic: aggregation questions need more coverage across many docs (e.g. "sum across 30 invoices").
+const AGGREGATION_HINT_RE =
+  /\b(sum|total|add\s+up|aggregate|roll\s*up|grand\s+total)\b|\b(invoices?|receipts?)\b|\bacross\s+\d+\b/i;
+
 function startMsForPreset(preset: RetrievalRangePreset | undefined, nowMs: number) {
   if (!preset || preset === "all") {
     return null;
@@ -831,6 +835,34 @@ export async function POST(request: Request) {
     let sources: any[] = [];
     if (userText) {
       try {
+        const inferDocLockFilenameHint = (text: string): string | null => {
+          // Explicit filename mention (prefer this).
+          const explicit = Array.from(
+            text.matchAll(
+              /(["'`])([^"'`\n]{1,160}\.(?:pdf|docx?|txt))\1|([^\s\n]{1,160}\.(?:pdf|docx?|txt))/gi
+            )
+          )
+            .map((m) => (m[2] || m[3] || "").trim())
+            .filter(Boolean);
+          if (explicit.length > 0) {
+            return explicit.at(-1)?.toLowerCase() ?? null;
+          }
+
+          // Heuristic: "just use the strategy doc" -> lock to docs with "strategy" in filename.
+          const normalized = text.toLowerCase();
+          const asksForOnly =
+            normalized.includes("just use") ||
+            normalized.includes("use only") ||
+            normalized.includes("only use");
+          if (asksForOnly && normalized.includes("strategy") && normalized.includes("doc")) {
+            return "strategy";
+          }
+
+          return null;
+        };
+
+        const docLockFilenameHint = inferDocLockFilenameHint(userText);
+
         const nowMs = Date.now();
         const effectiveTimeZone =
           typeof retrievalTimeZone === "string" && retrievalTimeZone.length > 0
@@ -864,8 +896,11 @@ export async function POST(request: Request) {
         const requestedSourceTypes = (
           Array.isArray(sourceTypes) ? sourceTypes : undefined
         ) as SourceType[] | undefined;
+        const effectiveSourceTypes = docLockFilenameHint
+          ? (["docs"] satisfies SourceType[])
+          : requestedSourceTypes;
         const namespaces = namespacesForSourceTypes(
-          requestedSourceTypes,
+          effectiveSourceTypes,
           activeProjectId,
           isDefaultProject
         );
@@ -874,8 +909,9 @@ export async function POST(request: Request) {
           activeProjectId,
           isDefaultProject,
           namespaces,
-          requestedSourceTypes,
+          requestedSourceTypes: effectiveSourceTypes,
           ignoredDocIds,
+          docLockFilenameHint,
           retrievalTimeIntent: intent,
           retrievalTimeFilterMode: timeFilterMode,
           retrievalTimeFilterModeDefault: timeFilterModeInfo.defaultMode,
@@ -989,6 +1025,17 @@ export async function POST(request: Request) {
           )
         );
 
+        if (docLockFilenameHint) {
+          const hint = docLockFilenameHint.toLowerCase();
+          rowsByNamespace = rowsByNamespace.map((nsRows) =>
+            nsRows.filter((row) => {
+              const filename =
+                typeof (row as any).filename === "string" ? (row as any).filename : "";
+              return filename.toLowerCase().includes(hint);
+            })
+          );
+        }
+
         // Auto-fallback: if server-side `sourceCreatedAtMs` filtering yields no candidates,
         // retry without that filter and rely on per-row timestamps (`ts`/`sourceCreatedAtMs`)
         // in the post-filter step. This avoids requiring per-project allowlisting.
@@ -1011,6 +1058,16 @@ export async function POST(request: Request) {
               })
             )
           );
+          if (docLockFilenameHint) {
+            const hint = docLockFilenameHint.toLowerCase();
+            rowsByNamespace = rowsByNamespace.map((nsRows) =>
+              nsRows.filter((row) => {
+                const filename =
+                  typeof (row as any).filename === "string" ? (row as any).filename : "";
+                return filename.toLowerCase().includes(hint);
+              })
+            );
+          }
         }
 
         const fusedRows = rowsByNamespace.flat().sort((a, b) => {
@@ -1040,8 +1097,11 @@ export async function POST(request: Request) {
           timeFilteredRowsCount: timeFilteredRows.length,
         });
 
+        const isAggregationQuery = AGGREGATION_HINT_RE.test(userText);
+
         const cappedRows: typeof timeFilteredRows = [];
         const docIdCounts = new Map<string, number>();
+        const maxChunksPerDoc = isAggregationQuery ? 1 : 10;
         for (const row of timeFilteredRows) {
           const sourceType =
             typeof (row as any).sourceType === "string" ? (row as any).sourceType : "";
@@ -1050,15 +1110,15 @@ export async function POST(request: Request) {
               typeof (row as any).doc_id === "string" ? (row as any).doc_id : null;
             if (docId) {
               const count = docIdCounts.get(docId) ?? 0;
-              if (count >= 10) continue;
+              if (count >= maxChunksPerDoc) continue;
               docIdCounts.set(docId, count + 1);
             }
           }
           cappedRows.push(row);
         }
 
-        const filteredRows = cappedRows.slice(0, 24);
-        let usedRows = filteredRows.slice(0, 8);
+        const filteredRows = cappedRows.slice(0, isAggregationQuery ? 120 : 24);
+        let usedRows = filteredRows.slice(0, isAggregationQuery ? 40 : 8);
 
         const lastMentionName = extractLastMentionName(userText);
         if (lastMentionName) {
@@ -1201,9 +1261,24 @@ export async function POST(request: Request) {
           // Ignore logging failures
         }
         if (!retrievedContext) {
-          retrievedContext = formatRetrievedContext(usedRows);
+          if (isAggregationQuery) {
+            retrievedContext = usedRows
+              .map((row, index) => {
+                const contentValue = (row as any).content ?? "";
+                const content = String(contentValue);
+                const filename = typeof (row as any).filename === "string" ? (row as any).filename : "";
+                const channel =
+                  typeof (row as any).channel_name === "string" ? (row as any).channel_name : "";
+                const header = filename ? filename : channel ? `#${channel}` : `result ${index + 1}`;
+                const truncated = content.length > 700 ? `${content.slice(0, 700)}…` : content;
+                return `${header}\n${truncated}`;
+              })
+              .join("\n\n");
+          } else {
+            retrievedContext = formatRetrievedContext(usedRows);
+          }
         }
-        const MAX_RETRIEVED_CONTEXT_CHARS = 12_000;
+        const MAX_RETRIEVED_CONTEXT_CHARS = isAggregationQuery ? 20_000 : 12_000;
         if (retrievedContext.length > MAX_RETRIEVED_CONTEXT_CHARS) {
           retrievedContext =
             retrievedContext.slice(0, MAX_RETRIEVED_CONTEXT_CHARS) +
@@ -1235,6 +1310,7 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream({
       execute: ({ writer: dataStream }) => {
+        let citationInstructions: string | null = null;
         if (sources.length > 0) {
           const seen = new Set<string>();
           const uniqueSources = [];
@@ -1243,10 +1319,15 @@ export async function POST(request: Request) {
             const docId = typeof s.doc_id === "string" ? s.doc_id : "";
             const blobUrl = typeof s.blob_url === "string" ? s.blob_url : "";
             const sourceUrl = typeof (s as any).source_url === "string" ? (s as any).source_url : "";
+            const slackUrl = typeof (s as any).url === "string" ? (s as any).url : "";
+            const channelName =
+              typeof (s as any).channel_name === "string" ? (s as any).channel_name : "";
             const preferredUrl =
               sourceType === "docs" && sourceUrl.toLowerCase().includes("sharepoint.com")
                 ? sourceUrl
-                : blobUrl;
+                : sourceType === "slack" && slackUrl
+                  ? slackUrl
+                  : blobUrl || sourceUrl;
             const filename = typeof s.filename === "string" ? s.filename : "";
             const category =
               typeof (s as any).doc_category === "string" ? (s as any).doc_category : "";
@@ -1271,6 +1352,7 @@ export async function POST(request: Request) {
               sourceType,
               docId: docId || undefined,
               filename: filename || undefined,
+              channelName: channelName || undefined,
               category: category || undefined,
               description: description || undefined,
               blobUrl: preferredUrl || undefined,
@@ -1278,6 +1360,23 @@ export async function POST(request: Request) {
                 typeof s.content === "string" ? s.content.slice(0, 200) : undefined,
             });
           }
+
+          const sourceLines = uniqueSources
+            .slice(0, 20)
+            .map((s, idx) => {
+              const label =
+                (s.sourceType === "slack" && s.channelName ? `#${s.channelName}` : null) ??
+                s.filename ??
+                (typeof s.blobUrl === "string" && s.blobUrl.length > 0
+                  ? s.blobUrl
+                  : s.sourceType || "Source");
+              return `[${idx + 1}] ${label}`;
+            })
+            .join("\n");
+          const maxCitationIndex = Math.min(uniqueSources.length, 20);
+          citationInstructions = sourceLines.length
+            ? `\n\nSources (for citations):\n${sourceLines}\n\nIf you use retrieved context, cite it inline using the exact marker format \`【N】\` where N is the source number above. Valid N values are 1 through ${maxCitationIndex}. Never use any other number. Only include citations you actually used; if you didn't use any sources, include no \`【N】\` markers. Do not add a separate "Citations" section.`
+            : null;
 
           dataStream.write({
             type: "data-sources",
@@ -1293,7 +1392,7 @@ export async function POST(request: Request) {
           ? [
               {
                 role: "system" as const,
-                content: `Here is retrieved context:\n\n${retrievedContext}`,
+                content: `Here is retrieved context:\n\n${retrievedContext}${citationInstructions ?? ""}`,
               },
               ...baseMessages,
             ]
