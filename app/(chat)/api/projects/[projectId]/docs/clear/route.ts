@@ -44,11 +44,15 @@ export async function POST(
 
   let turbopufferRowsDeleted = 0;
   if (docsNamespace) {
+    const deleteFilters = project.isDefault
+      ? // Default namespace is shared across projects, so scope deletion to this project only.
+        ["And", [["sourceType", "Eq", "docs"], ["project_id", "Eq", project.id]]]
+      : // Project-specific namespace: safe to delete everything in the docs namespace.
+        ["sourceType", "Eq", "docs"];
+
     const { rowsDeleted } = await deleteByFilterFromTurbopuffer({
       namespace: docsNamespace,
-      // Avoid `null` comparisons (Turbopuffer FiltersInput rejects them) and
-      // ensure we only clear rows for this project (default namespaces are shared).
-      filters: ["And", [["sourceType", "Eq", "docs"], ["project_id", "Eq", project.id]]],
+      filters: deleteFilters,
     });
     turbopufferRowsDeleted = rowsDeleted;
   }
