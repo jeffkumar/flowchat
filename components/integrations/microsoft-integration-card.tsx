@@ -8,6 +8,13 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { OneDriveIcon, ShareIcon as ShareSourceIcon } from "@/components/icons";
 import {
@@ -70,14 +77,22 @@ type RecentLocation = {
 type SyncedDoc = {
   docId: string;
   filename: string;
+  documentType?: "general_doc" | "bank_statement" | "cc_statement" | "invoice";
+  parseStatus?: "pending" | "parsed" | "failed" | "needs_review";
   itemId: string;
   driveId: string;
   lastSyncedAt: string;
   lastModifiedDateTime?: string;
 };
 
+type IngestDocumentType =
+  | "general_doc"
+  | "bank_statement"
+  | "cc_statement"
+  | "invoice";
+
 const MAX_LABEL_CHARS = 200;
-const SUPPORTED_FILE_EXTENSIONS = new Set(["pdf", "doc", "docx"]);
+const SUPPORTED_FILE_EXTENSIONS = new Set(["pdf", "doc", "docx", "csv"]);
 
 function truncateLabel(value: string, maxChars = MAX_LABEL_CHARS): string {
   if (value.length <= maxChars) return value;
@@ -142,6 +157,9 @@ export function MicrosoftIntegrationCard() {
   );
 
   const [selectedDriveId, setSelectedDriveId] = useState<string | null>(null);
+  const [docTypeByKey, setDocTypeByKey] = useState<Record<string, IngestDocumentType>>(
+    () => ({})
+  );
 
   const [folderStack, setFolderStack] = useState<Array<{ id: string; name: string }>>([]);
   
@@ -184,7 +202,15 @@ export function MicrosoftIntegrationCard() {
     setFolderSyncIsCounting(false);
     setFolderSyncIsSyncing(false);
     setFolderSyncState(null);
+    setDocTypeByKey({});
   }, [selectedProjectId]);
+
+  const getTypeForKey = (key: string): IngestDocumentType =>
+    docTypeByKey[key] ?? "general_doc";
+
+  const setTypeForKey = (key: string, value: IngestDocumentType) => {
+    setDocTypeByKey((prev) => ({ ...prev, [key]: value }));
+  };
 
   const {
     data: syncedDocsData,
@@ -197,6 +223,21 @@ export function MicrosoftIntegrationCard() {
     fetcher,
     { shouldRetryOnError: false }
   );
+
+  useEffect(() => {
+    const docs = syncedDocsData?.docs;
+    if (!Array.isArray(docs) || docs.length === 0) return;
+    setDocTypeByKey((prev) => {
+      const next: Record<string, IngestDocumentType> = { ...prev };
+      for (const doc of docs) {
+        const key = `${doc.driveId}:${doc.itemId}`;
+        if (typeof next[key] === "string") continue;
+        const stored = doc.documentType;
+        next[key] = stored ?? "general_doc";
+      }
+      return next;
+    });
+  }, [syncedDocsData?.docs]);
 
   const connectUrl = "/api/integrations/microsoft/start?returnTo=/integrations";
 
@@ -255,9 +296,11 @@ export function MicrosoftIntegrationCard() {
   const syncItems = async ({
     driveId,
     items,
+    documentType,
   }: {
     driveId: string;
     items: Array<{ itemId: string; filename: string }>;
+    documentType: IngestDocumentType;
   }) => {
     if (!selectedProjectId) {
       toast.error("Select a project first");
@@ -281,7 +324,7 @@ export function MicrosoftIntegrationCard() {
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ driveId, items }),
+          body: JSON.stringify({ driveId, items, documentType }),
         }
       );
 
@@ -454,6 +497,8 @@ export function MicrosoftIntegrationCard() {
 
     setFolderSyncIsSyncing(true);
     try {
+      const folderKey = `${folderSyncState.driveId}:${folderSyncState.folderId}`;
+      const documentType = getTypeForKey(folderKey);
       const res = await fetch(
         `/api/projects/${selectedProjectId}/integrations/microsoft/sync-folder`,
         {
@@ -462,6 +507,7 @@ export function MicrosoftIntegrationCard() {
           body: JSON.stringify({
             driveId: folderSyncState.driveId,
             folderId: folderSyncState.folderId,
+            documentType,
           }),
         }
       );
@@ -709,9 +755,10 @@ export function MicrosoftIntegrationCard() {
               </div>
 
               <div className="rounded-md border overflow-hidden">
-                <div className="grid grid-cols-[24px_1fr_220px_170px] gap-3 px-3 py-2 text-xs text-muted-foreground border-b">
+                <div className="grid grid-cols-[24px_1fr_160px_220px_170px] gap-3 px-3 py-2 text-xs text-muted-foreground border-b">
                   <div>Src</div>
                   <div>Name</div>
+                  <div>Type</div>
                   <div>Last synced</div>
                   <div />
                 </div>
@@ -721,9 +768,10 @@ export function MicrosoftIntegrationCard() {
                     const isSyncing = inFlightSyncKeys.has(syncKey);
                     const isRemoving = inFlightRemoveDocIds.has(doc.docId);
                     const displayName = truncateLabel(doc.filename);
+                    const selectedType = getTypeForKey(syncKey);
                     return (
                       <div
-                        className="grid grid-cols-[24px_1fr_220px_170px] items-center gap-3 px-3 py-2 text-xs"
+                        className="grid grid-cols-[24px_1fr_160px_220px_170px] items-center gap-3 px-3 py-2 text-xs"
                         key={doc.docId}
                       >
                         <div className="flex items-center justify-center">
@@ -732,32 +780,39 @@ export function MicrosoftIntegrationCard() {
                         <div className="min-w-0 truncate" title={doc.filename}>
                           {displayName}
                         </div>
+                        <div className="min-w-0 truncate text-muted-foreground">
+                          {(doc.documentType ?? "general_doc") +
+                            (doc.parseStatus ? ` · ${doc.parseStatus}` : "")}
+                        </div>
                         <div className="truncate text-muted-foreground">
                           {new Date(doc.lastSyncedAt).toLocaleString()}
                         </div>
                         <div className="flex items-center justify-end gap-1">
-                          <Button
-                            disabled={isSyncing}
-                            onClick={() =>
+                          <Select
+                            onValueChange={(value) => {
+                              const v = value as IngestDocumentType;
+                              setTypeForKey(syncKey, v);
                               void syncItems({
                                 driveId: doc.driveId,
                                 items: [{ itemId: doc.itemId, filename: doc.filename }],
-                              })
-                            }
-                            size="sm"
-                            type="button"
-                            variant="outline"
-                            className="shrink-0 whitespace-nowrap"
+                                documentType: v,
+                              });
+                            }}
+                            value={selectedType}
                           >
-                            {isSyncing ? (
-                              <span className="flex items-center gap-2">
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                                Syncing
-                              </span>
-                            ) : (
-                              "Sync"
-                            )}
-                          </Button>
+                            <SelectTrigger
+                              className="h-8 w-[190px] text-xs"
+                              disabled={isSyncing}
+                            >
+                              <SelectValue placeholder="Sync as…" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="general_doc">Sync as normal doc</SelectItem>
+                              <SelectItem value="bank_statement">Sync as bank statement</SelectItem>
+                              <SelectItem value="cc_statement">Sync as cc statement</SelectItem>
+                              <SelectItem value="invoice">Sync as invoice</SelectItem>
+                            </SelectContent>
+                          </Select>
                           <Button
                             aria-label="Remove from context"
                             disabled={isRemoving}
@@ -794,6 +849,7 @@ export function MicrosoftIntegrationCard() {
                     const location = formatMicrosoftItemLocation(item);
                     const syncKey = driveId ? `${driveId}:${item.id}` : null;
                     const isSyncing = syncKey ? inFlightSyncKeys.has(syncKey) : false;
+                    const selectedType = syncKey ? getTypeForKey(syncKey) : "general_doc";
                     const onActivate = () => {
                       if (!driveId) return;
                       if (item.isFolder) {
@@ -807,6 +863,7 @@ export function MicrosoftIntegrationCard() {
                       void syncItems({
                         driveId,
                         items: [{ itemId: item.id, filename: label }],
+                        documentType: selectedType,
                       });
                     };
 
@@ -880,29 +937,41 @@ export function MicrosoftIntegrationCard() {
                                 Sync
                               </Button>
                             </>
-                          ) : (
-                            <Button
-                              disabled={isSyncing || !item.driveId || !selectedProjectId}
-                              onClick={(e) => {
-                                e.stopPropagation();
+                          ) : syncKey ? (
+                            <Select
+                              onValueChange={(value) => {
+                                const v = value as IngestDocumentType;
+                                setTypeForKey(syncKey, v);
                                 if (!item.driveId) return;
                                 void syncItems({
                                   driveId: item.driveId,
                                   items: [{ itemId: item.id, filename: label }],
+                                  documentType: v,
                                 });
                               }}
+                              value={selectedType}
+                            >
+                              <SelectTrigger
+                                className="h-8 w-[190px] text-xs"
+                                disabled={isSyncing || !item.driveId || !selectedProjectId}
+                              >
+                                <SelectValue placeholder="Sync as…" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="general_doc">Sync as general doc</SelectItem>
+                                <SelectItem value="bank_statement">Sync as bank statement</SelectItem>
+                                <SelectItem value="cc_statement">Sync as cc statement</SelectItem>
+                                <SelectItem value="invoice">Sync as invoice</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <Button
+                              disabled={true}
                               size="sm"
                               type="button"
                               className="shrink-0 whitespace-nowrap"
                             >
-                              {isSyncing ? (
-                                <span className="flex items-center gap-2">
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                  Syncing
-                                </span>
-                              ) : (
-                                "Sync"
-                              )}
+                              Sync
                             </Button>
                           )}
                         </div>
@@ -1025,27 +1094,31 @@ export function MicrosoftIntegrationCard() {
                               </Button>
                             </>
                           ) : (
-                            <Button
-                              disabled={isSyncing || !selectedProjectId}
-                              onClick={() =>
+                            <Select
+                              onValueChange={(value) => {
+                                const v = value as IngestDocumentType;
+                                setTypeForKey(syncKey, v);
                                 void syncItems({
                                   driveId: selectedDriveId,
                                   items: [{ itemId: item.id, filename: label }],
-                                })
-                              }
-                              size="sm"
-                              type="button"
-                              className="shrink-0 whitespace-nowrap"
+                                  documentType: v,
+                                });
+                              }}
+                              value={getTypeForKey(syncKey)}
                             >
-                              {isSyncing ? (
-                                <span className="flex items-center gap-2">
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                  Syncing
-                                </span>
-                              ) : (
-                                "Sync"
-                              )}
-                            </Button>
+                              <SelectTrigger
+                                className="h-8 w-[190px] text-xs"
+                                disabled={isSyncing || !selectedProjectId}
+                              >
+                                <SelectValue placeholder="Sync as…" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="general_doc">Sync as general doc</SelectItem>
+                                <SelectItem value="bank_statement">Sync as bank statement</SelectItem>
+                                <SelectItem value="cc_statement">Sync as cc statement</SelectItem>
+                                <SelectItem value="invoice">Sync as invoice</SelectItem>
+                              </SelectContent>
+                            </Select>
                           )}
                         </div>
                       </div>
@@ -1105,6 +1178,28 @@ export function MicrosoftIntegrationCard() {
                   : "Preparing folder sync…"}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {folderSyncState ? (
+            <div className="mt-3">
+              <div className="mb-1 text-xs text-muted-foreground">Sync as</div>
+              <Select
+                onValueChange={(value) => {
+                  const key = `${folderSyncState.driveId}:${folderSyncState.folderId}`;
+                  setTypeForKey(key, value as IngestDocumentType);
+                }}
+                value={getTypeForKey(`${folderSyncState.driveId}:${folderSyncState.folderId}`)}
+              >
+                <SelectTrigger className="h-8 w-full text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="general_doc">General doc</SelectItem>
+                  <SelectItem value="bank_statement">Bank statement</SelectItem>
+                  <SelectItem value="cc_statement">CC statement</SelectItem>
+                  <SelectItem value="invoice">Invoice</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={folderSyncIsSyncing} type="button">
               Cancel

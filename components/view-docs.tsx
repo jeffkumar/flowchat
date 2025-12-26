@@ -193,6 +193,9 @@ export function ViewDocs({
                         <span className="text-xs text-muted-foreground">
                           {format(new Date(doc.createdAt), "PP")}
                         </span>
+                        <span className="text-xs text-muted-foreground">
+                          {doc.documentType} · {doc.parseStatus}
+                        </span>
                         {isMicrosoftSource && sourceWebUrl ? (
                           <Tooltip>
                             <TooltipTrigger asChild>

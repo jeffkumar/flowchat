@@ -1,0 +1,37 @@
+{
+  "name": "invoice_v1",
+  "description": "Placeholder Reducto schema. Replace with a real Reducto schema that extracts header{} and optional line_items[].",
+  "output": {
+    "type": "object",
+    "properties": {
+      "header": {
+        "type": "object",
+        "properties": {
+          "vendor": { "type": "string" },
+          "invoice_number": { "type": "string" },
+          "invoice_date": { "type": "string" },
+          "due_date": { "type": "string" },
+          "subtotal": { "type": ["number", "string"] },
+          "tax": { "type": ["number", "string"] },
+          "total": { "type": ["number", "string"] },
+          "currency": { "type": "string" }
+        }
+      },
+      "line_items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "description": { "type": "string" },
+            "quantity": { "type": ["number", "string"] },
+            "unit_price": { "type": ["number", "string"] },
+            "amount": { "type": ["number", "string"] }
+          }
+        }
+      }
+    },
+    "required": ["header"]
+  }
+}
+
+

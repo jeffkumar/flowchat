@@ -42,7 +42,10 @@ function isSupportedMimeType(mimeType: string) {
   return (
     mimeType === "application/pdf" ||
     mimeType ===
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    mimeType === "text/csv" ||
+    mimeType === "application/csv" ||
+    mimeType === "application/vnd.ms-excel"
   );
 }
 

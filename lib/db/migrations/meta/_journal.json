@@ -99,6 +99,13 @@
       "when": 1766448000000,
       "tag": "0013_add_project_doc_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1766792400000,
+      "tag": "0014_document_types_and_finance",
+      "breakpoints": true
     }
   ]
 }

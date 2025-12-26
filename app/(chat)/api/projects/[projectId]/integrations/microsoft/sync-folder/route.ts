@@ -12,6 +12,9 @@ const BodySchema = z.object({
   driveId: z.string().min(1),
   folderId: z.string().min(1),
   dryRun: z.boolean().optional(),
+  documentType: z
+    .enum(["general_doc", "bank_statement", "cc_statement", "invoice"])
+    .optional(),
 });
 
 type GraphChild = {
@@ -159,6 +162,7 @@ export async function POST(
       driveId: parsed.data.driveId,
       items: batch,
       token,
+      documentType: parsed.data.documentType,
     });
     allResults.push(...results);
   }

@@ -15,6 +15,9 @@ const BodySchema = z.object({
       filename: z.string().min(1),
     })
   ).min(1).max(50),
+  documentType: z
+    .enum(["general_doc", "bank_statement", "cc_statement", "invoice"])
+    .optional(),
 });
 
 export async function GET(
@@ -49,6 +52,8 @@ export async function GET(
         return {
           docId: doc.id,
           filename: doc.filename,
+          documentType: doc.documentType,
+          parseStatus: doc.parseStatus,
           itemId: meta.itemId as string,
           driveId: meta.driveId as string,
           lastSyncedAt: (meta.lastSyncedAt as string) || doc.createdAt.toISOString(),
@@ -103,6 +108,7 @@ export async function POST(
     project,
     driveId: parsed.data.driveId,
     items: parsed.data.items,
+    documentType: parsed.data.documentType,
   });
 
   return NextResponse.json({ results }, { status: 200 });

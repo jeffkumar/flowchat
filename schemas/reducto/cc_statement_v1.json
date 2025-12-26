@@ -1,0 +1,25 @@
+{
+  "name": "cc_statement_v1",
+  "description": "Placeholder Reducto schema. Replace with a real Reducto schema that extracts transactions[] with {date, description, amount, ...}. Charges should be negative, payments positive (or normalize in code).",
+  "output": {
+    "type": "object",
+    "properties": {
+      "transactions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "date": { "type": "string" },
+            "description": { "type": "string" },
+            "amount": { "type": ["number", "string"] },
+            "currency": { "type": "string" }
+          },
+          "required": ["date", "amount"]
+        }
+      }
+    },
+    "required": ["transactions"]
+  }
+}
+
+

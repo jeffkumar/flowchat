@@ -20,7 +20,13 @@ import { toast } from "sonner";
 import { useSWRConfig } from "swr";
 import { useLocalStorage, useWindowSize } from "usehooks-ts";
 import { saveChatModelAsCookie } from "@/app/(chat)/actions";
-import { SelectItem } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { chatModels } from "@/lib/ai/models";
 import type { Attachment, ChatMessage } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -57,6 +63,12 @@ import {
   EllipsisIcon,
   FileIcon,
 } from "lucide-react";
+
+type UploadDocumentType =
+  | "general_doc"
+  | "bank_statement"
+  | "cc_statement"
+  | "invoice";
 
 function PureMultimodalInput({
   chatId,
@@ -140,6 +152,8 @@ function PureMultimodalInput({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadQueue, setUploadQueue] = useState<string[]>([]);
+  const [uploadDocumentType, setUploadDocumentType] =
+    useState<UploadDocumentType>("general_doc");
 
   const submitForm = useCallback(() => {
     window.history.pushState({}, "", `/chat/${chatId}`);
@@ -180,9 +194,11 @@ function PureMultimodalInput({
     resetHeight,
   ]);
 
-  const uploadFile = useCallback(async (file: File) => {
+  const uploadFile = useCallback(
+    async (file: File) => {
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("documentType", uploadDocumentType);
     if (selectedProjectId) {
       formData.append("projectId", selectedProjectId);
     }
@@ -212,7 +228,9 @@ function PureMultimodalInput({
     } catch (_error) {
       toast.error("Failed to upload file, please try again!");
     }
-  }, [selectedProjectId, mutate]);
+    },
+    [selectedProjectId, mutate, uploadDocumentType]
+  );
 
   const handleFileChange = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -302,7 +320,7 @@ function PureMultimodalInput({
   return (
     <div className={cn("relative flex w-full flex-col gap-4", className)}>
       <input
-        accept="image/jpeg,image/png,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        accept="image/jpeg,image/png,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/csv,application/csv"
         className="-top-4 -left-4 pointer-events-none fixed size-0.5 opacity-0"
         multiple
         onChange={handleFileChange}
@@ -376,6 +394,8 @@ function PureMultimodalInput({
               fileInputRef={fileInputRef}
               selectedModelId={selectedModelId}
               status={status}
+              setUploadDocumentType={setUploadDocumentType}
+              uploadDocumentType={uploadDocumentType}
             />
           </PromptInputTools>
 
@@ -427,10 +447,14 @@ function PureAttachmentsButton({
   fileInputRef,
   status,
   selectedModelId,
+  uploadDocumentType,
+  setUploadDocumentType,
 }: {
   fileInputRef: React.MutableRefObject<HTMLInputElement | null>;
   status: UseChatHelpers<ChatMessage>["status"];
   selectedModelId: string;
+  uploadDocumentType: UploadDocumentType;
+  setUploadDocumentType: Dispatch<SetStateAction<UploadDocumentType>>;
 }) {
   const isReasoningModel = selectedModelId === "chat-model-reasoning";
   const [isOpen, setIsOpen] = useState(false);
@@ -449,6 +473,26 @@ function PureAttachmentsButton({
       </PopoverTrigger>
       <PopoverContent align="start" className="w-56 p-1.5" side="top">
         <div className="flex flex-col gap-0.5">
+          <div className="px-2 py-1">
+            <div className="mb-1 text-xs text-muted-foreground">Document type</div>
+            <Select
+              onValueChange={(value) =>
+                setUploadDocumentType(value as UploadDocumentType)
+              }
+              value={uploadDocumentType}
+            >
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="general_doc">General doc</SelectItem>
+                <SelectItem value="bank_statement">Bank statement</SelectItem>
+                <SelectItem value="cc_statement">CC statement</SelectItem>
+                <SelectItem value="invoice">Invoice</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="my-1 h-px bg-border" />
           <Button
             className="h-9 justify-start gap-2 px-2 text-sm font-normal"
             onClick={() => {

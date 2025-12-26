@@ -15,8 +15,13 @@ import {
   getProjectByIdForUser,
   markProjectDocIndexError,
   markProjectDocIndexed,
+  updateProjectDoc,
 } from "@/lib/db/queries";
-import { ingestUploadedDocToTurbopuffer } from "@/lib/ingest/docs";
+import {
+  ingestDocSummaryToTurbopuffer,
+  ingestUploadedDocToTurbopuffer,
+} from "@/lib/ingest/docs";
+import { parseStructuredProjectDoc } from "@/lib/ingest/parse-structured-document";
 import { deleteByFilterFromTurbopuffer } from "@/lib/rag/turbopuffer";
 
 // Use Blob instead of File since File is not available in Node.js environment
@@ -34,9 +39,11 @@ const FileSchema = z.object({
           "image/png",
           "application/pdf",
           "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "text/csv",
+          "application/csv",
         ].includes(file.type),
       {
-        message: "File type should be JPEG, PNG, PDF, or DOCX",
+        message: "File type should be JPEG, PNG, PDF, DOCX, or CSV",
       }
     ),
 });
@@ -58,6 +65,7 @@ export async function POST(request: Request) {
     const providedProjectId = formData.get("projectId");
     const rawCategory = formData.get("category");
     const rawDescription = formData.get("description");
+    const rawDocumentType = formData.get("documentType");
 
     if (!file) {
       return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
@@ -83,6 +91,24 @@ export async function POST(request: Request) {
       typeof rawDescription === "string" && rawDescription.trim().length > 0
         ? rawDescription.trim().slice(0, 600)
         : null;
+
+    const documentType =
+      rawDocumentType === "general_doc" ||
+      rawDocumentType === "bank_statement" ||
+      rawDocumentType === "cc_statement" ||
+      rawDocumentType === "invoice"
+        ? rawDocumentType
+        : "general_doc";
+
+    if (
+      (file.type === "text/csv" || file.type === "application/csv") &&
+      documentType === "general_doc"
+    ) {
+      return NextResponse.json(
+        { error: "CSV uploads must use a structured document type (bank/cc/invoice)." },
+        { status: 400 }
+      );
+    }
 
     try {
       let projectId: string;
@@ -146,12 +172,15 @@ export async function POST(request: Request) {
         description,
         mimeType: file.type,
         sizeBytes: file.size,
+        documentType,
+        parseStatus: documentType === "general_doc" ? "pending" : "pending",
       });
 
       const shouldIngest =
-        file.type === "application/pdf" ||
-        file.type ===
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        documentType === "general_doc" &&
+        (file.type === "application/pdf" ||
+          file.type ===
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
 
       if (shouldIngest) {
         const buffer = Buffer.from(fileBuffer);
@@ -182,6 +211,7 @@ export async function POST(request: Request) {
               filename,
               category: doc.category,
               description: doc.description,
+              documentType,
               mimeType: file.type,
               blobUrl: data.url,
               sourceUrl: null,
@@ -206,6 +236,12 @@ export async function POST(request: Request) {
               indexedAt: new Date(),
               turbopufferNamespace: result.namespace,
             });
+            await updateProjectDoc({
+              docId: doc.id,
+              data: {
+                parseStatus: "parsed",
+              },
+            });
             console.log("ProjectDoc ingestion succeeded", {
               docId: doc.id,
               namespace: result.namespace,
@@ -221,6 +257,61 @@ export async function POST(request: Request) {
               docId: doc.id,
               error: message,
             });
+          }
+        });
+      }
+      if (documentType !== "general_doc") {
+        after(async () => {
+          try {
+            const latestBefore = await getProjectDocById({ docId: doc.id });
+            if (!latestBefore || latestBefore.indexingError === "Deleting") {
+              return;
+            }
+
+            const summaryTextParts = [
+              `Document type: ${documentType}`,
+              filename ? `Filename: ${filename}` : "",
+              category ? `Category: ${category}` : "",
+              description ? `Description: ${description}` : "",
+            ].filter((p) => p.length > 0);
+
+            const summaryText = summaryTextParts.join("\n");
+            const result = await ingestDocSummaryToTurbopuffer({
+              docId: doc.id,
+              projectId,
+              isDefaultProject,
+              createdBy: session.user.id,
+              organizationId: doc.organizationId,
+              filename,
+              mimeType: file.type,
+              blobUrl: data.url,
+              sourceUrl: null,
+              sourceCreatedAtMs: doc.createdAt.getTime(),
+              documentType,
+              summaryText,
+            });
+
+            await markProjectDocIndexed({
+              docId: doc.id,
+              indexedAt: new Date(),
+              turbopufferNamespace: result.namespace,
+            });
+
+            const parseResult = await parseStructuredProjectDoc({
+              docId: doc.id,
+              userId: session.user.id,
+              ingestSummaryToTurbopuffer: false,
+            });
+            if (!parseResult.ok) {
+              console.warn("Structured doc parse failed", {
+                docId: doc.id,
+                error: parseResult.error,
+              });
+            }
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : "Unknown summary indexing error";
+            await markProjectDocIndexError({ docId: doc.id, error: message });
           }
         });
       }

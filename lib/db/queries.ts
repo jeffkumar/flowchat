@@ -25,7 +25,10 @@ import {
   chat,
   type DBMessage,
   document,
+  financialTransaction,
   integrationConnection,
+  invoice,
+  invoiceLineItem,
   message,
   type IntegrationConnection,
   type Project,
@@ -312,6 +315,8 @@ export async function createProjectDoc({
   sizeBytes,
   turbopufferNamespace,
   metadata,
+  documentType,
+  parseStatus,
 }: {
   projectId: string;
   createdBy: string;
@@ -324,6 +329,8 @@ export async function createProjectDoc({
   sizeBytes: number;
   turbopufferNamespace?: string | null;
   metadata?: Record<string, unknown> | null;
+  documentType?: ProjectDoc["documentType"];
+  parseStatus?: ProjectDoc["parseStatus"];
 }): Promise<ProjectDoc> {
   try {
     const [created] = await db
@@ -340,6 +347,8 @@ export async function createProjectDoc({
         sizeBytes,
         turbopufferNamespace: turbopufferNamespace ?? null,
         metadata: metadata ?? null,
+        documentType: documentType ?? "general_doc",
+        parseStatus: parseStatus ?? "pending",
         createdAt: new Date(),
       })
       .returning();
@@ -435,11 +444,26 @@ export async function markProjectDocDeleting({ docId }: { docId: string }) {
 
 export async function deleteProjectDocById({ docId }: { docId: string }) {
   try {
-    const [deleted] = await db
-      .delete(projectDoc)
-      .where(eq(projectDoc.id, docId))
-      .returning();
-    return deleted ?? null;
+    return await db.transaction(async (tx) => {
+      const invoiceIds = await tx
+        .select({ id: invoice.id })
+        .from(invoice)
+        .where(eq(invoice.documentId, docId));
+
+      const ids = invoiceIds.map((r) => r.id);
+      if (ids.length > 0) {
+        await tx.delete(invoiceLineItem).where(inArray(invoiceLineItem.invoiceId, ids));
+      }
+
+      await tx.delete(invoice).where(eq(invoice.documentId, docId));
+      await tx.delete(financialTransaction).where(eq(financialTransaction.documentId, docId));
+
+      const [deleted] = await tx
+        .delete(projectDoc)
+        .where(eq(projectDoc.id, docId))
+        .returning();
+      return deleted ?? null;
+    });
   } catch (_error) {
     throw new ChatSDKError("bad_request:database", "Failed to delete project doc by id");
   }
@@ -451,11 +475,33 @@ export async function deleteProjectDocsByProjectId({
   projectId: string;
 }): Promise<{ deletedCount: number }> {
   try {
-    const deleted = await db
-      .delete(projectDoc)
-      .where(eq(projectDoc.projectId, projectId))
-      .returning({ id: projectDoc.id });
-    return { deletedCount: deleted.length };
+    return await db.transaction(async (tx) => {
+      const docIds = await tx
+        .select({ id: projectDoc.id })
+        .from(projectDoc)
+        .where(eq(projectDoc.projectId, projectId));
+
+      const ids = docIds.map((r) => r.id);
+      if (ids.length === 0) return { deletedCount: 0 };
+
+      const invoiceIds = await tx
+        .select({ id: invoice.id })
+        .from(invoice)
+        .where(inArray(invoice.documentId, ids));
+      const invIds = invoiceIds.map((r) => r.id);
+      if (invIds.length > 0) {
+        await tx.delete(invoiceLineItem).where(inArray(invoiceLineItem.invoiceId, invIds));
+      }
+
+      await tx.delete(invoice).where(inArray(invoice.documentId, ids));
+      await tx.delete(financialTransaction).where(inArray(financialTransaction.documentId, ids));
+
+      const deleted = await tx
+        .delete(projectDoc)
+        .where(eq(projectDoc.projectId, projectId))
+        .returning({ id: projectDoc.id });
+      return { deletedCount: deleted.length };
+    });
   } catch (_error) {
     throw new ChatSDKError(
       "bad_request:database",
@@ -1270,6 +1316,635 @@ export async function updateProjectDoc({
     throw new ChatSDKError(
       "bad_request:database",
       error instanceof Error ? error.message : "Failed to update project doc"
+    );
+  }
+}
+
+export async function insertFinancialTransactions({
+  documentId,
+  rows,
+}: {
+  documentId: string;
+  rows: Array<{
+    txnDate: string; // YYYY-MM-DD
+    description?: string | null;
+    amount: string; // decimal string
+    currency?: string | null;
+    merchant?: string | null;
+    category?: string | null;
+    balance?: string | null;
+    pageNum?: number | null;
+    rowNum?: number | null;
+    rowHash: string;
+  }>;
+}): Promise<{ insertedCount: number }> {
+  try {
+    if (rows.length === 0) return { insertedCount: 0 };
+
+    const inserted = await db
+      .insert(financialTransaction)
+      .values(
+        rows.map((r) => ({
+          documentId,
+          txnDate: r.txnDate,
+          description: r.description ?? null,
+          amount: r.amount,
+          currency: r.currency ?? null,
+          merchant: r.merchant ?? null,
+          category: r.category ?? null,
+          balance: r.balance ?? null,
+          pageNum: r.pageNum ?? null,
+          rowNum: r.rowNum ?? null,
+          rowHash: r.rowHash,
+        }))
+      )
+      .onConflictDoNothing({
+        target: [financialTransaction.documentId, financialTransaction.rowHash],
+      })
+      .returning({ id: financialTransaction.id });
+
+    return { insertedCount: inserted.length };
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to insert financial transactions"
+    );
+  }
+}
+
+export async function upsertInvoiceForDocument({
+  documentId,
+  data,
+}: {
+  documentId: string;
+  data: {
+    vendor?: string | null;
+    invoiceNumber?: string | null;
+    invoiceDate?: string | null; // YYYY-MM-DD
+    dueDate?: string | null; // YYYY-MM-DD
+    subtotal?: string | null;
+    tax?: string | null;
+    total?: string | null;
+    currency?: string | null;
+  };
+}) {
+  try {
+    const [row] = await db
+      .insert(invoice)
+      .values({
+        documentId,
+        vendor: data.vendor ?? null,
+        invoiceNumber: data.invoiceNumber ?? null,
+        invoiceDate: data.invoiceDate ?? null,
+        dueDate: data.dueDate ?? null,
+        subtotal: data.subtotal ?? null,
+        tax: data.tax ?? null,
+        total: data.total ?? null,
+        currency: data.currency ?? null,
+      })
+      .onConflictDoUpdate({
+        target: [invoice.documentId],
+        set: {
+          vendor: data.vendor ?? null,
+          invoiceNumber: data.invoiceNumber ?? null,
+          invoiceDate: data.invoiceDate ?? null,
+          dueDate: data.dueDate ?? null,
+          subtotal: data.subtotal ?? null,
+          tax: data.tax ?? null,
+          total: data.total ?? null,
+          currency: data.currency ?? null,
+        },
+      })
+      .returning();
+
+    if (!row) {
+      throw new Error("Invoice upsert returned no row");
+    }
+
+    return row;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to upsert invoice"
+    );
+  }
+}
+
+export async function insertInvoiceLineItems({
+  invoiceId,
+  rows,
+}: {
+  invoiceId: string;
+  rows: Array<{
+    description?: string | null;
+    quantity?: string | null;
+    unitPrice?: string | null;
+    amount?: string | null;
+    rowHash: string;
+  }>;
+}): Promise<{ insertedCount: number }> {
+  try {
+    if (rows.length === 0) return { insertedCount: 0 };
+
+    const inserted = await db
+      .insert(invoiceLineItem)
+      .values(
+        rows.map((r) => ({
+          invoiceId,
+          description: r.description ?? null,
+          quantity: r.quantity ?? null,
+          unitPrice: r.unitPrice ?? null,
+          amount: r.amount ?? null,
+          rowHash: r.rowHash,
+        }))
+      )
+      .onConflictDoNothing({
+        target: [invoiceLineItem.invoiceId, invoiceLineItem.rowHash],
+      })
+      .returning({ id: invoiceLineItem.id });
+
+    return { insertedCount: inserted.length };
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to insert invoice line items"
+    );
+  }
+}
+
+type FinanceDocumentType = "bank_statement" | "cc_statement" | "invoice";
+
+type FinanceQueryFilters = {
+  doc_ids?: string[];
+  date_start?: string;
+  date_end?: string;
+  vendor_contains?: string;
+  amount_min?: number;
+  amount_max?: number;
+};
+
+function buildDocIdFilter(docIds: string[] | undefined) {
+  if (!Array.isArray(docIds) || docIds.length === 0) return null;
+  return inArray(projectDoc.id, docIds);
+}
+
+function buildDateRangeFilter({
+  documentType,
+  dateStart,
+  dateEnd,
+}: {
+  documentType: FinanceDocumentType;
+  dateStart?: string;
+  dateEnd?: string;
+}) {
+  const clauses: SQL[] = [];
+  if (!dateStart && !dateEnd) return clauses;
+
+  if (documentType === "invoice") {
+    if (typeof dateStart === "string") {
+      clauses.push(sql`${invoice.invoiceDate} >= ${dateStart}::date`);
+    }
+    if (typeof dateEnd === "string") {
+      clauses.push(sql`${invoice.invoiceDate} < ${dateEnd}::date`);
+    }
+    return clauses;
+  }
+
+  if (typeof dateStart === "string") {
+    clauses.push(sql`${financialTransaction.txnDate} >= ${dateStart}::date`);
+  }
+  if (typeof dateEnd === "string") {
+    clauses.push(sql`${financialTransaction.txnDate} < ${dateEnd}::date`);
+  }
+  return clauses;
+}
+
+function buildAmountRangeFilter({
+  amountMin,
+  amountMax,
+}: {
+  amountMin?: number;
+  amountMax?: number;
+}) {
+  const clauses: SQL[] = [];
+  if (typeof amountMin === "number" && Number.isFinite(amountMin)) {
+    clauses.push(sql`${financialTransaction.amount} >= ${amountMin}`);
+  }
+  if (typeof amountMax === "number" && Number.isFinite(amountMax)) {
+    clauses.push(sql`${financialTransaction.amount} <= ${amountMax}`);
+  }
+  return clauses;
+}
+
+function buildVendorContainsFilter({
+  documentType,
+  vendorContains,
+}: {
+  documentType: FinanceDocumentType;
+  vendorContains?: string;
+}) {
+  if (typeof vendorContains !== "string") return null;
+  const needle = vendorContains.trim();
+  if (!needle) return null;
+  const like = `%${needle}%`;
+
+  if (documentType === "invoice") {
+    return sql`${invoice.vendor} ILIKE ${like}`;
+  }
+  return sql`${financialTransaction.description} ILIKE ${like}`;
+}
+
+export async function financeSum({
+  userId,
+  documentType,
+  filters,
+}: {
+  userId: string;
+  documentType: FinanceDocumentType;
+  filters?: FinanceQueryFilters;
+}) {
+  try {
+    const docIdFilter = buildDocIdFilter(filters?.doc_ids);
+    const vendorFilter = buildVendorContainsFilter({
+      documentType,
+      vendorContains: filters?.vendor_contains,
+    });
+    const dateClauses = buildDateRangeFilter({
+      documentType,
+      dateStart: filters?.date_start,
+      dateEnd: filters?.date_end,
+    });
+
+    if (documentType === "invoice") {
+      const whereClauses: SQL[] = [
+        eq(project.createdBy, userId),
+        eq(projectDoc.documentType, "invoice"),
+      ];
+      if (docIdFilter) whereClauses.push(docIdFilter);
+      if (vendorFilter) whereClauses.push(vendorFilter);
+      whereClauses.push(...dateClauses);
+
+      const [row] = await db
+        .select({
+          total: sql<string>`COALESCE(SUM(${invoice.total}), 0)::text`.as("total"),
+          count: sql<number>`COUNT(*)::int`.as("count"),
+        })
+        .from(invoice)
+        .innerJoin(projectDoc, eq(invoice.documentId, projectDoc.id))
+        .innerJoin(project, eq(projectDoc.projectId, project.id))
+        .where(and(...whereClauses));
+
+      return {
+        query_type: "sum" as const,
+        document_type: "invoice" as const,
+        total: row?.total ?? "0",
+        count: row?.count ?? 0,
+        provenance: {
+          source: "postgres" as const,
+          doc_ids: filters?.doc_ids ?? null,
+        },
+      };
+    }
+
+    const whereClauses: SQL[] = [
+      eq(project.createdBy, userId),
+      eq(projectDoc.documentType, documentType),
+    ];
+    if (docIdFilter) whereClauses.push(docIdFilter);
+    if (vendorFilter) whereClauses.push(vendorFilter);
+    whereClauses.push(...dateClauses);
+    whereClauses.push(
+      ...buildAmountRangeFilter({
+        amountMin: filters?.amount_min,
+        amountMax: filters?.amount_max,
+      })
+    );
+
+    const [row] = await db
+      .select({
+        total: sql<string>`COALESCE(SUM(${financialTransaction.amount}), 0)::text`.as("total"),
+        count: sql<number>`COUNT(*)::int`.as("count"),
+      })
+      .from(financialTransaction)
+      .innerJoin(projectDoc, eq(financialTransaction.documentId, projectDoc.id))
+      .innerJoin(project, eq(projectDoc.projectId, project.id))
+      .where(and(...whereClauses));
+
+    // Supporting IDs (capped)
+    const supporting = await db
+      .select({ id: financialTransaction.id })
+      .from(financialTransaction)
+      .innerJoin(projectDoc, eq(financialTransaction.documentId, projectDoc.id))
+      .innerJoin(project, eq(projectDoc.projectId, project.id))
+      .where(and(...whereClauses))
+      .orderBy(asc(financialTransaction.txnDate), asc(financialTransaction.id))
+      .limit(500);
+
+    return {
+      query_type: "sum" as const,
+      document_type: documentType,
+      total: row?.total ?? "0",
+      count: row?.count ?? 0,
+      supporting_ids: supporting.map((r) => r.id),
+      provenance: {
+        source: "postgres" as const,
+        doc_ids: filters?.doc_ids ?? null,
+      },
+    };
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to run finance sum"
+    );
+  }
+}
+
+export async function financeList({
+  userId,
+  documentType,
+  filters,
+}: {
+  userId: string;
+  documentType: FinanceDocumentType;
+  filters?: FinanceQueryFilters;
+}) {
+  try {
+    const docIdFilter = buildDocIdFilter(filters?.doc_ids);
+    const vendorFilter = buildVendorContainsFilter({
+      documentType,
+      vendorContains: filters?.vendor_contains,
+    });
+    const dateClauses = buildDateRangeFilter({
+      documentType,
+      dateStart: filters?.date_start,
+      dateEnd: filters?.date_end,
+    });
+
+    if (documentType === "invoice") {
+      const whereClauses: SQL[] = [
+        eq(project.createdBy, userId),
+        eq(projectDoc.documentType, "invoice"),
+      ];
+      if (docIdFilter) whereClauses.push(docIdFilter);
+      if (vendorFilter) whereClauses.push(vendorFilter);
+      whereClauses.push(...dateClauses);
+
+      const rows = await db
+        .select({
+          id: invoice.id,
+          vendor: invoice.vendor,
+          invoiceNumber: invoice.invoiceNumber,
+          invoiceDate: invoice.invoiceDate,
+          dueDate: invoice.dueDate,
+          total: invoice.total,
+          currency: invoice.currency,
+          documentId: invoice.documentId,
+        })
+        .from(invoice)
+        .innerJoin(projectDoc, eq(invoice.documentId, projectDoc.id))
+        .innerJoin(project, eq(projectDoc.projectId, project.id))
+        .where(and(...whereClauses))
+        .orderBy(desc(invoice.invoiceDate), desc(invoice.id))
+        .limit(500);
+
+      return {
+        query_type: "list" as const,
+        document_type: "invoice" as const,
+        rows,
+        provenance: { source: "postgres" as const },
+      };
+    }
+
+    const whereClauses: SQL[] = [
+      eq(project.createdBy, userId),
+      eq(projectDoc.documentType, documentType),
+    ];
+    if (docIdFilter) whereClauses.push(docIdFilter);
+    if (vendorFilter) whereClauses.push(vendorFilter);
+    whereClauses.push(...dateClauses);
+    whereClauses.push(
+      ...buildAmountRangeFilter({
+        amountMin: filters?.amount_min,
+        amountMax: filters?.amount_max,
+      })
+    );
+
+    const rows = await db
+      .select({
+        id: financialTransaction.id,
+        documentId: financialTransaction.documentId,
+        txnDate: financialTransaction.txnDate,
+        description: financialTransaction.description,
+        amount: financialTransaction.amount,
+        currency: financialTransaction.currency,
+      })
+      .from(financialTransaction)
+      .innerJoin(projectDoc, eq(financialTransaction.documentId, projectDoc.id))
+      .innerJoin(project, eq(projectDoc.projectId, project.id))
+      .where(and(...whereClauses))
+      .orderBy(desc(financialTransaction.txnDate), desc(financialTransaction.id))
+      .limit(500);
+
+    return {
+      query_type: "list" as const,
+      document_type: documentType,
+      rows,
+      provenance: { source: "postgres" as const },
+    };
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to run finance list"
+    );
+  }
+}
+
+export async function financeGroupByMonth({
+  userId,
+  documentType,
+  filters,
+}: {
+  userId: string;
+  documentType: FinanceDocumentType;
+  filters?: FinanceQueryFilters;
+}) {
+  try {
+    const docIdFilter = buildDocIdFilter(filters?.doc_ids);
+    const vendorFilter = buildVendorContainsFilter({
+      documentType,
+      vendorContains: filters?.vendor_contains,
+    });
+    const dateClauses = buildDateRangeFilter({
+      documentType,
+      dateStart: filters?.date_start,
+      dateEnd: filters?.date_end,
+    });
+
+    if (documentType === "invoice") {
+      const whereClauses: SQL[] = [
+        eq(project.createdBy, userId),
+        eq(projectDoc.documentType, "invoice"),
+      ];
+      if (docIdFilter) whereClauses.push(docIdFilter);
+      if (vendorFilter) whereClauses.push(vendorFilter);
+      whereClauses.push(...dateClauses);
+
+      const rows = await db
+        .select({
+          month: sql<string>`to_char(date_trunc('month', ${invoice.invoiceDate}), 'YYYY-MM')`.as(
+            "month"
+          ),
+          total: sql<string>`COALESCE(SUM(${invoice.total}), 0)::text`.as("total"),
+          count: sql<number>`COUNT(*)::int`.as("count"),
+        })
+        .from(invoice)
+        .innerJoin(projectDoc, eq(invoice.documentId, projectDoc.id))
+        .innerJoin(project, eq(projectDoc.projectId, project.id))
+        .where(and(...whereClauses))
+        .groupBy(sql`date_trunc('month', ${invoice.invoiceDate})`)
+        .orderBy(sql`date_trunc('month', ${invoice.invoiceDate})`);
+
+      return {
+        query_type: "group_by_month" as const,
+        document_type: "invoice" as const,
+        rows,
+        provenance: { source: "postgres" as const },
+      };
+    }
+
+    const whereClauses: SQL[] = [
+      eq(project.createdBy, userId),
+      eq(projectDoc.documentType, documentType),
+    ];
+    if (docIdFilter) whereClauses.push(docIdFilter);
+    if (vendorFilter) whereClauses.push(vendorFilter);
+    whereClauses.push(...dateClauses);
+    whereClauses.push(
+      ...buildAmountRangeFilter({
+        amountMin: filters?.amount_min,
+        amountMax: filters?.amount_max,
+      })
+    );
+
+    const rows = await db
+      .select({
+        month: sql<string>`to_char(date_trunc('month', ${financialTransaction.txnDate}), 'YYYY-MM')`.as(
+          "month"
+        ),
+        total: sql<string>`COALESCE(SUM(${financialTransaction.amount}), 0)::text`.as("total"),
+        count: sql<number>`COUNT(*)::int`.as("count"),
+      })
+      .from(financialTransaction)
+      .innerJoin(projectDoc, eq(financialTransaction.documentId, projectDoc.id))
+      .innerJoin(project, eq(projectDoc.projectId, project.id))
+      .where(and(...whereClauses))
+      .groupBy(sql`date_trunc('month', ${financialTransaction.txnDate})`)
+      .orderBy(sql`date_trunc('month', ${financialTransaction.txnDate})`);
+
+    return {
+      query_type: "group_by_month" as const,
+      document_type: documentType,
+      rows,
+      provenance: { source: "postgres" as const },
+    };
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to run finance group_by_month"
+    );
+  }
+}
+
+export async function financeGroupByMerchant({
+  userId,
+  documentType,
+  filters,
+}: {
+  userId: string;
+  documentType: FinanceDocumentType;
+  filters?: FinanceQueryFilters;
+}) {
+  try {
+    const docIdFilter = buildDocIdFilter(filters?.doc_ids);
+    const vendorFilter = buildVendorContainsFilter({
+      documentType,
+      vendorContains: filters?.vendor_contains,
+    });
+    const dateClauses = buildDateRangeFilter({
+      documentType,
+      dateStart: filters?.date_start,
+      dateEnd: filters?.date_end,
+    });
+
+    if (documentType === "invoice") {
+      const whereClauses: SQL[] = [
+        eq(project.createdBy, userId),
+        eq(projectDoc.documentType, "invoice"),
+      ];
+      if (docIdFilter) whereClauses.push(docIdFilter);
+      if (vendorFilter) whereClauses.push(vendorFilter);
+      whereClauses.push(...dateClauses);
+
+      const rows = await db
+        .select({
+          merchant: invoice.vendor,
+          total: sql<string>`COALESCE(SUM(${invoice.total}), 0)::text`.as("total"),
+          count: sql<number>`COUNT(*)::int`.as("count"),
+        })
+        .from(invoice)
+        .innerJoin(projectDoc, eq(invoice.documentId, projectDoc.id))
+        .innerJoin(project, eq(projectDoc.projectId, project.id))
+        .where(and(...whereClauses))
+        .groupBy(invoice.vendor)
+        .orderBy(desc(sql`COALESCE(SUM(${invoice.total}), 0)`))
+        .limit(200);
+
+      return {
+        query_type: "group_by_merchant" as const,
+        document_type: "invoice" as const,
+        rows,
+        provenance: { source: "postgres" as const },
+      };
+    }
+
+    const whereClauses: SQL[] = [
+      eq(project.createdBy, userId),
+      eq(projectDoc.documentType, documentType),
+    ];
+    if (docIdFilter) whereClauses.push(docIdFilter);
+    if (vendorFilter) whereClauses.push(vendorFilter);
+    whereClauses.push(...dateClauses);
+    whereClauses.push(
+      ...buildAmountRangeFilter({
+        amountMin: filters?.amount_min,
+        amountMax: filters?.amount_max,
+      })
+    );
+
+    const rows = await db
+      .select({
+        merchant: financialTransaction.description,
+        total: sql<string>`COALESCE(SUM(${financialTransaction.amount}), 0)::text`.as("total"),
+        count: sql<number>`COUNT(*)::int`.as("count"),
+      })
+      .from(financialTransaction)
+      .innerJoin(projectDoc, eq(financialTransaction.documentId, projectDoc.id))
+      .innerJoin(project, eq(projectDoc.projectId, project.id))
+      .where(and(...whereClauses))
+      .groupBy(financialTransaction.description)
+      .orderBy(desc(sql`COALESCE(SUM(${financialTransaction.amount}), 0)`))
+      .limit(200);
+
+    return {
+      query_type: "group_by_merchant" as const,
+      document_type: documentType,
+      rows,
+      provenance: { source: "postgres" as const },
+    };
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to run finance group_by_merchant"
     );
   }
 }

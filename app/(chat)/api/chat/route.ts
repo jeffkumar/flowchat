@@ -26,6 +26,7 @@ import type { ChatModel } from "@/lib/ai/models";
 import { type RequestHints, systemPrompt } from "@/lib/ai/prompts";
 import { myProvider } from "@/lib/ai/providers";
 import { createDocument } from "@/lib/ai/tools/create-document";
+import { financeQuery } from "@/lib/ai/tools/finance-query";
 import { getWeather } from "@/lib/ai/tools/get-weather";
 import { requestSuggestions } from "@/lib/ai/tools/request-suggestions";
 import { updateDocument } from "@/lib/ai/tools/update-document";
@@ -72,7 +73,7 @@ const TIME_RANGE_HINT_RE =
 
 // Heuristic: aggregation questions need more coverage across many docs (e.g. "sum across 30 invoices").
 const AGGREGATION_HINT_RE =
-  /\b(sum|total|add\s+up|aggregate|roll\s*up|grand\s+total)\b|\b(invoices?|receipts?)\b|\bacross\s+\d+\b/i;
+  /\b(sum|total|add\s+up|aggregate|roll\s*up|grand\s+total)\b|\b(invoices?|receipts?)\b|\b(by|per|each)\s+month\b|\bmonthly\b|\bacross\s+\d+\b/i;
 
 function startMsForPreset(preset: RetrievalRangePreset | undefined, nowMs: number) {
   if (!preset || preset === "all") {
@@ -166,6 +167,26 @@ function coerceMessagesToTextOnly(messages: unknown[]): unknown[] {
       return { ...msg, content };
     })
     .filter((m) => m !== null);
+}
+
+function hasNonImageFileParts(messages: unknown[]): boolean {
+  for (const m of messages) {
+    if (!m || typeof m !== "object") continue;
+    const msg = m as Record<string, unknown>;
+    const content = msg.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      if (!part || typeof part !== "object") continue;
+      const p = part as Record<string, unknown>;
+      if (p.type !== "file") continue;
+      const mediaType = p.mediaType;
+      if (typeof mediaType !== "string") return true;
+      if (!mediaType.startsWith("image/")) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 type RetrievalTimeFilterMode = "sourceCreatedAtMs" | "rowTimestamp";
@@ -1355,6 +1376,10 @@ export async function POST(request: Request) {
               channelName: channelName || undefined,
               category: category || undefined,
               description: description || undefined,
+              documentType:
+                typeof (s as any).document_type === "string"
+                  ? (s as any).document_type
+                  : undefined,
               blobUrl: preferredUrl || undefined,
               content:
                 typeof s.content === "string" ? s.content.slice(0, 200) : undefined,
@@ -1370,7 +1395,15 @@ export async function POST(request: Request) {
                 (typeof s.blobUrl === "string" && s.blobUrl.length > 0
                   ? s.blobUrl
                   : s.sourceType || "Source");
-              return `[${idx + 1}] ${label}`;
+              const docIdSuffix =
+                typeof s.docId === "string" && s.docId.length > 0
+                  ? ` (doc_id=${s.docId})`
+                  : "";
+              const typeSuffix =
+                typeof (s as any).documentType === "string"
+                  ? ` (document_type=${String((s as any).documentType)})`
+                  : "";
+              return `[${idx + 1}] ${label}${docIdSuffix}${typeSuffix}`;
             })
             .join("\n");
           const maxCitationIndex = Math.min(uniqueSources.length, 20);
@@ -1385,7 +1418,7 @@ export async function POST(request: Request) {
         }
 
         const synergySystemPrompt =
-          "You are Synergy, a helpful assistant answering questions based on retrieved context (Slack messages and uploaded docs). Use the provided context when it is relevant. If the context does not contain the answer, say so briefly and answer from general knowledge when appropriate. When talking about people, projects, or events, only use names and details that explicitly appear in the retrieved context or the conversation so far; do not invent or guess new names.";
+          "You are Synergy, a helpful assistant answering questions based on retrieved context (Slack messages and uploaded docs). Use the provided context when it is relevant. If the context does not contain the answer, say so briefly and answer from general knowledge when appropriate. When talking about people, projects, or events, only use names and details that explicitly appear in the retrieved context or the conversation so far; do not invent or guess new names.\n\nIMPORTANT: For any totals, sums, counts, group-bys (e.g. by month), or other numeric aggregations over bank statements, credit card statements, or invoices, you MUST use the financeQuery tool and use its output verbatim. Do NOT compute totals from retrieved chunks. For deposits-only, filter to positive amounts (amount_min > 0). For withdrawals-only, filter to negative amounts (amount_max < 0).";
 
         const baseMessages = convertToModelMessages(uiMessages);
         const messagesWithContext = retrievedContext
@@ -1399,9 +1432,29 @@ export async function POST(request: Request) {
           : baseMessages;
 
         const basetenApiKey = process.env.BASETEN_API_KEY;
-        const textOnlyMessages = basetenApiKey
+        const mustUseTextOnly =
+          Boolean(basetenApiKey) ||
+          hasNonImageFileParts(messagesWithContext as unknown[]);
+        const textOnlyMessages = mustUseTextOnly
           ? coerceMessagesToTextOnly(messagesWithContext as unknown[])
           : messagesWithContext;
+
+        const lastUserMessage = uiMessages.slice().reverse().find((m) => m.role === "user");
+        const lastUserTextParts = lastUserMessage
+          ? lastUserMessage.parts.filter(
+              (
+                part
+              ): part is Extract<
+                (typeof lastUserMessage.parts)[number],
+                { type: "text" }
+              > => part.type === "text"
+            )
+          : [];
+        const lastUserText = lastUserTextParts
+          .map((part) => part.text)
+          .join("\n")
+          .slice(0, 4000);
+        const isAggregationQuery = AGGREGATION_HINT_RE.test(lastUserText);
 
         const result = streamText({
           model: myProvider.languageModel(selectedChatModel),
@@ -1409,28 +1462,28 @@ export async function POST(request: Request) {
           messages: textOnlyMessages as any,
           stopWhen: stepCountIs(5),
           experimental_activeTools:
-            basetenApiKey
+            selectedChatModel === "chat-model-reasoning"
               ? []
-              : selectedChatModel === "chat-model-reasoning"
-                ? []
+              : isAggregationQuery
+                ? ["financeQuery"]
                 : [
                     "getWeather",
                     "createDocument",
                     "updateDocument",
                     "requestSuggestions",
+                    "financeQuery",
                   ],
           experimental_transform: smoothStream({ chunking: "word" }),
-          tools: basetenApiKey
-            ? {}
-            : {
-                getWeather,
-                createDocument: createDocument({ session, dataStream }),
-                updateDocument: updateDocument({ session, dataStream }),
-                requestSuggestions: requestSuggestions({
-                  session,
-                  dataStream,
-                }),
-              },
+          tools: {
+            getWeather,
+            createDocument: createDocument({ session, dataStream }),
+            updateDocument: updateDocument({ session, dataStream }),
+            requestSuggestions: requestSuggestions({
+              session,
+              dataStream,
+            }),
+            financeQuery: financeQuery({ session }),
+          },
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,
             functionId: "stream-text",

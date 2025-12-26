@@ -7,7 +7,10 @@ import {
   markProjectDocIndexed,
   updateProjectDoc,
 } from "@/lib/db/queries";
-import { ingestUploadedDocToTurbopuffer } from "@/lib/ingest/docs";
+import {
+  ingestDocSummaryToTurbopuffer,
+  ingestUploadedDocToTurbopuffer,
+} from "@/lib/ingest/docs";
 import { deleteByFilterFromTurbopuffer } from "@/lib/rag/turbopuffer";
 import { getMicrosoftAccessTokenForUser } from "@/lib/integrations/microsoft/graph";
 
@@ -56,7 +59,10 @@ function isSupportedMimeType(mimeType: string) {
   return (
     mimeType === "application/pdf" ||
     mimeType ===
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    mimeType === "text/csv" ||
+    mimeType === "application/csv" ||
+    mimeType === "application/vnd.ms-excel"
   );
 }
 
@@ -70,15 +76,20 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
   driveId,
   items,
   token,
+  documentType,
 }: {
   userId: string;
   project: Project;
   driveId: string;
   items: Array<{ itemId: string; filename: string }>;
   token?: string;
+  documentType?: "general_doc" | "bank_statement" | "cc_statement" | "invoice";
 }): Promise<MicrosoftSyncResult[]> {
   const accessToken = token ?? (await getMicrosoftAccessTokenForUser(userId));
   const namespace = getDocsNamespace(project.isDefault, project.id);
+  const effectiveDocumentType =
+    documentType ??
+    ("general_doc" as const);
 
   return await Promise.all(
     items.map(async ({ itemId, filename }): Promise<MicrosoftSyncResult> => {
@@ -202,6 +213,7 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
               sizeBytes,
               mimeType,
               filename,
+              documentType: effectiveDocumentType,
               metadata: {
                 ...((doc.metadata as object) || {}),
                 driveId,
@@ -222,6 +234,8 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
             filename,
             mimeType,
             sizeBytes,
+            documentType: effectiveDocumentType,
+            parseStatus: effectiveDocumentType === "general_doc" ? "pending" : "pending",
             metadata: {
               driveId,
               itemId,
@@ -231,7 +245,7 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
           });
         }
 
-        // 5. Ingest (Vectorize) synchronously
+        // 5. Ingest (Vectorize) synchronously (general_doc only)
         const buffer = Buffer.from(arrayBuffer);
         try {
           await deleteByFilterFromTurbopuffer({
@@ -239,32 +253,65 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
             filters: ["doc_id", "Eq", doc.id],
           });
 
-          const result = await ingestUploadedDocToTurbopuffer({
-            docId: doc.id,
-            projectSlug: project.isDefault ? "default" : project.name,
-            projectId: project.id,
-            isDefaultProject: project.isDefault,
-            createdBy: userId,
-            organizationId: doc.organizationId,
-            filename,
-            category: doc.category,
-            description: doc.description,
-            mimeType,
-            blobUrl: storedBlobUrl ?? doc.blobUrl,
-            sourceUrl: sourceWebUrl ?? undefined,
-            sourceCreatedAtMs: doc.createdAt.getTime(),
-            fileBuffer: buffer,
-          });
+          if (effectiveDocumentType === "general_doc") {
+            const result = await ingestUploadedDocToTurbopuffer({
+              docId: doc.id,
+              projectSlug: project.isDefault ? "default" : project.name,
+              projectId: project.id,
+              isDefaultProject: project.isDefault,
+              createdBy: userId,
+              organizationId: doc.organizationId,
+              filename,
+              category: doc.category,
+              description: doc.description,
+              documentType: effectiveDocumentType,
+              mimeType,
+              blobUrl: storedBlobUrl ?? doc.blobUrl,
+              sourceUrl: sourceWebUrl ?? undefined,
+              sourceCreatedAtMs: doc.createdAt.getTime(),
+              fileBuffer: buffer,
+            });
 
-          await markProjectDocIndexed({
-            docId: doc.id,
-            indexedAt: new Date(),
-            turbopufferNamespace: result.namespace,
-          });
+            await markProjectDocIndexed({
+              docId: doc.id,
+              indexedAt: new Date(),
+              turbopufferNamespace: result.namespace,
+            });
+          } else {
+            const summaryTextParts = [
+              `Document type: ${effectiveDocumentType}`,
+              filename ? `Filename: ${filename}` : "",
+            ].filter((p) => p.length > 0);
+            const summaryText = summaryTextParts.join("\n");
+            const result = await ingestDocSummaryToTurbopuffer({
+              docId: doc.id,
+              projectId: project.id,
+              isDefaultProject: project.isDefault,
+              createdBy: userId,
+              organizationId: doc.organizationId,
+              filename,
+              mimeType,
+              blobUrl: storedBlobUrl ?? doc.blobUrl,
+              sourceUrl: sourceWebUrl ?? undefined,
+              sourceCreatedAtMs: doc.createdAt.getTime(),
+              documentType: effectiveDocumentType,
+              summaryText,
+              metadata: {
+                source_url: sourceWebUrl ?? null,
+              },
+            });
+            await markProjectDocIndexed({
+              docId: doc.id,
+              indexedAt: new Date(),
+              turbopufferNamespace: result.namespace,
+            });
+          }
 
           await updateProjectDoc({
             docId: doc.id,
             data: {
+              parseStatus:
+                effectiveDocumentType === "general_doc" ? "parsed" : "pending",
               metadata: {
                 ...((doc.metadata as object) || {}),
                 driveId,

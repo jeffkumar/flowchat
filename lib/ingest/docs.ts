@@ -193,6 +193,7 @@ export async function ingestUploadedDocToTurbopuffer({
   filename,
   category,
   description,
+  documentType,
   mimeType,
   blobUrl,
   sourceUrl,
@@ -208,6 +209,7 @@ export async function ingestUploadedDocToTurbopuffer({
   filename: string;
   category?: string | null;
   description?: string | null;
+  documentType?: "general_doc" | "bank_statement" | "cc_statement" | "invoice";
   mimeType: string;
   blobUrl: string;
   sourceUrl?: string | null;
@@ -284,6 +286,7 @@ export async function ingestUploadedDocToTurbopuffer({
       doc_description: description ?? null,
       mime_type: mimeType,
       blob_url: blobUrl,
+      document_type: documentType ?? "general_doc",
       chunk_index: index,
     });
   }
@@ -291,4 +294,79 @@ export async function ingestUploadedDocToTurbopuffer({
   await upsertRowsToTurbopuffer({ namespace, rows });
 
   return { namespace, chunks: rows.length };
+}
+
+export async function ingestDocSummaryToTurbopuffer({
+  docId,
+  projectId,
+  isDefaultProject,
+  createdBy,
+  organizationId,
+  filename,
+  mimeType,
+  blobUrl,
+  sourceUrl,
+  sourceCreatedAtMs,
+  documentType,
+  summaryText,
+  metadata,
+}: {
+  docId: string;
+  projectId: string;
+  isDefaultProject?: boolean;
+  createdBy: string;
+  organizationId?: string | null;
+  filename: string;
+  mimeType: string;
+  blobUrl: string;
+  sourceUrl?: string | null;
+  sourceCreatedAtMs: number;
+  documentType: "general_doc" | "bank_statement" | "cc_statement" | "invoice";
+  summaryText: string;
+  metadata?: Record<string, unknown>;
+}) {
+  const namespace = isDefaultProject
+    ? "_synergy_docsv2"
+    : `_synergy_${projectId}_docsv2`;
+  const indexedAtMs = Date.now();
+
+  const content = summaryText.trim().slice(0, MAX_CONTENT_CHARS);
+  if (!content) {
+    throw new Error("Empty summaryText");
+  }
+
+  const vector = await createEmbedding(content);
+  const idHash = crypto
+    .createHash("sha256")
+    .update(`summary:${docId}`)
+    .digest("hex")
+    .slice(0, 40);
+  const rowId = `docs_summary_${idHash}`;
+
+  const row: TurbopufferUpsertRow = {
+    id: rowId,
+    vector,
+    content,
+    sourceType: "docs",
+    doc_source:
+      sourceUrl && sourceUrl.toLowerCase().includes("sharepoint.com")
+        ? "sharepoint"
+        : "upload",
+    source_url: sourceUrl ?? null,
+    sourceCreatedAtMs,
+    indexedAtMs,
+    doc_id: docId,
+    project_id: projectId,
+    created_by: createdBy,
+    organization_id: organizationId ?? null,
+    filename,
+    mime_type: mimeType,
+    blob_url: blobUrl,
+    document_type: documentType,
+    is_summary: true,
+    ...(metadata ?? {}),
+  };
+
+  await upsertRowsToTurbopuffer({ namespace, rows: [row] });
+  return { namespace, rowId };
 }
