@@ -11,6 +11,15 @@ import {
 import { deleteByFilterFromTurbopuffer } from "@/lib/rag/turbopuffer";
 import { namespacesForSourceTypes } from "@/lib/rag/source-routing";
 
+function isVercelBlobUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.hostname.endsWith(".public.blob.vercel-storage.com");
+  } catch {
+    return false;
+  }
+}
+
 export async function POST(
   _request: NextRequest,
   { params }: { params: Promise<{ projectId: string }> }
@@ -59,7 +68,8 @@ export async function POST(
 
   const blobUrls = docs
     .map((d) => d.blobUrl)
-    .filter((u): u is string => typeof u === "string" && u.length > 0);
+    .filter((u): u is string => typeof u === "string" && u.length > 0)
+    .filter((u) => isVercelBlobUrl(u));
 
   await Promise.all(blobUrls.map((url) => del(url)));
 

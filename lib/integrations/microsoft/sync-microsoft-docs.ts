@@ -28,6 +28,16 @@ type InFlightLock = { startedAtMs: number };
 const inFlightSyncLocks = new Map<string, InFlightLock>();
 const IN_FLIGHT_LOCK_TTL_MS = 10 * 60 * 1000;
 
+function isVercelBlobUrl(value: string | null | undefined) {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.hostname.endsWith(".public.blob.vercel-storage.com");
+  } catch {
+    return false;
+  }
+}
+
 function tryAcquireSyncLock(key: string) {
   const existing = inFlightSyncLocks.get(key);
   const now = Date.now();
@@ -174,11 +184,21 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
           itemId,
         });
 
+        if (!blobUrl && (!doc || !isVercelBlobUrl(doc.blobUrl))) {
+          return {
+            itemId,
+            status: "failed",
+            error: "Blob upload failed; no stored blob copy available",
+          };
+        }
+
+        const storedBlobUrl = blobUrl ?? doc?.blobUrl ?? null;
+
         if (doc) {
           doc = await updateProjectDoc({
             docId: doc.id,
             data: {
-              blobUrl: blobUrl ?? doc.blobUrl,
+              blobUrl: storedBlobUrl ?? doc.blobUrl,
               sizeBytes,
               mimeType,
               filename,
@@ -192,18 +212,13 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
             },
           });
         } else {
-          if (!blobUrl && !sourceWebUrl) {
-            return {
-              itemId,
-              status: "failed",
-              error: "No blobUrl available and Graph returned no webUrl",
-            };
-          }
           doc = await createProjectDoc({
             projectId: project.id,
             createdBy: userId,
             organizationId: project.organizationId ?? null,
-            blobUrl: blobUrl ?? sourceWebUrl ?? "about:blank",
+            // Microsoft-synced docs must have a stored blob copy so we can delete it later
+            // without touching SharePoint/OneDrive.
+            blobUrl: storedBlobUrl ?? "about:blank",
             filename,
             mimeType,
             sizeBytes,
@@ -235,7 +250,7 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
             category: doc.category,
             description: doc.description,
             mimeType,
-            blobUrl: blobUrl ?? doc.blobUrl,
+            blobUrl: storedBlobUrl ?? doc.blobUrl,
             sourceUrl: sourceWebUrl ?? undefined,
             sourceCreatedAtMs: doc.createdAt.getTime(),
             fileBuffer: buffer,

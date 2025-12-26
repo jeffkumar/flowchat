@@ -28,6 +28,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { OneDriveIcon } from "@/components/icons";
 
 interface ViewDocsProps {
   isOpen: boolean;
@@ -161,7 +162,15 @@ export function ViewDocs({
                     metadata && typeof metadata.sourceWebUrl === "string"
                       ? metadata.sourceWebUrl
                       : "";
-                  const isSharePoint = sourceWebUrl.toLowerCase().includes("sharepoint.com");
+                  const driveId =
+                    metadata && typeof metadata.driveId === "string" ? metadata.driveId : "";
+                  const itemId =
+                    metadata && typeof metadata.itemId === "string" ? metadata.itemId : "";
+                  const sourceLower = sourceWebUrl.toLowerCase();
+                  const isMicrosoftSource =
+                    Boolean(driveId && itemId) ||
+                    sourceLower.includes("sharepoint.com") ||
+                    sourceLower.includes("onedrive");
                   return (
                     <div
                       key={doc.id}
@@ -184,16 +193,26 @@ export function ViewDocs({
                         <span className="text-xs text-muted-foreground">
                           {format(new Date(doc.createdAt), "PP")}
                         </span>
-                        {isSharePoint && (
-                          <a
-                            className="text-xs text-muted-foreground underline underline-offset-2"
-                            href={sourceWebUrl}
-                            rel="noopener noreferrer"
-                            target="_blank"
-                          >
-                            SharePoint
-                          </a>
-                        )}
+                        {isMicrosoftSource && sourceWebUrl ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <a
+                                className="flex items-center gap-1 text-xs text-muted-foreground underline underline-offset-2"
+                                href={sourceWebUrl}
+                                rel="noopener noreferrer"
+                                target="_blank"
+                              >
+                                <span className="text-onedrive" title="SharePoint / OneDrive">
+                                  <OneDriveIcon size={14} />
+                                </span>
+                                SharePoint / OneDrive
+                              </a>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">
+                              This file is stored in Sharepoint / Onedrive. 
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : null}
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         <Button
@@ -214,7 +233,7 @@ export function ViewDocs({
                           className="shrink-0"
                           onClick={() => setDocToDelete(doc)}
                           size="icon"
-                          title="Delete document"
+                          title={isMicrosoftSource ? "Remove from context" : "Delete document"}
                           type="button"
                           variant="ghost"
                         >
@@ -245,11 +264,38 @@ export function ViewDocs({
       <AlertDialog onOpenChange={(open) => !open && setDocToDelete(null)} open={docToDelete !== null}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete document?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This action cannot be undone. This will permanently delete the file,
-              remove it from storage, and remove its indexed content.
-            </AlertDialogDescription>
+            {(() => {
+              const metadata =
+                docToDelete?.metadata && typeof docToDelete.metadata === "object"
+                  ? (docToDelete.metadata as Record<string, unknown>)
+                  : null;
+              const sourceWebUrl =
+                metadata && typeof metadata.sourceWebUrl === "string"
+                  ? metadata.sourceWebUrl
+                  : "";
+              const driveId =
+                metadata && typeof metadata.driveId === "string" ? metadata.driveId : "";
+              const itemId =
+                metadata && typeof metadata.itemId === "string" ? metadata.itemId : "";
+              const sourceLower = sourceWebUrl.toLowerCase();
+              const isMicrosoftSource =
+                Boolean(driveId && itemId) ||
+                sourceLower.includes("sharepoint.com") ||
+                sourceLower.includes("onedrive");
+
+              return (
+                <>
+                  <AlertDialogTitle>
+                    {isMicrosoftSource ? "Remove from context?" : "Delete document?"}
+                  </AlertDialogTitle>
+                  <AlertDialogDescription>
+                    {isMicrosoftSource
+                      ? "This will remove the file from Flowchat context and delete its stored copy and indexed content. This does not delete the file in SharePoint/OneDrive."
+                      : "This action cannot be undone. This will permanently delete the file, remove it from storage, and remove its indexed content."}
+                  </AlertDialogDescription>
+                </>
+              );
+            })()}
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel type="button">Cancel</AlertDialogCancel>
@@ -261,7 +307,26 @@ export function ViewDocs({
               }}
               type="button"
             >
-              Delete
+              {(() => {
+                const metadata =
+                  docToDelete?.metadata && typeof docToDelete.metadata === "object"
+                    ? (docToDelete.metadata as Record<string, unknown>)
+                    : null;
+                const sourceWebUrl =
+                  metadata && typeof metadata.sourceWebUrl === "string"
+                    ? metadata.sourceWebUrl
+                    : "";
+                const driveId =
+                  metadata && typeof metadata.driveId === "string" ? metadata.driveId : "";
+                const itemId =
+                  metadata && typeof metadata.itemId === "string" ? metadata.itemId : "";
+                const sourceLower = sourceWebUrl.toLowerCase();
+                const isMicrosoftSource =
+                  Boolean(driveId && itemId) ||
+                  sourceLower.includes("sharepoint.com") ||
+                  sourceLower.includes("onedrive");
+                return isMicrosoftSource ? "Remove" : "Delete";
+              })()}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

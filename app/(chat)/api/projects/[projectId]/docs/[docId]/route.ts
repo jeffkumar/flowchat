@@ -11,6 +11,15 @@ import {
 import { deleteByFilterFromTurbopuffer } from "@/lib/rag/turbopuffer";
 import { namespacesForSourceTypes } from "@/lib/rag/source-routing";
 
+function isVercelBlobUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.hostname.endsWith(".public.blob.vercel-storage.com");
+  } catch {
+    return false;
+  }
+}
+
 export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ projectId: string; docId: string }> }
@@ -52,7 +61,9 @@ export async function DELETE(
     });
   }
 
-  await del(doc.blobUrl);
+  if (isVercelBlobUrl(doc.blobUrl)) {
+    await del(doc.blobUrl);
+  }
 
   await deleteProjectDocById({ docId: doc.id });
 

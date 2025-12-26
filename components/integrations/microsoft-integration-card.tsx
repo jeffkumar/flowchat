@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { OneDriveIcon, ShareIcon as ShareSourceIcon } from "@/components/icons";
 import {
   AlertDialog,
@@ -28,6 +29,8 @@ import {
   RefreshCw,
   Loader2,
   ChevronDown,
+  Info,
+  Trash2,
 } from "lucide-react";
 import {
   Collapsible,
@@ -145,6 +148,10 @@ export function MicrosoftIntegrationCard() {
   const [items, setItems] = useState<Item[]>([]);
   const [isBusy, setIsBusy] = useState(false);
   const [inFlightSyncKeys, setInFlightSyncKeys] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [docToRemove, setDocToRemove] = useState<SyncedDoc | null>(null);
+  const [inFlightRemoveDocIds, setInFlightRemoveDocIds] = useState<Set<string>>(
     () => new Set()
   );
   
@@ -331,6 +338,42 @@ export function MicrosoftIntegrationCard() {
       setInFlightSyncKeys((prev) => {
         const next = new Set(prev);
         for (const key of keys) next.delete(key);
+        return next;
+      });
+    }
+  };
+
+  const removeSyncedDoc = async (doc: SyncedDoc) => {
+    if (!selectedProjectId) {
+      toast.error("Select a project first");
+      return;
+    }
+
+    if (inFlightRemoveDocIds.has(doc.docId)) {
+      return;
+    }
+
+    setInFlightRemoveDocIds((prev) => new Set(prev).add(doc.docId));
+    try {
+      const res = await fetch(`/api/projects/${selectedProjectId}/docs/${doc.docId}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const json = (await res.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(json?.error ?? "Failed to remove file");
+      }
+
+      toast.success("Removed from context");
+      await mutateSyncedDocs();
+      setDocToRemove(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to remove file");
+    } finally {
+      setInFlightRemoveDocIds((prev) => {
+        const next = new Set(prev);
+        next.delete(doc.docId);
         return next;
       });
     }
@@ -666,7 +709,7 @@ export function MicrosoftIntegrationCard() {
               </div>
 
               <div className="rounded-md border overflow-hidden">
-                <div className="grid grid-cols-[24px_1fr_220px_110px] gap-3 px-3 py-2 text-xs text-muted-foreground border-b">
+                <div className="grid grid-cols-[24px_1fr_220px_170px] gap-3 px-3 py-2 text-xs text-muted-foreground border-b">
                   <div>Src</div>
                   <div>Name</div>
                   <div>Last synced</div>
@@ -676,10 +719,11 @@ export function MicrosoftIntegrationCard() {
                   {(syncedDocsData?.docs ?? []).map((doc) => {
                     const syncKey = `${doc.driveId}:${doc.itemId}`;
                     const isSyncing = inFlightSyncKeys.has(syncKey);
+                    const isRemoving = inFlightRemoveDocIds.has(doc.docId);
                     const displayName = truncateLabel(doc.filename);
                     return (
                       <div
-                        className="grid grid-cols-[24px_1fr_220px_110px] items-center gap-3 px-3 py-2 text-xs"
+                        className="grid grid-cols-[24px_1fr_220px_170px] items-center gap-3 px-3 py-2 text-xs"
                         key={doc.docId}
                       >
                         <div className="flex items-center justify-center">
@@ -691,7 +735,7 @@ export function MicrosoftIntegrationCard() {
                         <div className="truncate text-muted-foreground">
                           {new Date(doc.lastSyncedAt).toLocaleString()}
                         </div>
-                        <div className="flex justify-end">
+                        <div className="flex items-center justify-end gap-1">
                           <Button
                             disabled={isSyncing}
                             onClick={() =>
@@ -714,6 +758,19 @@ export function MicrosoftIntegrationCard() {
                               "Sync"
                             )}
                           </Button>
+                          <Button
+                            aria-label="Remove from context"
+                            disabled={isRemoving}
+                            onClick={() => setDocToRemove(doc)}
+                            size="icon"
+                            title="Remove from context"
+                            type="button"
+                            variant="ghost"
+                            className="h-8 w-8"
+                          >
+                            <Trash2 className="h-4 w-4 text-muted-foreground" />
+                          </Button>
+                          
                         </div>
                       </div>
                     );
@@ -1006,6 +1063,35 @@ export function MicrosoftIntegrationCard() {
 
         </div>
       )}
+
+      <AlertDialog open={docToRemove !== null} onOpenChange={(open) => !open && setDocToRemove(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove from context?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove the file from Flowchat context and delete its stored
+              copy and indexed content. This does not delete the file in
+              SharePoint/OneDrive.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={docToRemove ? inFlightRemoveDocIds.has(docToRemove.docId) : false} type="button">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={docToRemove ? inFlightRemoveDocIds.has(docToRemove.docId) : true}
+              onClick={() => {
+                if (docToRemove) {
+                  void removeSyncedDoc(docToRemove);
+                }
+              }}
+              type="button"
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={folderSyncDialogOpen} onOpenChange={setFolderSyncDialogOpen}>
         <AlertDialogContent>
