@@ -18,6 +18,15 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { OneDriveIcon, ShareIcon as ShareSourceIcon } from "@/components/icons";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -37,6 +46,7 @@ import {
   Loader2,
   ChevronDown,
   Info,
+  Pencil,
   Trash2,
 } from "lucide-react";
 import {
@@ -77,6 +87,7 @@ type RecentLocation = {
 type SyncedDoc = {
   docId: string;
   filename: string;
+  url?: string | null;
   documentType?: "general_doc" | "bank_statement" | "cc_statement" | "invoice";
   parseStatus?: "pending" | "parsed" | "failed" | "needs_review";
   itemId: string;
@@ -90,6 +101,13 @@ type IngestDocumentType =
   | "bank_statement"
   | "cc_statement"
   | "invoice";
+
+function formatDocType(value: IngestDocumentType) {
+  if (value === "bank_statement") return "Bank statement";
+  if (value === "cc_statement") return "CC statement";
+  if (value === "invoice") return "Invoice";
+  return "General doc";
+}
 
 const MAX_LABEL_CHARS = 200;
 const SUPPORTED_FILE_EXTENSIONS = new Set(["pdf", "doc", "docx", "csv"]);
@@ -178,15 +196,6 @@ export function MicrosoftIntegrationCard() {
   const [searchResults, setSearchResults] = useState<Item[] | null>(null);
   
   const [recentLocations, setRecentLocations] = useState<RecentLocation[]>([]);
-  const [folderSyncDialogOpen, setFolderSyncDialogOpen] = useState(false);
-  const [folderSyncIsCounting, setFolderSyncIsCounting] = useState(false);
-  const [folderSyncIsSyncing, setFolderSyncIsSyncing] = useState(false);
-  const [folderSyncState, setFolderSyncState] = useState<{
-    driveId: string;
-    folderId: string;
-    folderName: string;
-    totalFiles: number;
-  } | null>(null);
 
   useEffect(() => {
     // Project-scoped UI state: reset on project switch to avoid showing stale results.
@@ -198,10 +207,6 @@ export function MicrosoftIntegrationCard() {
     setIsBusy(false);
     setInFlightSyncKeys(new Set());
     setSharePointUrl("");
-    setFolderSyncDialogOpen(false);
-    setFolderSyncIsCounting(false);
-    setFolderSyncIsSyncing(false);
-    setFolderSyncState(null);
     setDocTypeByKey({});
   }, [selectedProjectId]);
 
@@ -435,107 +440,6 @@ export function MicrosoftIntegrationCard() {
     saveRecentLocation({ driveId, folderId, name });
   };
 
-  const openFolderSyncDialog = async ({
-    driveId,
-    folderId,
-    folderName,
-  }: {
-    driveId: string;
-    folderId: string;
-    folderName: string;
-  }) => {
-    if (!selectedProjectId) {
-      toast.error("Select a project first");
-      return;
-    }
-
-    setFolderSyncDialogOpen(true);
-    setFolderSyncState({
-      driveId,
-      folderId,
-      folderName,
-      totalFiles: 0,
-    });
-    setFolderSyncIsCounting(true);
-    try {
-      const res = await fetch(
-        `/api/projects/${selectedProjectId}/integrations/microsoft/sync-folder`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ driveId, folderId, dryRun: true }),
-        }
-      );
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(text || "Failed to count folder files");
-      }
-      const json = (await res.json()) as { totalFiles: number };
-      setFolderSyncState((prev) =>
-        prev
-          ? {
-              ...prev,
-              totalFiles:
-                typeof json.totalFiles === "number" ? json.totalFiles : prev.totalFiles,
-            }
-          : prev
-      );
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to inspect folder");
-      setFolderSyncDialogOpen(false);
-    } finally {
-      setFolderSyncIsCounting(false);
-    }
-  };
-
-  const syncFolder = async () => {
-    if (!selectedProjectId) {
-      toast.error("Select a project first");
-      return;
-    }
-    if (!folderSyncState) return;
-
-    setFolderSyncIsSyncing(true);
-    try {
-      const folderKey = `${folderSyncState.driveId}:${folderSyncState.folderId}`;
-      const documentType = getTypeForKey(folderKey);
-      const res = await fetch(
-        `/api/projects/${selectedProjectId}/integrations/microsoft/sync-folder`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            driveId: folderSyncState.driveId,
-            folderId: folderSyncState.folderId,
-            documentType,
-          }),
-        }
-      );
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(text || "Folder sync failed");
-      }
-
-      const json = (await res.json()) as {
-        totalFiles: number;
-        synced: number;
-        skipped: number;
-        failed: number;
-      };
-
-      toast.success(
-        `Synced ${json.synced} file(s) (${json.skipped} skipped, ${json.failed} failed)`
-      );
-      await mutateSyncedDocs();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Folder sync failed");
-    } finally {
-      setFolderSyncIsSyncing(false);
-      setFolderSyncDialogOpen(false);
-      setFolderSyncState(null);
-    }
-  };
-
   const restoreRecent = async (loc: RecentLocation) => {
     setSearchResults(null);
     setGlobalSearchQuery("");
@@ -743,22 +647,13 @@ export function MicrosoftIntegrationCard() {
                   <History className="h-4 w-4" />
                   Synced files
                 </div>
-                <Button
-                  disabled={isBusy}
-                  onClick={() => void mutateSyncedDocs()}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
               </div>
 
               <div className="rounded-md border overflow-hidden">
-                <div className="grid grid-cols-[24px_1fr_160px_220px_170px] gap-3 px-3 py-2 text-xs text-muted-foreground border-b">
-                  <div>Src</div>
+                <div className="grid grid-cols-[1fr_120px_80px_150px_100px] gap-3 px-3 py-2 text-xs text-muted-foreground border-b">
                   <div>Name</div>
-                  <div>Type</div>
+                  <div>Document type</div>
+                  <div>Status</div>
                   <div>Last synced</div>
                   <div />
                 </div>
@@ -771,48 +666,78 @@ export function MicrosoftIntegrationCard() {
                     const selectedType = getTypeForKey(syncKey);
                     return (
                       <div
-                        className="grid grid-cols-[24px_1fr_160px_220px_170px] items-center gap-3 px-3 py-2 text-xs"
+                        className="grid grid-cols-[1fr_120px_80px_150px_100px] items-center gap-3 px-3 py-2 text-xs"
                         key={doc.docId}
                       >
-                        <div className="flex items-center justify-center">
-                          <ShareSourceIcon size={14} />
-                        </div>
                         <div className="min-w-0 truncate" title={doc.filename}>
                           {displayName}
                         </div>
                         <div className="min-w-0 truncate text-muted-foreground">
-                          {(doc.documentType ?? "general_doc") +
-                            (doc.parseStatus ? ` · ${doc.parseStatus}` : "")}
+                          {formatDocType(selectedType)}
+                        </div>
+                        <div className="min-w-0 truncate text-muted-foreground">
+                          {doc.parseStatus ?? ""}
                         </div>
                         <div className="truncate text-muted-foreground">
                           {new Date(doc.lastSyncedAt).toLocaleString()}
                         </div>
                         <div className="flex items-center justify-end gap-1">
-                          <Select
-                            onValueChange={(value) => {
-                              const v = value as IngestDocumentType;
-                              setTypeForKey(syncKey, v);
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                aria-label="Edit document type"
+                                disabled={isSyncing}
+                                size="icon"
+                                title="Edit document type"
+                                type="button"
+                                variant="ghost"
+                                className="h-8 w-8"
+                              >
+                                <Pencil className="h-4 w-4 text-muted-foreground" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuLabel>Document type</DropdownMenuLabel>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuRadioGroup
+                                onValueChange={(value) => {
+                                  setTypeForKey(syncKey, value as IngestDocumentType);
+                                }}
+                                value={selectedType}
+                              >
+                                <DropdownMenuRadioItem value="general_doc">
+                                  General doc
+                                </DropdownMenuRadioItem>
+                                <DropdownMenuRadioItem value="bank_statement">
+                                  Bank statement
+                                </DropdownMenuRadioItem>
+                                <DropdownMenuRadioItem value="cc_statement">
+                                  CC statement
+                                </DropdownMenuRadioItem>
+                                <DropdownMenuRadioItem value="invoice">
+                                  Invoice
+                                </DropdownMenuRadioItem>
+                              </DropdownMenuRadioGroup>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                          <Button
+                            disabled={isSyncing || !selectedProjectId}
+                            onClick={() => {
                               void syncItems({
                                 driveId: doc.driveId,
                                 items: [{ itemId: doc.itemId, filename: doc.filename }],
-                                documentType: v,
+                                documentType: selectedType,
                               });
                             }}
-                            value={selectedType}
+                            aria-label="Refresh file"
+                            title="Refresh file"
+                            size="icon"
+                            type="button"
+                            variant="outline"
+                            className="h-8 w-8"
                           >
-                            <SelectTrigger
-                              className="h-8 w-[190px] text-xs"
-                              disabled={isSyncing}
-                            >
-                              <SelectValue placeholder="Sync as…" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="general_doc">Sync as normal doc</SelectItem>
-                              <SelectItem value="bank_statement">Sync as bank statement</SelectItem>
-                              <SelectItem value="cc_statement">Sync as cc statement</SelectItem>
-                              <SelectItem value="invoice">Sync as invoice</SelectItem>
-                            </SelectContent>
-                          </Select>
+                            <RefreshCw className="h-4 w-4" />
+                          </Button>
                           <Button
                             aria-label="Remove from context"
                             disabled={isRemoving}
@@ -850,36 +775,11 @@ export function MicrosoftIntegrationCard() {
                     const syncKey = driveId ? `${driveId}:${item.id}` : null;
                     const isSyncing = syncKey ? inFlightSyncKeys.has(syncKey) : false;
                     const selectedType = syncKey ? getTypeForKey(syncKey) : "general_doc";
-                    const onActivate = () => {
-                      if (!driveId) return;
-                      if (item.isFolder) {
-                        void openFolderSyncDialog({
-                          driveId,
-                          folderId: item.id,
-                          folderName: label,
-                        });
-                        return;
-                      }
-                      void syncItems({
-                        driveId,
-                        items: [{ itemId: item.id, filename: label }],
-                        documentType: selectedType,
-                      });
-                    };
 
                     return (
                       <div
-                        className="flex w-full items-center justify-between gap-3 rounded-sm p-2 hover:bg-accent cursor-pointer"
+                        className="flex w-full items-center justify-between gap-3 rounded-sm p-2 hover:bg-accent"
                         key={item.id}
-                        onClick={onActivate}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            onActivate();
-                          }
-                        }}
-                        role="button"
-                        tabIndex={0}
                       >
                         <div className="min-w-0 flex-1">
                           <div className="text-sm font-medium flex items-center gap-2">
@@ -918,52 +818,52 @@ export function MicrosoftIntegrationCard() {
                               >
                                 Open
                               </Button>
+                            </>
+                          ) : syncKey ? (
+                            <>
+                              <Select
+                                onValueChange={(value) => {
+                                  const v = value as IngestDocumentType;
+                                  setTypeForKey(syncKey, v);
+                                }}
+                                value={selectedType}
+                              >
+                                <SelectTrigger
+                                className="h-8 w-[190px] text-xs [&>span]:flex-1 [&>span]:text-left"
+                                  disabled={isSyncing || !item.driveId || !selectedProjectId}
+                                >
+                                  <SelectValue placeholder="Doc type" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="general_doc">General doc</SelectItem>
+                                  <SelectItem value="bank_statement">
+                                    Bank statement
+                                  </SelectItem>
+                                  <SelectItem value="cc_statement">CC statement</SelectItem>
+                                  <SelectItem value="invoice">Invoice</SelectItem>
+                                </SelectContent>
+                              </Select>
                               <Button
-                                disabled={isBusy || !item.driveId}
+                                disabled={isSyncing || !item.driveId || !selectedProjectId}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   if (!item.driveId) return;
-                                  void openFolderSyncDialog({
+                                  void syncItems({
                                     driveId: item.driveId,
-                                    folderId: item.id,
-                                    folderName: label,
+                                    items: [{ itemId: item.id, filename: label }],
+                                    documentType: selectedType,
                                   });
                                 }}
-                                size="sm"
+                                aria-label="Refresh file"
+                                title="Refresh file"
+                                size="icon"
                                 type="button"
                                 variant="outline"
-                                className="shrink-0 whitespace-nowrap"
+                                className="h-8 w-8"
                               >
-                                Sync
+                                <RefreshCw className="h-4 w-4" />
                               </Button>
                             </>
-                          ) : syncKey ? (
-                            <Select
-                              onValueChange={(value) => {
-                                const v = value as IngestDocumentType;
-                                setTypeForKey(syncKey, v);
-                                if (!item.driveId) return;
-                                void syncItems({
-                                  driveId: item.driveId,
-                                  items: [{ itemId: item.id, filename: label }],
-                                  documentType: v,
-                                });
-                              }}
-                              value={selectedType}
-                            >
-                              <SelectTrigger
-                                className="h-8 w-[190px] text-xs"
-                                disabled={isSyncing || !item.driveId || !selectedProjectId}
-                              >
-                                <SelectValue placeholder="Sync as…" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="general_doc">Sync as general doc</SelectItem>
-                                <SelectItem value="bank_statement">Sync as bank statement</SelectItem>
-                                <SelectItem value="cc_statement">Sync as cc statement</SelectItem>
-                                <SelectItem value="invoice">Sync as invoice</SelectItem>
-                              </SelectContent>
-                            </Select>
                           ) : (
                             <Button
                               disabled={true}
@@ -1053,6 +953,7 @@ export function MicrosoftIntegrationCard() {
                     const displayLabel = truncateLabel(label);
                     const syncKey = `${selectedDriveId}:${item.id}`;
                     const isSyncing = inFlightSyncKeys.has(syncKey);
+                    const selectedType = getTypeForKey(syncKey);
                     return (
                       <div className="flex w-full items-center justify-between gap-3 p-2" key={item.id}>
                         <div className="min-w-0 flex-1">
@@ -1069,21 +970,6 @@ export function MicrosoftIntegrationCard() {
                           {item.isFolder ? (
                             <>
                               <Button
-                                onClick={() =>
-                                  void openFolderSyncDialog({
-                                    driveId: selectedDriveId,
-                                    folderId: item.id,
-                                    folderName: label,
-                                  })
-                                }
-                                size="sm"
-                                type="button"
-                                variant="outline"
-                                className="shrink-0 whitespace-nowrap"
-                              >
-                                Sync
-                              </Button>
-                              <Button
                                 onClick={() => void goToFolder(selectedDriveId, item.id, label)}
                                 size="sm"
                                 type="button"
@@ -1094,31 +980,48 @@ export function MicrosoftIntegrationCard() {
                               </Button>
                             </>
                           ) : (
-                            <Select
-                              onValueChange={(value) => {
-                                const v = value as IngestDocumentType;
-                                setTypeForKey(syncKey, v);
-                                void syncItems({
-                                  driveId: selectedDriveId,
-                                  items: [{ itemId: item.id, filename: label }],
-                                  documentType: v,
-                                });
-                              }}
-                              value={getTypeForKey(syncKey)}
-                            >
-                              <SelectTrigger
-                                className="h-8 w-[190px] text-xs"
-                                disabled={isSyncing || !selectedProjectId}
+                            <>
+                              <Select
+                                onValueChange={(value) => {
+                                  const v = value as IngestDocumentType;
+                                  setTypeForKey(syncKey, v);
+                                }}
+                                value={selectedType}
                               >
-                                <SelectValue placeholder="Sync as…" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="general_doc">Sync as general doc</SelectItem>
-                                <SelectItem value="bank_statement">Sync as bank statement</SelectItem>
-                                <SelectItem value="cc_statement">Sync as cc statement</SelectItem>
-                                <SelectItem value="invoice">Sync as invoice</SelectItem>
-                              </SelectContent>
-                            </Select>
+                                <SelectTrigger
+                                  className="h-8 w-[190px] text-xs [&>span]:flex-1 [&>span]:text-left"
+                                  disabled={isSyncing || !selectedProjectId}
+                                >
+                                  <SelectValue placeholder="Doc type" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="general_doc">General doc</SelectItem>
+                                  <SelectItem value="bank_statement">
+                                    Bank statement
+                                  </SelectItem>
+                                  <SelectItem value="cc_statement">CC statement</SelectItem>
+                                  <SelectItem value="invoice">Invoice</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <Button
+                                disabled={isSyncing || !selectedProjectId}
+                                onClick={() => {
+                                  void syncItems({
+                                    driveId: selectedDriveId,
+                                    items: [{ itemId: item.id, filename: label }],
+                                    documentType: selectedType,
+                                  });
+                                }}
+                                aria-label="Refresh file"
+                                title="Refresh file"
+                                size="icon"
+                                type="button"
+                                variant="outline"
+                                className="h-8 w-8"
+                              >
+                                <RefreshCw className="h-4 w-4" />
+                              </Button>
+                            </>
                           )}
                         </div>
                       </div>
@@ -1161,62 +1064,6 @@ export function MicrosoftIntegrationCard() {
               type="button"
             >
               Remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={folderSyncDialogOpen} onOpenChange={setFolderSyncDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Sync folder?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {folderSyncIsCounting
-                ? "Counting files in this folder…"
-                : folderSyncState
-                  ? `Are you sure you'd like to sync ${folderSyncState.totalFiles} file(s) from "${folderSyncState.folderName}"?`
-                  : "Preparing folder sync…"}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {folderSyncState ? (
-            <div className="mt-3">
-              <div className="mb-1 text-xs text-muted-foreground">Sync as</div>
-              <Select
-                onValueChange={(value) => {
-                  const key = `${folderSyncState.driveId}:${folderSyncState.folderId}`;
-                  setTypeForKey(key, value as IngestDocumentType);
-                }}
-                value={getTypeForKey(`${folderSyncState.driveId}:${folderSyncState.folderId}`)}
-              >
-                <SelectTrigger className="h-8 w-full text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="general_doc">General doc</SelectItem>
-                  <SelectItem value="bank_statement">Bank statement</SelectItem>
-                  <SelectItem value="cc_statement">CC statement</SelectItem>
-                  <SelectItem value="invoice">Invoice</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          ) : null}
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={folderSyncIsSyncing} type="button">
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              disabled={folderSyncIsCounting || folderSyncIsSyncing || !folderSyncState}
-              onClick={() => void syncFolder()}
-              type="button"
-            >
-              {folderSyncIsSyncing ? (
-                <span className="flex items-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Syncing
-                </span>
-              ) : (
-                "Sync"
-              )}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

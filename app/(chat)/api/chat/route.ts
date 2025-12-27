@@ -1418,7 +1418,7 @@ export async function POST(request: Request) {
         }
 
         const synergySystemPrompt =
-          "You are Synergy, a helpful assistant answering questions based on retrieved context (Slack messages and uploaded docs). Use the provided context when it is relevant. If the context does not contain the answer, say so briefly and answer from general knowledge when appropriate. When talking about people, projects, or events, only use names and details that explicitly appear in the retrieved context or the conversation so far; do not invent or guess new names.\n\nIMPORTANT: For any totals, sums, counts, group-bys (e.g. by month), or other numeric aggregations over bank statements, credit card statements, or invoices, you MUST use the financeQuery tool and use its output verbatim. Do NOT compute totals from retrieved chunks. For deposits-only, filter to positive amounts (amount_min > 0). For withdrawals-only, filter to negative amounts (amount_max < 0).";
+          "You are Synergy, a helpful assistant answering questions based on retrieved context (Slack messages and uploaded docs). Use the provided context when it is relevant. If the context does not contain the answer, say so briefly and answer from general knowledge when appropriate. When talking about people, projects, or events, only use names and details that explicitly appear in the retrieved context or the conversation so far; do not invent or guess new names.\n\nIMPORTANT: For any totals, sums, counts, group-bys (e.g. by month), or other numeric aggregations over bank statements, credit card statements, or invoices, you MUST use the financeQuery tool and use its output verbatim. Do NOT compute totals from retrieved chunks. For deposits-only, filter to positive amounts (amount_min > 0). For withdrawals-only, filter to negative amounts (amount_max < 0). When the user asks about \"this year\" or a specific month (e.g. \"in June\"), prefer financeQuery.time_window (month/year) instead of manually setting date_start/date_end. date_end is exclusive; month windows should end on the first day of the next month.";
 
         const baseMessages = convertToModelMessages(uiMessages);
         const messagesWithContext = retrievedContext
@@ -1461,6 +1461,22 @@ export async function POST(request: Request) {
           system: synergySystemPrompt,
           messages: textOnlyMessages as any,
           stopWhen: stepCountIs(5),
+          onStepFinish: async (step) => {
+            if (step.toolCalls.length > 0 || step.toolResults.length > 0) {
+              console.log("[chat] step finish", {
+                stepFinishReason: step.finishReason,
+                toolCalls: step.toolCalls.map((c) => ({
+                  toolName: c.toolName,
+                  input: c.input,
+                })),
+                toolResults: step.toolResults.map((r) => ({
+                  toolName: r.toolName,
+                  output: r.output,
+                  preliminary: r.preliminary ?? false,
+                })),
+              });
+            }
+          },
           experimental_activeTools:
             selectedChatModel === "chat-model-reasoning"
               ? []

@@ -4,6 +4,7 @@ import path from "node:path";
 import Papa from "papaparse";
 import { put } from "@vercel/blob";
 import Reducto, { toFile } from "reductoai";
+import { ChatSDKError } from "@/lib/errors";
 import { ingestDocSummaryToTurbopuffer } from "@/lib/ingest/docs";
 import {
   getProjectByIdForUser,
@@ -543,7 +544,13 @@ export async function parseStructuredProjectDoc({
       insertedLineItems,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Parse failed";
+    let message = error instanceof Error ? error.message : "Parse failed";
+    if (error instanceof ChatSDKError && error.cause) {
+      message += ` (Cause: ${error.cause})`;
+    } else if (error instanceof Error && "cause" in error && error.cause) {
+      message += ` (Cause: ${error.cause})`;
+    }
+
     await updateProjectDoc({
       docId: doc.id,
       data: {

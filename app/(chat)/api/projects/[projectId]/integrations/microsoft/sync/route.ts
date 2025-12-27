@@ -49,9 +49,12 @@ export async function GET(
       })
       .map((doc) => {
         const meta = doc.metadata as Record<string, unknown>;
+        const sourceWebUrl = typeof meta.sourceWebUrl === "string" ? meta.sourceWebUrl : null;
+        const url = sourceWebUrl ?? doc.blobUrl ?? null;
         return {
           docId: doc.id,
           filename: doc.filename,
+          url,
           documentType: doc.documentType,
           parseStatus: doc.parseStatus,
           itemId: meta.itemId as string,

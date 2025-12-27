@@ -487,7 +487,7 @@ function PureAttachmentsButton({
               <SelectContent>
                 <SelectItem value="general_doc">General doc</SelectItem>
                 <SelectItem value="bank_statement">Bank statement</SelectItem>
-                <SelectItem value="cc_statement">CC statement</SelectItem>
+                <SelectItem value="cc_statement">Credit card statement</SelectItem>
                 <SelectItem value="invoice">Invoice</SelectItem>
               </SelectContent>
             </Select>
