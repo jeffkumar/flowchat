@@ -122,10 +122,12 @@ export const financialTransaction = pgTable(
     pageNum: bigint("page_num", { mode: "number" }),
     rowNum: bigint("row_num", { mode: "number" }),
     rowHash: text("row_hash").notNull(),
+    txnHash: text("txn_hash"),
   },
   (table) => ({
     docIdx: index("ft_doc_idx").on(table.documentId),
     dateIdx: index("ft_date_idx").on(table.txnDate),
+    txnHashIdx: index("ft_txn_hash_idx").on(table.txnHash),
     uniqueDocHash: uniqueIndex("ft_doc_hash_unique").on(
       table.documentId,
       table.rowHash

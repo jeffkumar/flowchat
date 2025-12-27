@@ -9,6 +9,8 @@ import { ingestDocSummaryToTurbopuffer } from "@/lib/ingest/docs";
 import {
   getProjectByIdForUser,
   getProjectDocById,
+  deleteFinancialTransactionsByDocumentId,
+  deleteInvoiceByDocumentId,
   insertFinancialTransactions,
   insertInvoiceLineItems,
   updateProjectDoc,
@@ -364,6 +366,10 @@ export async function parseStructuredProjectDoc({
           if (!txnDate || !amount) return null;
           const description = normalizeDescription(t.description);
           const currency = typeof t.currency === "string" ? t.currency.trim().slice(0, 16) : null;
+          const balance = t.balance === null ? null : parseDecimalString(t.balance);
+          const txnHash = sha256Hex(
+            `${txnDate}|${amount}|${description.toLowerCase()}|${balance ?? ""}`
+          );
           const rowHash = sha256Hex(
             `${doc.id}|${txnDate}|${amount}|${description.toLowerCase()}|${String(idx)}`
           );
@@ -372,11 +378,15 @@ export async function parseStructuredProjectDoc({
             description: description || null,
             amount,
             currency,
+            balance,
             rowHash,
+            txnHash,
           };
         })
         .filter((r): r is NonNullable<typeof r> => r !== null);
 
+      // On re-sync, replace transactions for this document to reflect the latest file contents.
+      await deleteFinancialTransactionsByDocumentId({ documentId: doc.id });
       const result = await insertFinancialTransactions({
         documentId: doc.id,
         rows: normalizedRows,
@@ -437,6 +447,8 @@ export async function parseStructuredProjectDoc({
         obj.header && typeof obj.header === "object" ? (obj.header as Record<string, unknown>) : {};
       const lineItems = Array.isArray(obj.line_items) ? obj.line_items : [];
 
+      // On re-sync, replace invoice + line items for this document to reflect the latest file contents.
+      await deleteInvoiceByDocumentId({ documentId: doc.id });
       const invoiceRow = await upsertInvoiceForDocument({
         documentId: doc.id,
         data: {

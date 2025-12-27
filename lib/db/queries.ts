@@ -510,6 +510,30 @@ export async function deleteProjectDocsByProjectId({
   }
 }
 
+export async function deleteFinancialTransactionsByDocumentId({
+  documentId,
+}: {
+  documentId: string;
+}) {
+  try {
+    await db.delete(financialTransaction).where(eq(financialTransaction.documentId, documentId));
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to delete financial transactions by document id"
+    );
+  }
+}
+
+export async function deleteInvoiceByDocumentId({ documentId }: { documentId: string }) {
+  try {
+    // invoice_line_items has ON DELETE CASCADE on invoice_id
+    await db.delete(invoice).where(eq(invoice.documentId, documentId));
+  } catch (_error) {
+    throw new ChatSDKError("bad_request:database", "Failed to delete invoice by document id");
+  }
+}
+
 export async function getProjectDocsByUserId({
   userId,
 }: {
@@ -1336,6 +1360,7 @@ export async function insertFinancialTransactions({
     pageNum?: number | null;
     rowNum?: number | null;
     rowHash: string;
+    txnHash?: string | null;
   }>;
 }): Promise<{ insertedCount: number }> {
   try {
@@ -1356,6 +1381,7 @@ export async function insertFinancialTransactions({
           pageNum: r.pageNum ?? null,
           rowNum: r.rowNum ?? null,
           rowHash: r.rowHash,
+          txnHash: r.txnHash ?? null,
         }))
       )
       .onConflictDoNothing({
@@ -1620,32 +1646,47 @@ export async function financeSum({
       })
     );
 
-    const [row] = await db
-      .select({
-        total: sql<string>`COALESCE(SUM(${financialTransaction.amount}), 0)::text`.as("total"),
-        count: sql<number>`COUNT(*)::int`.as("count"),
-      })
-      .from(financialTransaction)
-      .innerJoin(projectDoc, eq(financialTransaction.documentId, projectDoc.id))
-      .innerJoin(project, eq(projectDoc.projectId, project.id))
-      .where(and(...whereClauses));
+    const whereSql = and(...whereClauses);
+    const dedupeKey = sql<string>`COALESCE(${financialTransaction.txnHash}, (${financialTransaction.documentId}::text || '|' || ${financialTransaction.rowHash}))`;
 
-    // Supporting IDs (capped)
-    const supporting = await db
-      .select({ id: financialTransaction.id })
-      .from(financialTransaction)
-      .innerJoin(projectDoc, eq(financialTransaction.documentId, projectDoc.id))
-      .innerJoin(project, eq(projectDoc.projectId, project.id))
-      .where(and(...whereClauses))
-      .orderBy(asc(financialTransaction.txnDate), asc(financialTransaction.id))
-      .limit(500);
+    const [row] = await db.execute(sql`
+      SELECT
+        COALESCE(SUM(t.amount), 0)::text AS total,
+        COUNT(*)::int AS count
+      FROM (
+        SELECT DISTINCT ON (${dedupeKey})
+          ${financialTransaction.amount} AS amount
+        FROM ${financialTransaction}
+        INNER JOIN ${projectDoc} ON ${eq(financialTransaction.documentId, projectDoc.id)}
+        INNER JOIN ${project} ON ${eq(projectDoc.projectId, project.id)}
+        WHERE ${whereSql}
+        ORDER BY ${dedupeKey} ASC, ${projectDoc.createdAt} ASC, ${financialTransaction.id} ASC
+      ) t
+    `);
+
+    // Supporting IDs (capped, deduped)
+    const supporting = await db.execute(sql`
+      SELECT t.id
+      FROM (
+        SELECT DISTINCT ON (${dedupeKey})
+          ${financialTransaction.id} AS id,
+          ${financialTransaction.txnDate} AS txn_date
+        FROM ${financialTransaction}
+        INNER JOIN ${projectDoc} ON ${eq(financialTransaction.documentId, projectDoc.id)}
+        INNER JOIN ${project} ON ${eq(projectDoc.projectId, project.id)}
+        WHERE ${whereSql}
+        ORDER BY ${dedupeKey} ASC, ${projectDoc.createdAt} ASC, ${financialTransaction.id} ASC
+      ) t
+      ORDER BY t.txn_date ASC, t.id ASC
+      LIMIT 500
+    `);
 
     return {
       query_type: "sum" as const,
       document_type: documentType,
       total: row?.total ?? "0",
       count: row?.count ?? 0,
-      supporting_ids: supporting.map((r) => r.id),
+      supporting_ids: supporting.map((r) => (r as { id: string }).id),
       provenance: {
         source: "postgres" as const,
         doc_ids: filters?.doc_ids ?? null,
@@ -1729,26 +1770,46 @@ export async function financeList({
       })
     );
 
-    const rows = await db
-      .select({
-        id: financialTransaction.id,
-        documentId: financialTransaction.documentId,
-        txnDate: financialTransaction.txnDate,
-        description: financialTransaction.description,
-        amount: financialTransaction.amount,
-        currency: financialTransaction.currency,
-      })
-      .from(financialTransaction)
-      .innerJoin(projectDoc, eq(financialTransaction.documentId, projectDoc.id))
-      .innerJoin(project, eq(projectDoc.projectId, project.id))
-      .where(and(...whereClauses))
-      .orderBy(desc(financialTransaction.txnDate), desc(financialTransaction.id))
-      .limit(500);
+    const whereSql = and(...whereClauses);
+    const dedupeKey = sql<string>`COALESCE(${financialTransaction.txnHash}, (${financialTransaction.documentId}::text || '|' || ${financialTransaction.rowHash}))`;
+
+    const rows = await db.execute(sql`
+      SELECT
+        t.id,
+        t.document_id AS "documentId",
+        t.txn_date AS "txnDate",
+        t.description,
+        t.amount,
+        t.currency
+      FROM (
+        SELECT DISTINCT ON (${dedupeKey})
+          ${financialTransaction.id} AS id,
+          ${financialTransaction.documentId} AS document_id,
+          ${financialTransaction.txnDate} AS txn_date,
+          ${financialTransaction.description} AS description,
+          ${financialTransaction.amount} AS amount,
+          ${financialTransaction.currency} AS currency
+        FROM ${financialTransaction}
+        INNER JOIN ${projectDoc} ON ${eq(financialTransaction.documentId, projectDoc.id)}
+        INNER JOIN ${project} ON ${eq(projectDoc.projectId, project.id)}
+        WHERE ${whereSql}
+        ORDER BY ${dedupeKey} ASC, ${projectDoc.createdAt} ASC, ${financialTransaction.id} ASC
+      ) t
+      ORDER BY t.txn_date DESC, t.id DESC
+      LIMIT 500
+    `);
 
     return {
       query_type: "list" as const,
       document_type: documentType,
-      rows,
+      rows: rows as unknown as Array<{
+        id: string;
+        documentId: string;
+        txnDate: string;
+        description: string | null;
+        amount: string;
+        currency: string | null;
+      }>,
       provenance: { source: "postgres" as const },
     };
   } catch (error) {
@@ -1826,25 +1887,32 @@ export async function financeGroupByMonth({
       })
     );
 
-    const rows = await db
-      .select({
-        month: sql<string>`to_char(date_trunc('month', ${financialTransaction.txnDate}), 'YYYY-MM')`.as(
-          "month"
-        ),
-        total: sql<string>`COALESCE(SUM(${financialTransaction.amount}), 0)::text`.as("total"),
-        count: sql<number>`COUNT(*)::int`.as("count"),
-      })
-      .from(financialTransaction)
-      .innerJoin(projectDoc, eq(financialTransaction.documentId, projectDoc.id))
-      .innerJoin(project, eq(projectDoc.projectId, project.id))
-      .where(and(...whereClauses))
-      .groupBy(sql`date_trunc('month', ${financialTransaction.txnDate})`)
-      .orderBy(sql`date_trunc('month', ${financialTransaction.txnDate})`);
+    const whereSql = and(...whereClauses);
+    const dedupeKey = sql<string>`COALESCE(${financialTransaction.txnHash}, (${financialTransaction.documentId}::text || '|' || ${financialTransaction.rowHash}))`;
+
+    const rows = await db.execute(sql`
+      SELECT
+        to_char(date_trunc('month', t.txn_date), 'YYYY-MM') AS month,
+        COALESCE(SUM(t.amount), 0)::text AS total,
+        COUNT(*)::int AS count
+      FROM (
+        SELECT DISTINCT ON (${dedupeKey})
+          ${financialTransaction.txnDate} AS txn_date,
+          ${financialTransaction.amount} AS amount
+        FROM ${financialTransaction}
+        INNER JOIN ${projectDoc} ON ${eq(financialTransaction.documentId, projectDoc.id)}
+        INNER JOIN ${project} ON ${eq(projectDoc.projectId, project.id)}
+        WHERE ${whereSql}
+        ORDER BY ${dedupeKey} ASC, ${projectDoc.createdAt} ASC, ${financialTransaction.id} ASC
+      ) t
+      GROUP BY date_trunc('month', t.txn_date)
+      ORDER BY date_trunc('month', t.txn_date)
+    `);
 
     return {
       query_type: "group_by_month" as const,
       document_type: documentType,
-      rows,
+      rows: rows as unknown as Array<{ month: string; total: string; count: number }>,
       provenance: { source: "postgres" as const },
     };
   } catch (error) {
@@ -1921,24 +1989,33 @@ export async function financeGroupByMerchant({
       })
     );
 
-    const rows = await db
-      .select({
-        merchant: financialTransaction.description,
-        total: sql<string>`COALESCE(SUM(${financialTransaction.amount}), 0)::text`.as("total"),
-        count: sql<number>`COUNT(*)::int`.as("count"),
-      })
-      .from(financialTransaction)
-      .innerJoin(projectDoc, eq(financialTransaction.documentId, projectDoc.id))
-      .innerJoin(project, eq(projectDoc.projectId, project.id))
-      .where(and(...whereClauses))
-      .groupBy(financialTransaction.description)
-      .orderBy(desc(sql`COALESCE(SUM(${financialTransaction.amount}), 0)`))
-      .limit(200);
+    const whereSql = and(...whereClauses);
+    const dedupeKey = sql<string>`COALESCE(${financialTransaction.txnHash}, (${financialTransaction.documentId}::text || '|' || ${financialTransaction.rowHash}))`;
+
+    const rows = await db.execute(sql`
+      SELECT
+        t.merchant,
+        COALESCE(SUM(t.amount), 0)::text AS total,
+        COUNT(*)::int AS count
+      FROM (
+        SELECT DISTINCT ON (${dedupeKey})
+          ${financialTransaction.description} AS merchant,
+          ${financialTransaction.amount} AS amount
+        FROM ${financialTransaction}
+        INNER JOIN ${projectDoc} ON ${eq(financialTransaction.documentId, projectDoc.id)}
+        INNER JOIN ${project} ON ${eq(projectDoc.projectId, project.id)}
+        WHERE ${whereSql}
+        ORDER BY ${dedupeKey} ASC, ${projectDoc.createdAt} ASC, ${financialTransaction.id} ASC
+      ) t
+      GROUP BY t.merchant
+      ORDER BY COALESCE(SUM(t.amount), 0) DESC
+      LIMIT 200
+    `);
 
     return {
       query_type: "group_by_merchant" as const,
       document_type: documentType,
-      rows,
+      rows: rows as unknown as Array<{ merchant: string | null; total: string; count: number }>,
       provenance: { source: "postgres" as const },
     };
   } catch (error) {

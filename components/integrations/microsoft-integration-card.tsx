@@ -520,7 +520,7 @@ export function MicrosoftIntegrationCard() {
             <span className="text-onedrive" title="SharePoint / Teams / OneDrive">
               <OneDriveIcon size={16} />
             </span>
-            <span>Microsoft (SharePoint / Teams / OneDrive)</span>
+            <span>Microsoft (SharePoint / OneDrive)</span>
           </div>
           <div className="text-xs text-muted-foreground">
             Connect to SharePoint/Teams/OneDrive and import PDF/DOCX files.
@@ -590,9 +590,33 @@ export function MicrosoftIntegrationCard() {
                 placeholder="Search for files (e.g., 'EPC Specs')..."
                 value={globalSearchQuery}
               />
-              <Button disabled={isBusy} onClick={() => void performGlobalSearch()} type="button">
-                Search
+              <Button
+                disabled={isBusy || !globalSearchQuery.trim()}
+                onClick={() => void performGlobalSearch()}
+                type="button"
+              >
+                {isBusy && globalSearchQuery.trim() ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Searching…
+                  </>
+                ) : (
+                  "Search"
+                )}
               </Button>
+              {searchResults ? (
+                <Button
+                  disabled={isBusy}
+                  onClick={() => {
+                    setSearchResults(null);
+                    setGlobalSearchQuery("");
+                  }}
+                  type="button"
+                  variant="outline"
+                >
+                  Clear
+                </Button>
+              ) : null}
             </div>
 
             {!selectedProjectId && (
@@ -601,6 +625,134 @@ export function MicrosoftIntegrationCard() {
               </div>
             )}
           </div>
+
+          {/* Search results */}
+          {searchResults && (
+            <div className="rounded-md border p-2">
+              <div className="text-xs font-medium text-muted-foreground mb-2 px-2">
+                {searchResults.length} results found
+              </div>
+              <ScrollArea className="h-64">
+                <div className="divide-y">
+                  {searchResults.map((item) => {
+                    const driveId = item.driveId;
+                    const label = item.name ?? item.id;
+                    const location = formatMicrosoftItemLocation(item);
+                    const syncKey = driveId ? `${driveId}:${item.id}` : null;
+                    const isSyncing = syncKey ? inFlightSyncKeys.has(syncKey) : false;
+                    const selectedType = syncKey ? getTypeForKey(syncKey) : "general_doc";
+
+                    return (
+                      <div
+                        className="flex w-full items-center justify-between gap-3 rounded-sm p-2 hover:bg-accent"
+                        key={item.id}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium flex items-center gap-2">
+                            {item.isFolder ? (
+                              <Folder className="h-3 w-3 shrink-0 text-muted-foreground" />
+                            ) : (
+                              <FileIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
+                            )}
+                            <span className="max-w-[250px] truncate" title={label}>
+                              {label}
+                            </span>
+                          </div>
+                          {location.text ? (
+                            <div
+                              className="truncate text-xs text-muted-foreground"
+                              title={location.title}
+                            >
+                              {location.text}
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {item.isFolder ? (
+                            <>
+                              <Button
+                                disabled={isBusy || !item.driveId}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (!item.driveId) return;
+                                  void goToFolder(item.driveId, item.id, label);
+                                }}
+                                size="sm"
+                                type="button"
+                                variant="ghost"
+                                className="shrink-0 whitespace-nowrap"
+                              >
+                                Open
+                              </Button>
+                            </>
+                          ) : syncKey ? (
+                            <>
+                              <Select
+                                onValueChange={(value) => {
+                                  const v = value as IngestDocumentType;
+                                  setTypeForKey(syncKey, v);
+                                }}
+                                value={selectedType}
+                              >
+                                <SelectTrigger
+                                  className="h-8 w-[190px] text-xs [&>span]:flex-1 [&>span]:text-left"
+                                  disabled={isSyncing || !item.driveId || !selectedProjectId}
+                                >
+                                  <SelectValue placeholder="Doc type" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="general_doc">General doc</SelectItem>
+                                  <SelectItem value="bank_statement">
+                                    Bank statement
+                                  </SelectItem>
+                                  <SelectItem value="cc_statement">CC statement</SelectItem>
+                                  <SelectItem value="invoice">Invoice</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <Button
+                                disabled={isSyncing || !item.driveId || !selectedProjectId}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (!item.driveId) return;
+                                  void syncItems({
+                                    driveId: item.driveId,
+                                    items: [{ itemId: item.id, filename: label }],
+                                    documentType: selectedType,
+                                  });
+                                }}
+                                aria-label="Refresh file"
+                                title="Refresh file"
+                                size="icon"
+                                type="button"
+                                variant="outline"
+                                className="h-8 w-8"
+                              >
+                                <RefreshCw className="h-4 w-4" />
+                              </Button>
+                            </>
+                          ) : (
+                            <Button
+                              disabled={true}
+                              size="sm"
+                              type="button"
+                              className="shrink-0 whitespace-nowrap"
+                            >
+                              Sync
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {searchResults.length === 0 && (
+                    <div className="p-4 text-center text-sm text-muted-foreground">
+                      No matches found.
+                    </div>
+                  )}
+                </div>
+              </ScrollArea>
+            </div>
+          )}
 
           {/* Paste Link */}
           <Collapsible className="space-y-2">
@@ -757,134 +909,6 @@ export function MicrosoftIntegrationCard() {
                   })}
                 </div>
               </div>
-            </div>
-          )}
-
-          {/* Search results */}
-          {searchResults && (
-            <div className="rounded-md border p-2">
-              <div className="text-xs font-medium text-muted-foreground mb-2 px-2">
-                {searchResults.length} results found
-              </div>
-              <ScrollArea className="h-64">
-                <div className="divide-y">
-                  {searchResults.map((item) => {
-                    const driveId = item.driveId;
-                    const label = item.name ?? item.id;
-                    const location = formatMicrosoftItemLocation(item);
-                    const syncKey = driveId ? `${driveId}:${item.id}` : null;
-                    const isSyncing = syncKey ? inFlightSyncKeys.has(syncKey) : false;
-                    const selectedType = syncKey ? getTypeForKey(syncKey) : "general_doc";
-
-                    return (
-                      <div
-                        className="flex w-full items-center justify-between gap-3 rounded-sm p-2 hover:bg-accent"
-                        key={item.id}
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-medium flex items-center gap-2">
-                            {item.isFolder ? (
-                              <Folder className="h-3 w-3 shrink-0 text-muted-foreground" />
-                            ) : (
-                              <FileIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
-                            )}
-                            <span className="max-w-[250px] truncate" title={label}>
-                              {label}
-                            </span>
-                          </div>
-                          {location.text ? (
-                            <div
-                              className="truncate text-xs text-muted-foreground"
-                              title={location.title}
-                            >
-                              {location.text}
-                            </div>
-                          ) : null}
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          {item.isFolder ? (
-                            <>
-                              <Button
-                                disabled={isBusy || !item.driveId}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (!item.driveId) return;
-                                  void goToFolder(item.driveId, item.id, label);
-                                }}
-                                size="sm"
-                                type="button"
-                                variant="ghost"
-                                className="shrink-0 whitespace-nowrap"
-                              >
-                                Open
-                              </Button>
-                            </>
-                          ) : syncKey ? (
-                            <>
-                              <Select
-                                onValueChange={(value) => {
-                                  const v = value as IngestDocumentType;
-                                  setTypeForKey(syncKey, v);
-                                }}
-                                value={selectedType}
-                              >
-                                <SelectTrigger
-                                className="h-8 w-[190px] text-xs [&>span]:flex-1 [&>span]:text-left"
-                                  disabled={isSyncing || !item.driveId || !selectedProjectId}
-                                >
-                                  <SelectValue placeholder="Doc type" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="general_doc">General doc</SelectItem>
-                                  <SelectItem value="bank_statement">
-                                    Bank statement
-                                  </SelectItem>
-                                  <SelectItem value="cc_statement">CC statement</SelectItem>
-                                  <SelectItem value="invoice">Invoice</SelectItem>
-                                </SelectContent>
-                              </Select>
-                              <Button
-                                disabled={isSyncing || !item.driveId || !selectedProjectId}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (!item.driveId) return;
-                                  void syncItems({
-                                    driveId: item.driveId,
-                                    items: [{ itemId: item.id, filename: label }],
-                                    documentType: selectedType,
-                                  });
-                                }}
-                                aria-label="Refresh file"
-                                title="Refresh file"
-                                size="icon"
-                                type="button"
-                                variant="outline"
-                                className="h-8 w-8"
-                              >
-                                <RefreshCw className="h-4 w-4" />
-                              </Button>
-                            </>
-                          ) : (
-                            <Button
-                              disabled={true}
-                              size="sm"
-                              type="button"
-                              className="shrink-0 whitespace-nowrap"
-                            >
-                              Sync
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {searchResults.length === 0 && (
-                    <div className="p-4 text-center text-sm text-muted-foreground">
-                      No matches found.
-                    </div>
-                  )}
-                </div>
-              </ScrollArea>
             </div>
           )}
 
