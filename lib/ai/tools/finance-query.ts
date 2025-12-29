@@ -10,9 +10,10 @@ import {
 
 type FinanceQueryProps = {
   session: Session;
+  projectId?: string;
 };
 
-export const financeQuery = ({ session }: FinanceQueryProps) =>
+export const financeQuery = ({ session, projectId }: FinanceQueryProps) =>
   tool({
     description:
       "Run deterministic finance queries over parsed financial documents. Always use this for totals/sums/aggregations; never do math over retrieved chunks. Use filters.amount_min > 0 for deposits-only and filters.amount_max < 0 for withdrawals-only. IMPORTANT: date_end is exclusive; for a month, use the first day of the next month. The 'list' query type returns header fields and line items for invoices, and transaction details (including running balance) for bank statements. When checking for payments, ensure date_start is set to the invoice date or later.",
@@ -85,6 +86,7 @@ export const financeQuery = ({ session }: FinanceQueryProps) =>
       if (input.query_type === "sum") {
         const out = await financeSum({
           userId: session.user.id,
+          projectId,
           documentType: input.document_type,
           filters: effectiveFilters,
         });
@@ -99,6 +101,7 @@ export const financeQuery = ({ session }: FinanceQueryProps) =>
       if (input.query_type === "list") {
         const out = await financeList({
           userId: session.user.id,
+          projectId,
           documentType: input.document_type,
           filters: effectiveFilters,
         });
@@ -112,6 +115,7 @@ export const financeQuery = ({ session }: FinanceQueryProps) =>
       if (input.query_type === "group_by_month") {
         const out = await financeGroupByMonth({
           userId: session.user.id,
+          projectId,
           documentType: input.document_type,
           filters: effectiveFilters,
         });
@@ -124,6 +128,7 @@ export const financeQuery = ({ session }: FinanceQueryProps) =>
       }
       const out = await financeGroupByMerchant({
         userId: session.user.id,
+        projectId,
         documentType: input.document_type,
         filters: effectiveFilters,
       });

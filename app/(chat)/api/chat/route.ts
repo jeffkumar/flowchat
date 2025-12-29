@@ -1498,7 +1498,7 @@ export async function POST(request: Request) {
               session,
               dataStream,
             }),
-            financeQuery: financeQuery({ session }),
+            financeQuery: financeQuery({ session, projectId: activeProjectId }),
           },
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,

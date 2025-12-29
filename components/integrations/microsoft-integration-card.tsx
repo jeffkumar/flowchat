@@ -215,6 +215,8 @@ export function MicrosoftIntegrationCard() {
   const [docTypeByKey, setDocTypeByKey] = useState<Record<string, IngestDocumentType>>(
     () => ({})
   );
+  const [entityKind, setEntityKind] = useState<"personal" | "business">("personal");
+  const [entityName, setEntityName] = useState<string>("Personal");
 
   const [folderStack, setFolderStack] = useState<Array<{ id: string; name: string }>>([]);
   
@@ -433,6 +435,7 @@ export function MicrosoftIntegrationCard() {
       await mutateSyncedDocs({ docs: optimisticDocs }, { revalidate: false });
     }
     try {
+      const trimmedEntityName = entityName.trim();
       const sender =
         documentType === "invoice" && typeof invoiceSender === "string"
           ? invoiceSender.trim()
@@ -450,6 +453,8 @@ export function MicrosoftIntegrationCard() {
             driveId,
             items,
             documentType,
+            entityName: trimmedEntityName.length > 0 ? trimmedEntityName : undefined,
+            entityKind: trimmedEntityName.length > 0 ? entityKind : undefined,
             invoiceSender: sender.length > 0 ? sender : undefined,
             invoiceRecipient: recipient.length > 0 ? recipient : undefined,
           }),
@@ -1123,6 +1128,38 @@ export function MicrosoftIntegrationCard() {
             <div className="rounded-md border p-4 space-y-4 bg-muted/10">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-sm font-medium">Browsing: {folderStack.at(-1)?.name ?? "Root"}</div>
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="grid gap-1">
+                  <label className="text-xs text-muted-foreground" htmlFor="ms-entity-kind">
+                    Entity type
+                  </label>
+                  <Select
+                    onValueChange={(value) => setEntityKind(value as "personal" | "business")}
+                    value={entityKind}
+                  >
+                    <SelectTrigger className="h-8 text-xs" id="ms-entity-kind">
+                      <SelectValue placeholder="Select entity type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="personal">Personal</SelectItem>
+                      <SelectItem value="business">Business</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-1">
+                  <label className="text-xs text-muted-foreground" htmlFor="ms-entity-name">
+                    Entity name
+                  </label>
+                  <Input
+                    autoComplete="off"
+                    id="ms-entity-name"
+                    onChange={(e) => setEntityName(e.target.value)}
+                    placeholder={entityKind === "personal" ? "Personal" : "Company name"}
+                    value={entityName}
+                  />
+                </div>
               </div>
 
               {folderStack.length > 0 && (

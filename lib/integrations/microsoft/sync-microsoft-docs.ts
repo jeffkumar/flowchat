@@ -79,6 +79,8 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
   items,
   token,
   documentType,
+  entityName,
+  entityKind,
   invoiceSender,
   invoiceRecipient,
 }: {
@@ -88,6 +90,8 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
   items: Array<{ itemId: string; filename: string }>;
   token?: string;
   documentType?: "general_doc" | "bank_statement" | "cc_statement" | "invoice";
+  entityName?: string;
+  entityKind?: "personal" | "business";
   invoiceSender?: string;
   invoiceRecipient?: string;
 }): Promise<MicrosoftSyncResult[]> {
@@ -225,6 +229,9 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
             mimeType,
             filename,
             documentType: effectiveDocumentType,
+            ...(entityName && entityKind
+              ? { entityName, entityKind }
+              : {}),
             metadata: {
               ...((doc.metadata as object) || {}),
               driveId,
@@ -246,6 +253,8 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
           mimeType,
           sizeBytes,
           documentType: effectiveDocumentType,
+          entityName: entityName && entityKind ? entityName : null,
+          entityKind: entityName && entityKind ? entityKind : null,
           parseStatus:
             effectiveDocumentType === "general_doc" ? "pending" : "pending",
           metadata: {

@@ -378,6 +378,8 @@ const maxConnections =
     ? parsedMax
     : defaultMaxConnections;
 
+const connectTimeoutSeconds = process.env.NODE_ENV === "production" ? 10 : 2;
+
 // In dev (Turbopack/HMR), this module can be re-evaluated often. If we create a new
 // postgres-js client each time, we can exhaust DB connections and cause stalls/timeouts.
 // Cache the client on globalThis to keep a single pool.
@@ -386,7 +388,7 @@ const client =
   postgres(safePostgresUrl, {
     max: maxConnections,
     idle_timeout: 20,
-    connect_timeout: 10,
+    connect_timeout: connectTimeoutSeconds,
     prepare: !isPoolerUrl,
   });
 
@@ -715,6 +717,8 @@ export async function createProjectDoc({
   metadata,
   documentType,
   parseStatus,
+  entityName,
+  entityKind,
 }: {
   projectId: string;
   createdBy: string;
@@ -729,6 +733,8 @@ export async function createProjectDoc({
   metadata?: Record<string, unknown> | null;
   documentType?: ProjectDoc["documentType"];
   parseStatus?: ProjectDoc["parseStatus"];
+  entityName?: string | null;
+  entityKind?: ProjectDoc["entityKind"] | null;
 }): Promise<ProjectDoc> {
   try {
     const [created] = await db
@@ -747,6 +753,8 @@ export async function createProjectDoc({
         metadata: metadata ?? null,
         documentType: documentType ?? "general_doc",
         parseStatus: parseStatus ?? "pending",
+        entityName: entityName ?? null,
+        entityKind: entityKind ?? null,
         createdAt: new Date(),
       })
       .returning();
@@ -2029,6 +2037,10 @@ type FinanceQueryFilters = {
   amount_max?: number;
 };
 
+function buildProjectAccessClause(userId: string): SQL {
+  return sql`(${project.createdBy} = ${userId} OR ${projectUser.userId} = ${userId})`;
+}
+
 function buildDocIdFilter(docIds: string[] | undefined) {
   if (!Array.isArray(docIds) || docIds.length === 0) return null;
   return inArray(projectDoc.id, docIds);
@@ -2118,10 +2130,12 @@ function buildInvoiceRecipientContainsFilter(recipientContains: string | undefin
 
 export async function financeSum({
   userId,
+  projectId,
   documentType,
   filters,
 }: {
   userId: string;
+  projectId?: string;
   documentType: FinanceDocumentType;
   filters?: FinanceQueryFilters;
 }) {
@@ -2138,12 +2152,15 @@ export async function financeSum({
       dateStart: filters?.date_start,
       dateEnd: filters?.date_end,
     });
+    const projectScope = typeof projectId === "string" ? eq(project.id, projectId) : null;
+    const accessClause = buildProjectAccessClause(userId);
 
     if (documentType === "invoice") {
       const whereClauses: SQL[] = [
-        eq(project.createdBy, userId),
+        accessClause,
         eq(projectDoc.documentType, "invoice"),
       ];
+      if (projectScope) whereClauses.push(projectScope);
       if (docIdFilter) whereClauses.push(docIdFilter);
       if (vendorFilter) whereClauses.push(vendorFilter);
       if (senderFilter) whereClauses.push(senderFilter);
@@ -2158,6 +2175,10 @@ export async function financeSum({
         .from(invoice)
         .innerJoin(projectDoc, eq(invoice.documentId, projectDoc.id))
         .innerJoin(project, eq(projectDoc.projectId, project.id))
+        .leftJoin(
+          projectUser,
+          and(eq(projectUser.projectId, project.id), eq(projectUser.userId, userId))
+        )
         .where(and(...whereClauses));
 
       return {
@@ -2173,9 +2194,10 @@ export async function financeSum({
     }
 
     const whereClauses: SQL[] = [
-      eq(project.createdBy, userId),
+      accessClause,
       eq(projectDoc.documentType, documentType),
     ];
+    if (projectScope) whereClauses.push(projectScope);
     if (docIdFilter) whereClauses.push(docIdFilter);
     if (vendorFilter) whereClauses.push(vendorFilter);
     whereClauses.push(...dateClauses);
@@ -2199,6 +2221,7 @@ export async function financeSum({
         FROM ${financialTransaction}
         INNER JOIN ${projectDoc} ON ${eq(financialTransaction.documentId, projectDoc.id)}
         INNER JOIN ${project} ON ${eq(projectDoc.projectId, project.id)}
+        LEFT JOIN ${projectUser} ON ${and(eq(projectUser.projectId, project.id), eq(projectUser.userId, userId))}
         WHERE ${whereSql}
         ORDER BY ${dedupeKey} ASC, ${projectDoc.createdAt} ASC, ${financialTransaction.id} ASC
       ) t
@@ -2214,6 +2237,7 @@ export async function financeSum({
         FROM ${financialTransaction}
         INNER JOIN ${projectDoc} ON ${eq(financialTransaction.documentId, projectDoc.id)}
         INNER JOIN ${project} ON ${eq(projectDoc.projectId, project.id)}
+        LEFT JOIN ${projectUser} ON ${and(eq(projectUser.projectId, project.id), eq(projectUser.userId, userId))}
         WHERE ${whereSql}
         ORDER BY ${dedupeKey} ASC, ${projectDoc.createdAt} ASC, ${financialTransaction.id} ASC
       ) t
@@ -2242,10 +2266,12 @@ export async function financeSum({
 
 export async function financeList({
   userId,
+  projectId,
   documentType,
   filters,
 }: {
   userId: string;
+  projectId?: string;
   documentType: FinanceDocumentType;
   filters?: FinanceQueryFilters;
 }) {
@@ -2262,12 +2288,15 @@ export async function financeList({
       dateStart: filters?.date_start,
       dateEnd: filters?.date_end,
     });
+    const projectScope = typeof projectId === "string" ? eq(project.id, projectId) : null;
+    const accessClause = buildProjectAccessClause(userId);
 
     if (documentType === "invoice") {
       const whereClauses: SQL[] = [
-        eq(project.createdBy, userId),
+        accessClause,
         eq(projectDoc.documentType, "invoice"),
       ];
+      if (projectScope) whereClauses.push(projectScope);
       if (docIdFilter) whereClauses.push(docIdFilter);
       if (vendorFilter) whereClauses.push(vendorFilter);
       if (senderFilter) whereClauses.push(senderFilter);
@@ -2288,6 +2317,10 @@ export async function financeList({
         .from(invoice)
         .innerJoin(projectDoc, eq(invoice.documentId, projectDoc.id))
         .innerJoin(project, eq(projectDoc.projectId, project.id))
+        .leftJoin(
+          projectUser,
+          and(eq(projectUser.projectId, project.id), eq(projectUser.userId, userId))
+        )
         .where(and(...whereClauses))
         .orderBy(desc(invoice.invoiceDate), desc(invoice.id))
         .limit(500);
@@ -2315,9 +2348,10 @@ export async function financeList({
     }
 
     const whereClauses: SQL[] = [
-      eq(project.createdBy, userId),
+      accessClause,
       eq(projectDoc.documentType, documentType),
     ];
+    if (projectScope) whereClauses.push(projectScope);
     if (docIdFilter) whereClauses.push(docIdFilter);
     if (vendorFilter) whereClauses.push(vendorFilter);
     whereClauses.push(...dateClauses);
@@ -2352,6 +2386,7 @@ export async function financeList({
         FROM ${financialTransaction}
         INNER JOIN ${projectDoc} ON ${eq(financialTransaction.documentId, projectDoc.id)}
         INNER JOIN ${project} ON ${eq(projectDoc.projectId, project.id)}
+        LEFT JOIN ${projectUser} ON ${and(eq(projectUser.projectId, project.id), eq(projectUser.userId, userId))}
         WHERE ${whereSql}
         ORDER BY ${dedupeKey} ASC, ${projectDoc.createdAt} ASC, ${financialTransaction.id} ASC
       ) t
@@ -2383,10 +2418,12 @@ export async function financeList({
 
 export async function financeGroupByMonth({
   userId,
+  projectId,
   documentType,
   filters,
 }: {
   userId: string;
+  projectId?: string;
   documentType: FinanceDocumentType;
   filters?: FinanceQueryFilters;
 }) {
@@ -2403,12 +2440,15 @@ export async function financeGroupByMonth({
       dateStart: filters?.date_start,
       dateEnd: filters?.date_end,
     });
+    const projectScope = typeof projectId === "string" ? eq(project.id, projectId) : null;
+    const accessClause = buildProjectAccessClause(userId);
 
     if (documentType === "invoice") {
       const whereClauses: SQL[] = [
-        eq(project.createdBy, userId),
+        accessClause,
         eq(projectDoc.documentType, "invoice"),
       ];
+      if (projectScope) whereClauses.push(projectScope);
       if (docIdFilter) whereClauses.push(docIdFilter);
       if (vendorFilter) whereClauses.push(vendorFilter);
       if (senderFilter) whereClauses.push(senderFilter);
@@ -2426,6 +2466,10 @@ export async function financeGroupByMonth({
         .from(invoice)
         .innerJoin(projectDoc, eq(invoice.documentId, projectDoc.id))
         .innerJoin(project, eq(projectDoc.projectId, project.id))
+        .leftJoin(
+          projectUser,
+          and(eq(projectUser.projectId, project.id), eq(projectUser.userId, userId))
+        )
         .where(and(...whereClauses))
         .groupBy(sql`date_trunc('month', ${invoice.invoiceDate})`)
         .orderBy(sql`date_trunc('month', ${invoice.invoiceDate})`);
@@ -2439,9 +2483,10 @@ export async function financeGroupByMonth({
     }
 
     const whereClauses: SQL[] = [
-      eq(project.createdBy, userId),
+      accessClause,
       eq(projectDoc.documentType, documentType),
     ];
+    if (projectScope) whereClauses.push(projectScope);
     if (docIdFilter) whereClauses.push(docIdFilter);
     if (vendorFilter) whereClauses.push(vendorFilter);
     whereClauses.push(...dateClauses);
@@ -2467,6 +2512,7 @@ export async function financeGroupByMonth({
         FROM ${financialTransaction}
         INNER JOIN ${projectDoc} ON ${eq(financialTransaction.documentId, projectDoc.id)}
         INNER JOIN ${project} ON ${eq(projectDoc.projectId, project.id)}
+        LEFT JOIN ${projectUser} ON ${and(eq(projectUser.projectId, project.id), eq(projectUser.userId, userId))}
         WHERE ${whereSql}
         ORDER BY ${dedupeKey} ASC, ${projectDoc.createdAt} ASC, ${financialTransaction.id} ASC
       ) t
@@ -2490,10 +2536,12 @@ export async function financeGroupByMonth({
 
 export async function financeGroupByMerchant({
   userId,
+  projectId,
   documentType,
   filters,
 }: {
   userId: string;
+  projectId?: string;
   documentType: FinanceDocumentType;
   filters?: FinanceQueryFilters;
 }) {
@@ -2510,12 +2558,15 @@ export async function financeGroupByMerchant({
       dateStart: filters?.date_start,
       dateEnd: filters?.date_end,
     });
+    const projectScope = typeof projectId === "string" ? eq(project.id, projectId) : null;
+    const accessClause = buildProjectAccessClause(userId);
 
     if (documentType === "invoice") {
       const whereClauses: SQL[] = [
-        eq(project.createdBy, userId),
+        accessClause,
         eq(projectDoc.documentType, "invoice"),
       ];
+      if (projectScope) whereClauses.push(projectScope);
       if (docIdFilter) whereClauses.push(docIdFilter);
       if (vendorFilter) whereClauses.push(vendorFilter);
       if (senderFilter) whereClauses.push(senderFilter);
@@ -2531,6 +2582,10 @@ export async function financeGroupByMerchant({
         .from(invoice)
         .innerJoin(projectDoc, eq(invoice.documentId, projectDoc.id))
         .innerJoin(project, eq(projectDoc.projectId, project.id))
+        .leftJoin(
+          projectUser,
+          and(eq(projectUser.projectId, project.id), eq(projectUser.userId, userId))
+        )
         .where(and(...whereClauses))
         .groupBy(invoice.vendor)
         .orderBy(desc(sql`COALESCE(SUM(${invoice.total}), 0)`))
@@ -2545,9 +2600,10 @@ export async function financeGroupByMerchant({
     }
 
     const whereClauses: SQL[] = [
-      eq(project.createdBy, userId),
+      accessClause,
       eq(projectDoc.documentType, documentType),
     ];
+    if (projectScope) whereClauses.push(projectScope);
     if (docIdFilter) whereClauses.push(docIdFilter);
     if (vendorFilter) whereClauses.push(vendorFilter);
     whereClauses.push(...dateClauses);
@@ -2573,6 +2629,7 @@ export async function financeGroupByMerchant({
         FROM ${financialTransaction}
         INNER JOIN ${projectDoc} ON ${eq(financialTransaction.documentId, projectDoc.id)}
         INNER JOIN ${project} ON ${eq(projectDoc.projectId, project.id)}
+        LEFT JOIN ${projectUser} ON ${and(eq(projectUser.projectId, project.id), eq(projectUser.userId, userId))}
         WHERE ${whereSql}
         ORDER BY ${dedupeKey} ASC, ${projectDoc.createdAt} ASC, ${financialTransaction.id} ASC
       ) t

@@ -24,6 +24,8 @@ const BodySchema = z.object({
   itemIds: z.array(z.string().min(1)).min(1).max(10),
   category: z.string().trim().min(1).max(120).optional(),
   description: z.string().trim().min(1).max(600).optional(),
+  entityName: z.string().trim().min(1).max(200).optional(),
+  entityKind: z.enum(["personal", "business"]).optional(),
 });
 
 type GraphItem = {
@@ -187,6 +189,14 @@ export async function POST(
           filename,
           category: parsed.data.category ?? null,
           description: parsed.data.description ?? null,
+          entityName:
+            parsed.data.entityName && parsed.data.entityKind
+              ? parsed.data.entityName
+              : null,
+          entityKind:
+            parsed.data.entityName && parsed.data.entityKind
+              ? parsed.data.entityKind
+              : null,
           mimeType,
           sizeBytes,
           metadata: {

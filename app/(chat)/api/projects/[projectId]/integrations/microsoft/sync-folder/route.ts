@@ -15,6 +15,8 @@ const BodySchema = z.object({
   documentType: z
     .enum(["general_doc", "bank_statement", "cc_statement", "invoice"])
     .optional(),
+  entityName: z.string().trim().min(1).max(200).optional(),
+  entityKind: z.enum(["personal", "business"]).optional(),
 });
 
 type GraphChild = {
@@ -171,6 +173,8 @@ export async function POST(
       items: batch,
       token,
       documentType: parsed.data.documentType,
+      entityName: parsed.data.entityName,
+      entityKind: parsed.data.entityKind,
     });
     allResults.push(...results);
   }

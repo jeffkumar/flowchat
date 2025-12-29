@@ -90,6 +90,8 @@ export const projectDoc = pgTable(
     periodStart: date("periodStart"),
     periodEnd: date("periodEnd"),
     accountHint: text("accountHint"),
+    entityName: text("entityName"),
+    entityKind: varchar("entityKind", { enum: ["personal", "business"] }),
     createdAt: timestamp("createdAt").notNull(),
   },
   (table) => ({
@@ -98,6 +100,11 @@ export const projectDoc = pgTable(
     documentTypeIdx: index("project_doc_document_type_idx").on(
       table.projectId,
       table.documentType
+    ),
+    entityIdx: index("project_doc_entity_idx").on(
+      table.projectId,
+      table.entityKind,
+      table.entityName
     ),
     parseStatusIdx: index("project_doc_parse_status_idx").on(table.parseStatus),
   })

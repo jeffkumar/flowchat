@@ -127,6 +127,13 @@
       "when": 1767050000000,
       "tag": "0017_invoice_parties",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1767055000000,
+      "tag": "0018_doc_entities",
+      "breakpoints": true
     }
   ]
 }

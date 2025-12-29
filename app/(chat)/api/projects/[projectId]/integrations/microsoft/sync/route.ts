@@ -19,6 +19,8 @@ const BodySchema = z.object({
   documentType: z
     .enum(["general_doc", "bank_statement", "cc_statement", "invoice"])
     .optional(),
+  entityName: z.string().trim().min(1).max(200).optional(),
+  entityKind: z.enum(["personal", "business"]).optional(),
   invoiceSender: z.string().trim().min(1).max(500).optional(),
   invoiceRecipient: z.string().trim().min(1).max(500).optional(),
 });
@@ -97,6 +99,13 @@ export async function POST(
   }
 
   const { projectId } = await params;
+  const role = await getProjectRole({ projectId, userId: session.user.id });
+  if (!role) {
+    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  }
+  if (role === "member") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
   const project = await getProjectByIdForUser({
     projectId,
     userId: session.user.id,
@@ -123,6 +132,8 @@ export async function POST(
     driveId: parsed.data.driveId,
     items: parsed.data.items,
     documentType: parsed.data.documentType,
+    entityName: parsed.data.entityName,
+    entityKind: parsed.data.entityKind,
     invoiceSender: parsed.data.invoiceSender,
     invoiceRecipient: parsed.data.invoiceRecipient,
   });
