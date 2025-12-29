@@ -4,6 +4,7 @@ import { auth } from "@/app/(auth)/auth";
 import {
   getProjectByIdForUser,
   getProjectDocsByProjectId,
+  getProjectRole,
 } from "@/lib/db/queries";
 import { syncMicrosoftDriveItemsToProjectDocs } from "@/lib/integrations/microsoft/sync-microsoft-docs";
 
@@ -18,6 +19,8 @@ const BodySchema = z.object({
   documentType: z
     .enum(["general_doc", "bank_statement", "cc_statement", "invoice"])
     .optional(),
+  invoiceSender: z.string().trim().min(1).max(500).optional(),
+  invoiceRecipient: z.string().trim().min(1).max(500).optional(),
 });
 
 export async function GET(
@@ -30,6 +33,14 @@ export async function GET(
   }
 
   const { projectId } = await params;
+  const role = await getProjectRole({ projectId, userId: session.user.id });
+  if (!role) {
+    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  }
+  if (role === "member") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   const project = await getProjectByIdForUser({
     projectId,
     userId: session.user.id,
@@ -112,6 +123,8 @@ export async function POST(
     driveId: parsed.data.driveId,
     items: parsed.data.items,
     documentType: parsed.data.documentType,
+    invoiceSender: parsed.data.invoiceSender,
+    invoiceRecipient: parsed.data.invoiceRecipient,
   });
 
   return NextResponse.json({ results }, { status: 200 });

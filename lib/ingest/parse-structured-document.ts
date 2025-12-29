@@ -11,6 +11,7 @@ import {
   getProjectDocById,
   deleteFinancialTransactionsByDocumentId,
   deleteInvoiceByDocumentId,
+  deleteInvoiceLineItemsByDocumentId,
   insertFinancialTransactions,
   insertInvoiceLineItems,
   updateProjectDoc,
@@ -71,11 +72,24 @@ function parseDecimalString(value: unknown): string | null {
     return value.toFixed(2);
   }
   if (typeof value === "string") {
-    const cleaned = value.trim().replace(/,/g, "");
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    const hasParens =
+      trimmed.startsWith("(") && trimmed.endsWith(")") && trimmed.length > 2;
+    const withoutParens = hasParens ? trimmed.slice(1, -1) : trimmed;
+
+    // Remove common currency/formatting chars but keep digits, minus and dot.
+    const cleaned = withoutParens
+      .replace(/[$€£]/g, "")
+      .replace(/,/g, "")
+      .replace(/\s+/g, "")
+      .replace(/^\+/, "");
     if (!cleaned) return null;
     const parsed = Number(cleaned);
     if (!Number.isFinite(parsed)) return null;
-    return parsed.toFixed(2);
+    const signed = hasParens ? -Math.abs(parsed) : parsed;
+    return signed.toFixed(2);
   }
   return null;
 }
@@ -99,6 +113,7 @@ type ParsedCsvTxn = {
   description: string;
   amount: string; // decimal string
   currency?: string | null;
+  balance?: string | null;
 };
 
 function normalizeHeaderKey(value: string) {
@@ -132,6 +147,14 @@ function parseCsvTransactions({ csvText }: { csvText: string }): ParsedCsvTxn[] 
   const debitField = pickField(["debit", "withdrawal", "withdrawals", "charge", "charges"]);
   const creditField = pickField(["credit", "deposit", "deposits", "payment", "payments"]);
   const currencyField = pickField(["currency", "ccy"]);
+  const balanceField = pickField([
+    "balance",
+    "running_balance",
+    "new_balance",
+    "account_balance",
+    "ending_balance",
+    "available_balance",
+  ]);
 
   if (!dateField || (!amountField && !(debitField || creditField))) {
     return [];
@@ -150,6 +173,8 @@ function parseCsvTransactions({ csvText }: { csvText: string }): ParsedCsvTxn[] 
       currencyField && typeof row[currencyField] === "string"
         ? row[currencyField].trim().slice(0, 16)
         : null;
+    const balance =
+      balanceField ? parseDecimalString(row[balanceField]) : null;
 
     let amount: string | null = null;
     if (amountField) {
@@ -167,6 +192,7 @@ function parseCsvTransactions({ csvText }: { csvText: string }): ParsedCsvTxn[] 
       description: desc,
       amount,
       currency,
+      balance,
     });
   }
 
@@ -298,6 +324,10 @@ export async function parseStructuredProjectDoc({
         throw new Error("CSV parsing is only supported for bank/cc statements right now");
       }
 
+      const csvText = new TextDecoder().decode(rawBuffer);
+      const csvTransactions = parseCsvTransactions({ csvText });
+      const csvHasBalance = csvTransactions.some((t) => t.balance !== null && t.balance !== undefined);
+
       try {
         const schemaJson = await readSchemaJson(reductoSchemaId);
         schemaId = reductoSchemaId;
@@ -313,17 +343,29 @@ export async function parseStructuredProjectDoc({
         if (txns.length === 0) {
           throw new Error("Reducto returned no transactions; falling back to CSV parsing.");
         }
+
+        // Reducto can return transactions for CSVs but omit running balance even when present in the CSV.
+        // If we can parse balances from the CSV, prefer the CSV-parsed transactions.
+        const reductoHasBalance = txns.some((t) => {
+          if (!t || typeof t !== "object") return false;
+          return "balance" in (t as Record<string, unknown>);
+        });
+        if (csvHasBalance && !reductoHasBalance) {
+          schemaId =
+            doc.documentType === "bank_statement"
+              ? "bank_statement_csv_enriched_v1"
+              : "cc_statement_csv_enriched_v1";
+          extracted = { transactions: csvTransactions };
+        }
       } catch (_error) {
         schemaId =
           doc.documentType === "bank_statement"
             ? "bank_statement_csv_fallback_v1"
             : "cc_statement_csv_fallback_v1";
-        const csvText = new TextDecoder().decode(rawBuffer);
-        const transactions = parseCsvTransactions({ csvText });
-        if (transactions.length === 0) {
+        if (csvTransactions.length === 0) {
           throw new Error("Could not parse any transactions from CSV (expected date + amount columns)");
         }
-        extracted = { transactions };
+        extracted = { transactions: csvTransactions };
       }
     } else {
       schemaId = reductoSchemaId;
@@ -354,6 +396,7 @@ export async function parseStructuredProjectDoc({
     let insertedLineItems = 0;
 
     if (doc.documentType === "bank_statement" || doc.documentType === "cc_statement") {
+      // Handle both Reducto output (obj.transactions) and CSV fallback (obj.transactions)
       const obj = extracted as Record<string, unknown>;
       const txns = Array.isArray(obj.transactions) ? obj.transactions : [];
 
@@ -361,12 +404,14 @@ export async function parseStructuredProjectDoc({
         .map((t) => (t && typeof t === "object" ? (t as Record<string, unknown>) : null))
         .filter((t): t is Record<string, unknown> => t !== null)
         .map((t, idx) => {
-          const txnDate = parseYmdDate(t.date);
-          const amount = parseDecimalString(t.amount);
+          const txnDate = t.txnDate ? String(t.txnDate) : parseYmdDate(t.date); // Use existing date if already parsed (CSV)
+          const amount = t.amount && typeof t.amount === "string" ? t.amount : parseDecimalString(t.amount);
           if (!txnDate || !amount) return null;
+          
           const description = normalizeDescription(t.description);
           const currency = typeof t.currency === "string" ? t.currency.trim().slice(0, 16) : null;
-          const balance = t.balance === null ? null : parseDecimalString(t.balance);
+          const balance = t.balance === null || t.balance === undefined ? null : parseDecimalString(t.balance);
+          
           const txnHash = sha256Hex(
             `${txnDate}|${amount}|${description.toLowerCase()}|${balance ?? ""}`
           );
@@ -447,23 +492,35 @@ export async function parseStructuredProjectDoc({
         obj.header && typeof obj.header === "object" ? (obj.header as Record<string, unknown>) : {};
       const lineItems = Array.isArray(obj.line_items) ? obj.line_items : [];
 
-      // On re-sync, replace invoice + line items for this document to reflect the latest file contents.
-      await deleteInvoiceByDocumentId({ documentId: doc.id });
+      // Replace line items for this document to reflect the latest file contents.
+      // Keep invoice row so manual metadata (e.g. sender/recipient) is not wiped.
+      await deleteInvoiceLineItemsByDocumentId({ documentId: doc.id });
       const invoiceRow = await upsertInvoiceForDocument({
         documentId: doc.id,
         data: {
-          vendor: typeof header.vendor === "string" ? header.vendor.trim().slice(0, 500) : null,
+          vendor:
+            typeof header.vendor === "string"
+              ? header.vendor.trim().slice(0, 500)
+              : undefined,
+          sender:
+            typeof header.vendor === "string"
+              ? header.vendor.trim().slice(0, 500)
+              : undefined,
           invoiceNumber:
             typeof header.invoice_number === "string"
               ? header.invoice_number.trim().slice(0, 200)
-              : null,
+              : undefined,
           invoiceDate: parseYmdDate(header.invoice_date),
           dueDate: parseYmdDate(header.due_date),
           subtotal: parseDecimalString(header.subtotal),
           tax: parseDecimalString(header.tax),
           total: parseDecimalString(header.total),
-          currency: typeof header.currency === "string" ? header.currency.trim().slice(0, 16) : null,
+          currency:
+            typeof header.currency === "string"
+              ? header.currency.trim().slice(0, 16)
+              : undefined,
         },
+        fillOnly: true,
       });
 
       const normalizedLineItems = lineItems

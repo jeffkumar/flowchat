@@ -11,6 +11,7 @@ import {
   getProjectByIdForUser,
   getProjectDocById,
   getProjectDocByProjectIdAndFilename,
+  getProjectRole,
   markProjectDocIndexError,
   markProjectDocIndexed,
 } from "@/lib/db/queries";
@@ -59,6 +60,14 @@ export async function POST(
   }
 
   const { projectId } = await params;
+  const role = await getProjectRole({ projectId, userId: session.user.id });
+  if (!role) {
+    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  }
+  if (role === "member") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   const project = await getProjectByIdForUser({
     projectId,
     userId: session.user.id,

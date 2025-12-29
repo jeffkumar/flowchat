@@ -4,6 +4,7 @@ import {
   deleteProjectById,
   getProjectByIdForUser,
   getProjectDocsByProjectId,
+  getProjectRole,
   markProjectDocDeleting,
 } from "@/lib/db/queries";
 import { del } from "@vercel/blob";
@@ -25,6 +26,14 @@ export async function DELETE(
   }
 
   try {
+    const role = await getProjectRole({ projectId, userId: session.user.id });
+    if (!role) {
+      return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    }
+    if (role !== "owner") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     const project = await getProjectByIdForUser({
       projectId,
       userId: session.user.id,

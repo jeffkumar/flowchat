@@ -17,7 +17,7 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
-import { useSWRConfig } from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { useLocalStorage, useWindowSize } from "usehooks-ts";
 import { saveChatModelAsCookie } from "@/app/(chat)/actions";
 import {
@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/select";
 import { chatModels } from "@/lib/ai/models";
 import type { Attachment, ChatMessage } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, fetcher } from "@/lib/utils";
 import {
   PromptInput,
   PromptInputModelSelect,
@@ -49,6 +49,7 @@ import {
 } from "./icons";
 import { PreviewAttachment } from "./preview-attachment";
 import { Button } from "./ui/button";
+import { Input } from "@/components/ui/input";
 import type { VisibilityType } from "@/lib/types";
 import {
   Popover,
@@ -154,6 +155,19 @@ function PureMultimodalInput({
   const [uploadQueue, setUploadQueue] = useState<string[]>([]);
   const [uploadDocumentType, setUploadDocumentType] =
     useState<UploadDocumentType>("general_doc");
+  const [invoiceSender, setInvoiceSender] = useLocalStorage("invoice_sender_last", "");
+  const [invoiceRecipient, setInvoiceRecipient] = useLocalStorage(
+    "invoice_recipient_last",
+    ""
+  );
+
+  const { data: invoiceParties } = useSWR<{
+    senders: string[];
+    recipients: string[];
+  }>(
+    selectedProjectId ? `/api/projects/${selectedProjectId}/invoices/parties` : null,
+    fetcher
+  );
 
   const submitForm = useCallback(() => {
     window.history.pushState({}, "", `/chat/${chatId}`);
@@ -199,6 +213,12 @@ function PureMultimodalInput({
     const formData = new FormData();
     formData.append("file", file);
     formData.append("documentType", uploadDocumentType);
+    if (uploadDocumentType === "invoice") {
+      const sender = invoiceSender.trim();
+      const recipient = invoiceRecipient.trim();
+      if (sender) formData.append("invoiceSender", sender);
+      if (recipient) formData.append("invoiceRecipient", recipient);
+    }
     if (selectedProjectId) {
       formData.append("projectId", selectedProjectId);
     }
@@ -229,7 +249,7 @@ function PureMultimodalInput({
       toast.error("Failed to upload file, please try again!");
     }
     },
-    [selectedProjectId, mutate, uploadDocumentType]
+    [invoiceRecipient, invoiceSender, selectedProjectId, mutate, uploadDocumentType]
   );
 
   const handleFileChange = useCallback(
@@ -392,8 +412,13 @@ function PureMultimodalInput({
           <PromptInputTools className="gap-0 sm:gap-0.5">
             <AttachmentsButton
               fileInputRef={fileInputRef}
+              invoiceParties={invoiceParties}
+              invoiceRecipient={invoiceRecipient}
+              invoiceSender={invoiceSender}
               selectedModelId={selectedModelId}
               status={status}
+              setInvoiceRecipient={setInvoiceRecipient}
+              setInvoiceSender={setInvoiceSender}
               setUploadDocumentType={setUploadDocumentType}
               uploadDocumentType={uploadDocumentType}
             />
@@ -445,14 +470,24 @@ export const MultimodalInput = memo(
 
 function PureAttachmentsButton({
   fileInputRef,
+  invoiceParties,
+  invoiceRecipient,
+  invoiceSender,
   status,
   selectedModelId,
+  setInvoiceRecipient,
+  setInvoiceSender,
   uploadDocumentType,
   setUploadDocumentType,
 }: {
   fileInputRef: React.MutableRefObject<HTMLInputElement | null>;
+  invoiceParties?: { senders: string[]; recipients: string[] };
+  invoiceRecipient: string;
+  invoiceSender: string;
   status: UseChatHelpers<ChatMessage>["status"];
   selectedModelId: string;
+  setInvoiceRecipient: Dispatch<SetStateAction<string>>;
+  setInvoiceSender: Dispatch<SetStateAction<string>>;
   uploadDocumentType: UploadDocumentType;
   setUploadDocumentType: Dispatch<SetStateAction<UploadDocumentType>>;
 }) {
@@ -492,6 +527,55 @@ function PureAttachmentsButton({
               </SelectContent>
             </Select>
           </div>
+          {uploadDocumentType === "invoice" && (
+            <div className="px-2 py-1">
+              <div className="mb-1 text-xs text-muted-foreground">Invoice parties</div>
+              <div className="grid gap-2">
+                <div className="grid gap-1">
+                  <label
+                    className="text-xs text-muted-foreground"
+                    htmlFor="attachments-invoice-sender"
+                  >
+                    Sender
+                  </label>
+                  <Input
+                    autoComplete="off"
+                    id="attachments-invoice-sender"
+                    list="attachments-invoice-sender-options"
+                    onChange={(e) => setInvoiceSender(e.target.value)}
+                    placeholder="Select or type sender"
+                    value={invoiceSender}
+                  />
+                  <datalist id="attachments-invoice-sender-options">
+                    {(invoiceParties?.senders ?? []).map((value) => (
+                      <option key={value} value={value} />
+                    ))}
+                  </datalist>
+                </div>
+                <div className="grid gap-1">
+                  <label
+                    className="text-xs text-muted-foreground"
+                    htmlFor="attachments-invoice-recipient"
+                  >
+                    Recipient
+                  </label>
+                  <Input
+                    autoComplete="off"
+                    id="attachments-invoice-recipient"
+                    list="attachments-invoice-recipient-options"
+                    onChange={(e) => setInvoiceRecipient(e.target.value)}
+                    placeholder="Select or type recipient"
+                    value={invoiceRecipient}
+                  />
+                  <datalist id="attachments-invoice-recipient-options">
+                    {(invoiceParties?.recipients ?? []).map((value) => (
+                      <option key={value} value={value} />
+                    ))}
+                  </datalist>
+                </div>
+              </div>
+            </div>
+          )}
           <div className="my-1 h-px bg-border" />
           <Button
             className="h-9 justify-start gap-2 px-2 text-sm font-normal"

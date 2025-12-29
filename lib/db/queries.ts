@@ -29,12 +29,17 @@ import {
   integrationConnection,
   invoice,
   invoiceLineItem,
+  type InvoiceLineItem,
   message,
   type IntegrationConnection,
   type Project,
   type ProjectDoc,
   project,
   projectIntegrationSource,
+  projectInvitation,
+  type ProjectInvitation,
+  projectUser,
+  type ProjectUser,
   type ProjectIntegrationSource,
   projectDoc,
   type Suggestion,
@@ -45,6 +50,300 @@ import {
   vote,
 } from "./schema";
 import { generateHashedPassword } from "./utils";
+
+export type ProjectAccessRole = "owner" | "admin" | "member";
+
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+export async function getProjectRole({
+  projectId,
+  userId,
+}: {
+  projectId: string;
+  userId: string;
+}): Promise<ProjectAccessRole | null> {
+  try {
+    const [owned] = await db
+      .select({ createdBy: project.createdBy })
+      .from(project)
+      .where(eq(project.id, projectId))
+      .limit(1);
+
+    if (!owned) return null;
+    if (owned.createdBy === userId) return "owner";
+
+    const [membership] = await db
+      .select({ role: projectUser.role })
+      .from(projectUser)
+      .where(and(eq(projectUser.projectId, projectId), eq(projectUser.userId, userId)))
+      .limit(1);
+
+    return membership?.role ?? null;
+  } catch (_error) {
+    throw new ChatSDKError("bad_request:database", "Failed to get project role");
+  }
+}
+
+async function assertProjectAdminAccess({
+  projectId,
+  userId,
+}: {
+  projectId: string;
+  userId: string;
+}) {
+  const role = await getProjectRole({ projectId, userId });
+  if (!role) {
+    throw new ChatSDKError("forbidden:api", "You do not have access to this project");
+  }
+  if (role === "member") {
+    throw new ChatSDKError("forbidden:api", "Admin access required");
+  }
+}
+
+export type ProjectMemberRow =
+  | {
+      kind: "user";
+      userId: string;
+      email: string;
+      role: ProjectAccessRole;
+      status: "active";
+      createdAt: Date | null;
+    }
+  | {
+      kind: "invite";
+      email: string;
+      role: Exclude<ProjectAccessRole, "owner">;
+      status: "pending";
+      invitedBy: string;
+      createdAt: Date | null;
+    };
+
+export async function getProjectMembers({
+  projectId,
+}: {
+  projectId: string;
+}): Promise<ProjectMemberRow[]> {
+  try {
+    const [proj] = await db
+      .select({
+        ownerId: project.createdBy,
+        ownerEmail: user.email,
+      })
+      .from(project)
+      .innerJoin(user, eq(project.createdBy, user.id))
+      .where(eq(project.id, projectId))
+      .limit(1);
+
+    if (!proj) return [];
+
+    const members = await db
+      .select({
+        userId: projectUser.userId,
+        email: user.email,
+        role: projectUser.role,
+        createdAt: projectUser.createdAt,
+      })
+      .from(projectUser)
+      .innerJoin(user, eq(projectUser.userId, user.id))
+      .where(eq(projectUser.projectId, projectId))
+      .orderBy(asc(user.email));
+
+    const invites = await db
+      .select({
+        email: projectInvitation.email,
+        role: projectInvitation.role,
+        invitedBy: projectInvitation.invitedBy,
+        createdAt: projectInvitation.createdAt,
+      })
+      .from(projectInvitation)
+      .where(eq(projectInvitation.projectId, projectId))
+      .orderBy(asc(projectInvitation.email));
+
+    const rows: ProjectMemberRow[] = [
+      {
+        kind: "user",
+        userId: proj.ownerId,
+        email: proj.ownerEmail,
+        role: "owner",
+        status: "active",
+        createdAt: null,
+      },
+    ];
+
+    for (const m of members) {
+      if (m.userId === proj.ownerId) continue;
+      rows.push({
+        kind: "user",
+        userId: m.userId,
+        email: m.email,
+        role: m.role,
+        status: "active",
+        createdAt: m.createdAt ?? null,
+      });
+    }
+
+    for (const inv of invites) {
+      // If someone already signed up and is a member, we prefer the active row.
+      if (inv.email === proj.ownerEmail) continue;
+      rows.push({
+        kind: "invite",
+        email: inv.email,
+        role: inv.role,
+        status: "pending",
+        invitedBy: inv.invitedBy,
+        createdAt: inv.createdAt ?? null,
+      });
+    }
+
+    return rows;
+  } catch (_error) {
+    throw new ChatSDKError("bad_request:database", "Failed to get project members");
+  }
+}
+
+export async function inviteUserToProject({
+  projectId,
+  email,
+  role,
+  invitedBy,
+}: {
+  projectId: string;
+  email: string;
+  role: Exclude<ProjectAccessRole, "owner">;
+  invitedBy: string;
+}): Promise<
+  | { kind: "user"; userId: string; email: string; role: Exclude<ProjectAccessRole, "owner"> }
+  | { kind: "invite"; email: string; role: Exclude<ProjectAccessRole, "owner"> }
+> {
+  await assertProjectAdminAccess({ projectId, userId: invitedBy });
+
+  const normalizedEmail = normalizeEmail(email);
+
+  try {
+    const [existingUser] = await db
+      .select({ id: user.id, email: user.email })
+      .from(user)
+      .where(sql`LOWER(${user.email}) = ${normalizedEmail}`)
+      .limit(1);
+
+    const now = new Date();
+
+    if (existingUser) {
+      await db
+        .insert(projectUser)
+        .values({
+          projectId,
+          userId: existingUser.id,
+          role,
+          createdAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [projectUser.projectId, projectUser.userId],
+          set: { role },
+        });
+
+      await db
+        .delete(projectInvitation)
+        .where(
+          and(
+            eq(projectInvitation.projectId, projectId),
+            eq(projectInvitation.email, normalizedEmail)
+          )
+        );
+
+      return { kind: "user", userId: existingUser.id, email: existingUser.email, role };
+    }
+
+    await db
+      .insert(projectInvitation)
+      .values({
+        projectId,
+        email: normalizedEmail,
+        role,
+        invitedBy,
+        createdAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [projectInvitation.projectId, projectInvitation.email],
+        set: { role, invitedBy, createdAt: now },
+      });
+
+    return { kind: "invite", email: normalizedEmail, role };
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to invite user to project"
+    );
+  }
+}
+
+export async function removeProjectMember({
+  projectId,
+  userId,
+  removedBy,
+}: {
+  projectId: string;
+  userId: string;
+  removedBy: string;
+}) {
+  await assertProjectAdminAccess({ projectId, userId: removedBy });
+
+  try {
+    const [proj] = await db
+      .select({ ownerId: project.createdBy })
+      .from(project)
+      .where(eq(project.id, projectId))
+      .limit(1);
+
+    if (!proj) {
+      throw new ChatSDKError("not_found:database", "Project not found");
+    }
+
+    if (proj.ownerId === userId) {
+      throw new ChatSDKError("forbidden:api", "Cannot remove project owner");
+    }
+
+    await db
+      .delete(projectUser)
+      .where(and(eq(projectUser.projectId, projectId), eq(projectUser.userId, userId)));
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to remove project member"
+    );
+  }
+}
+
+export async function revokeProjectInvitation({
+  projectId,
+  email,
+  revokedBy,
+}: {
+  projectId: string;
+  email: string;
+  revokedBy: string;
+}) {
+  await assertProjectAdminAccess({ projectId, userId: revokedBy });
+  const normalizedEmail = normalizeEmail(email);
+
+  try {
+    await db
+      .delete(projectInvitation)
+      .where(
+        and(
+          eq(projectInvitation.projectId, projectId),
+          eq(projectInvitation.email, normalizedEmail)
+        )
+      );
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to revoke project invitation"
+    );
+  }
+}
 
 // Optionally, if not using email/pass login, you can
 // use the Drizzle adapter for Auth.js / NextAuth
@@ -100,7 +399,11 @@ if (process.env.NODE_ENV !== "production") {
 
 export async function getUser(email: string): Promise<User[]> {
   try {
-    return await db.select().from(user).where(eq(user.email, email));
+    const normalizedEmail = normalizeEmail(email);
+    return await db
+      .select()
+      .from(user)
+      .where(sql`LOWER(${user.email}) = ${normalizedEmail}`);
   } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
@@ -109,11 +412,63 @@ export async function getUser(email: string): Promise<User[]> {
   }
 }
 
+export async function getUserById(userId: string): Promise<{ id: string; email: string } | null> {
+  try {
+    const [found] = await db
+      .select({ id: user.id, email: user.email })
+      .from(user)
+      .where(eq(user.id, userId))
+      .limit(1);
+    return found ?? null;
+  } catch (_error) {
+    throw new ChatSDKError("bad_request:database", "Failed to get user by id");
+  }
+}
+
 export async function createUser(email: string, password: string) {
   const hashedPassword = generateHashedPassword(password);
 
   try {
-    return await db.insert(user).values({ email, password: hashedPassword });
+    const normalizedEmail = normalizeEmail(email);
+
+    return await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(user)
+        .values({ email: normalizedEmail, password: hashedPassword })
+        .returning({ id: user.id, email: user.email });
+
+      if (!created) {
+        throw new Error("User insert returned no row");
+      }
+
+      const invites = await tx
+        .select()
+        .from(projectInvitation)
+        .where(eq(projectInvitation.email, normalizedEmail));
+
+      if (invites.length > 0) {
+        const now = new Date();
+        for (const inv of invites) {
+          await tx
+            .insert(projectUser)
+            .values({
+              projectId: inv.projectId,
+              userId: created.id,
+              role: inv.role,
+              createdAt: now,
+            })
+            .onConflictDoNothing({
+              target: [projectUser.projectId, projectUser.userId],
+            });
+        }
+
+        await tx
+          .delete(projectInvitation)
+          .where(eq(projectInvitation.email, normalizedEmail));
+      }
+
+      return created;
+    });
   } catch (_error) {
     throw new ChatSDKError("bad_request:database", "Failed to create user");
   }
@@ -138,15 +493,40 @@ export async function createGuestUser() {
 
 export async function getProjectsByUserId(userId: string): Promise<Project[]> {
   try {
-    return await db
+    const owned = db
       .select()
       .from(project)
-      .where(eq(project.createdBy, userId))
-      .orderBy(desc(project.createdAt));
-  } catch (_error) {
+      .where(eq(project.createdBy, userId));
+
+    const shared = db
+      .select({
+        id: project.id,
+        name: project.name,
+        createdBy: project.createdBy,
+        organizationId: project.organizationId,
+        isDefault: project.isDefault,
+        createdAt: project.createdAt,
+      })
+      .from(projectUser)
+      .innerJoin(project, eq(projectUser.projectId, project.id))
+      .where(eq(projectUser.userId, userId));
+
+    const projects = await owned.union(shared).orderBy(desc(project.createdAt));
+
+    // Dedupe just in case (owner could also be present in ProjectUser).
+    const seen = new Set<string>();
+    const deduped: Project[] = [];
+    for (const p of projects) {
+      if (seen.has(p.id)) continue;
+      seen.add(p.id);
+      deduped.push(p);
+    }
+
+    return deduped;
+  } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
-      "Failed to get projects by user id"
+      error instanceof Error ? error.message : "Failed to get projects by user id"
     );
   }
 }
@@ -159,16 +539,32 @@ export async function getProjectByIdForUser({
   userId: string;
 }): Promise<Project | null> {
   try {
-    const [found] = await db
+    const [owned] = await db
       .select()
       .from(project)
       .where(and(eq(project.id, projectId), eq(project.createdBy, userId)))
       .limit(1);
-    return found ?? null;
-  } catch (_error) {
+    if (owned) return owned;
+
+    const [shared] = await db
+      .select({
+        id: project.id,
+        name: project.name,
+        createdBy: project.createdBy,
+        organizationId: project.organizationId,
+        isDefault: project.isDefault,
+        createdAt: project.createdAt,
+      })
+      .from(projectUser)
+      .innerJoin(project, eq(projectUser.projectId, project.id))
+      .where(and(eq(project.id, projectId), eq(projectUser.userId, userId)))
+      .limit(1);
+
+    return shared ?? null;
+  } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
-      "Failed to get project by id"
+      error instanceof Error ? error.message : "Failed to get project by id"
     );
   }
 }
@@ -252,10 +648,12 @@ export async function getOrCreateDefaultProjectForUser({
     }
 
     return afterRace;
-  } catch (_error) {
+  } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
-      "Failed to get or create default project"
+      error instanceof Error
+        ? error.message
+        : "Failed to get or create default project"
     );
   }
 }
@@ -442,8 +840,36 @@ export async function markProjectDocDeleting({ docId }: { docId: string }) {
   }
 }
 
-export async function deleteProjectDocById({ docId }: { docId: string }) {
+export async function deleteProjectDocById({
+  docId,
+  userId,
+}: {
+  docId: string;
+  userId: string;
+}) {
   try {
+    const [doc] = await db
+      .select({
+        projectId: projectDoc.projectId,
+        createdBy: projectDoc.createdBy,
+      })
+      .from(projectDoc)
+      .where(eq(projectDoc.id, docId))
+      .limit(1);
+
+    if (!doc) return null;
+
+    const role = await getProjectRole({ projectId: doc.projectId, userId });
+    if (!role) {
+      throw new ChatSDKError("forbidden:api", "You do not have access to this project");
+    }
+    if (role === "member" && doc.createdBy !== userId) {
+      throw new ChatSDKError(
+        "forbidden:api",
+        "You can only delete files you uploaded"
+      );
+    }
+
     return await db.transaction(async (tx) => {
       const invoiceIds = await tx
         .select({ id: invoice.id })
@@ -531,6 +957,27 @@ export async function deleteInvoiceByDocumentId({ documentId }: { documentId: st
     await db.delete(invoice).where(eq(invoice.documentId, documentId));
   } catch (_error) {
     throw new ChatSDKError("bad_request:database", "Failed to delete invoice by document id");
+  }
+}
+
+export async function deleteInvoiceLineItemsByDocumentId({
+  documentId,
+}: {
+  documentId: string;
+}) {
+  try {
+    const invoiceIds = await db
+      .select({ id: invoice.id })
+      .from(invoice)
+      .where(eq(invoice.documentId, documentId));
+    const ids = invoiceIds.map((row) => row.id);
+    if (ids.length === 0) return;
+    await db.delete(invoiceLineItem).where(inArray(invoiceLineItem.invoiceId, ids));
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to delete invoice line items by document id"
+    );
   }
 }
 
@@ -1401,10 +1848,13 @@ export async function insertFinancialTransactions({
 export async function upsertInvoiceForDocument({
   documentId,
   data,
+  fillOnly,
 }: {
   documentId: string;
   data: {
     vendor?: string | null;
+    sender?: string | null;
+    recipient?: string | null;
     invoiceNumber?: string | null;
     invoiceDate?: string | null; // YYYY-MM-DD
     dueDate?: string | null; // YYYY-MM-DD
@@ -1413,6 +1863,7 @@ export async function upsertInvoiceForDocument({
     total?: string | null;
     currency?: string | null;
   };
+  fillOnly?: boolean;
 }) {
   try {
     const [row] = await db
@@ -1420,6 +1871,8 @@ export async function upsertInvoiceForDocument({
       .values({
         documentId,
         vendor: data.vendor ?? null,
+        sender: data.sender ?? null,
+        recipient: data.recipient ?? null,
         invoiceNumber: data.invoiceNumber ?? null,
         invoiceDate: data.invoiceDate ?? null,
         dueDate: data.dueDate ?? null,
@@ -1431,14 +1884,36 @@ export async function upsertInvoiceForDocument({
       .onConflictDoUpdate({
         target: [invoice.documentId],
         set: {
-          vendor: data.vendor ?? null,
-          invoiceNumber: data.invoiceNumber ?? null,
-          invoiceDate: data.invoiceDate ?? null,
-          dueDate: data.dueDate ?? null,
-          subtotal: data.subtotal ?? null,
-          tax: data.tax ?? null,
-          total: data.total ?? null,
-          currency: data.currency ?? null,
+          vendor:
+            data.vendor === undefined ? sql`${invoice.vendor}` : data.vendor ?? null,
+          sender:
+            data.sender === undefined
+              ? sql`${invoice.sender}`
+              : fillOnly
+                ? sql`COALESCE(${invoice.sender}, ${data.sender ?? null})`
+                : (data.sender ?? null),
+          recipient:
+            data.recipient === undefined
+              ? sql`${invoice.recipient}`
+              : fillOnly
+                ? sql`COALESCE(${invoice.recipient}, ${data.recipient ?? null})`
+                : (data.recipient ?? null),
+          invoiceNumber:
+            data.invoiceNumber === undefined
+              ? sql`${invoice.invoiceNumber}`
+              : data.invoiceNumber ?? null,
+          invoiceDate:
+            data.invoiceDate === undefined
+              ? sql`${invoice.invoiceDate}`
+              : data.invoiceDate ?? null,
+          dueDate:
+            data.dueDate === undefined ? sql`${invoice.dueDate}` : data.dueDate ?? null,
+          subtotal:
+            data.subtotal === undefined ? sql`${invoice.subtotal}` : data.subtotal ?? null,
+          tax: data.tax === undefined ? sql`${invoice.tax}` : data.tax ?? null,
+          total: data.total === undefined ? sql`${invoice.total}` : data.total ?? null,
+          currency:
+            data.currency === undefined ? sql`${invoice.currency}` : data.currency ?? null,
         },
       })
       .returning();
@@ -1498,6 +1973,49 @@ export async function insertInvoiceLineItems({
   }
 }
 
+export async function getInvoicePartiesByProjectId({
+  projectId,
+}: {
+  projectId: string;
+}): Promise<{ senders: string[]; recipients: string[] }> {
+  try {
+    const rows = await db
+      .select({
+        sender: invoice.sender,
+        recipient: invoice.recipient,
+        vendor: invoice.vendor,
+      })
+      .from(invoice)
+      .innerJoin(projectDoc, eq(invoice.documentId, projectDoc.id))
+      .where(eq(projectDoc.projectId, projectId));
+
+    const senders = new Set<string>();
+    const recipients = new Set<string>();
+
+    for (const row of rows) {
+      const sender = typeof row.sender === "string" ? row.sender.trim() : "";
+      const vendor = typeof row.vendor === "string" ? row.vendor.trim() : "";
+      const recipient =
+        typeof row.recipient === "string" ? row.recipient.trim() : "";
+
+      if (sender) senders.add(sender);
+      else if (vendor) senders.add(vendor);
+
+      if (recipient) recipients.add(recipient);
+    }
+
+    return {
+      senders: Array.from(senders).sort((a, b) => a.localeCompare(b)),
+      recipients: Array.from(recipients).sort((a, b) => a.localeCompare(b)),
+    };
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to get invoice parties by project id"
+    );
+  }
+}
+
 type FinanceDocumentType = "bank_statement" | "cc_statement" | "invoice";
 
 type FinanceQueryFilters = {
@@ -1505,6 +2023,8 @@ type FinanceQueryFilters = {
   date_start?: string;
   date_end?: string;
   vendor_contains?: string;
+  sender_contains?: string;
+  recipient_contains?: string;
   amount_min?: number;
   amount_max?: number;
 };
@@ -1580,6 +2100,22 @@ function buildVendorContainsFilter({
   return sql`${financialTransaction.description} ILIKE ${like}`;
 }
 
+function buildInvoiceSenderContainsFilter(senderContains: string | undefined) {
+  if (typeof senderContains !== "string") return null;
+  const needle = senderContains.trim();
+  if (!needle) return null;
+  const like = `%${needle}%`;
+  return sql`COALESCE(${invoice.sender}, ${invoice.vendor}) ILIKE ${like}`;
+}
+
+function buildInvoiceRecipientContainsFilter(recipientContains: string | undefined) {
+  if (typeof recipientContains !== "string") return null;
+  const needle = recipientContains.trim();
+  if (!needle) return null;
+  const like = `%${needle}%`;
+  return sql`${invoice.recipient} ILIKE ${like}`;
+}
+
 export async function financeSum({
   userId,
   documentType,
@@ -1595,6 +2131,8 @@ export async function financeSum({
       documentType,
       vendorContains: filters?.vendor_contains,
     });
+    const senderFilter = buildInvoiceSenderContainsFilter(filters?.sender_contains);
+    const recipientFilter = buildInvoiceRecipientContainsFilter(filters?.recipient_contains);
     const dateClauses = buildDateRangeFilter({
       documentType,
       dateStart: filters?.date_start,
@@ -1608,6 +2146,8 @@ export async function financeSum({
       ];
       if (docIdFilter) whereClauses.push(docIdFilter);
       if (vendorFilter) whereClauses.push(vendorFilter);
+      if (senderFilter) whereClauses.push(senderFilter);
+      if (recipientFilter) whereClauses.push(recipientFilter);
       whereClauses.push(...dateClauses);
 
       const [row] = await db
@@ -1715,6 +2255,8 @@ export async function financeList({
       documentType,
       vendorContains: filters?.vendor_contains,
     });
+    const senderFilter = buildInvoiceSenderContainsFilter(filters?.sender_contains);
+    const recipientFilter = buildInvoiceRecipientContainsFilter(filters?.recipient_contains);
     const dateClauses = buildDateRangeFilter({
       documentType,
       dateStart: filters?.date_start,
@@ -1728,6 +2270,8 @@ export async function financeList({
       ];
       if (docIdFilter) whereClauses.push(docIdFilter);
       if (vendorFilter) whereClauses.push(vendorFilter);
+      if (senderFilter) whereClauses.push(senderFilter);
+      if (recipientFilter) whereClauses.push(recipientFilter);
       whereClauses.push(...dateClauses);
 
       const rows = await db
@@ -1748,10 +2292,24 @@ export async function financeList({
         .orderBy(desc(invoice.invoiceDate), desc(invoice.id))
         .limit(500);
 
+      const invoiceIds = rows.map((r) => r.id);
+      let lineItems: InvoiceLineItem[] = [];
+      if (invoiceIds.length > 0) {
+        lineItems = await db
+          .select()
+          .from(invoiceLineItem)
+          .where(inArray(invoiceLineItem.invoiceId, invoiceIds));
+      }
+
+      const rowsWithLineItems = rows.map((r) => ({
+        ...r,
+        lineItems: lineItems.filter((li) => li.invoiceId === r.id),
+      }));
+
       return {
         query_type: "list" as const,
         document_type: "invoice" as const,
-        rows,
+        rows: rowsWithLineItems,
         provenance: { source: "postgres" as const },
       };
     }
@@ -1780,7 +2338,8 @@ export async function financeList({
         t.txn_date AS "txnDate",
         t.description,
         t.amount,
-        t.currency
+        t.currency,
+        t.balance
       FROM (
         SELECT DISTINCT ON (${dedupeKey})
           ${financialTransaction.id} AS id,
@@ -1788,7 +2347,8 @@ export async function financeList({
           ${financialTransaction.txnDate} AS txn_date,
           ${financialTransaction.description} AS description,
           ${financialTransaction.amount} AS amount,
-          ${financialTransaction.currency} AS currency
+          ${financialTransaction.currency} AS currency,
+          ${financialTransaction.balance} AS balance
         FROM ${financialTransaction}
         INNER JOIN ${projectDoc} ON ${eq(financialTransaction.documentId, projectDoc.id)}
         INNER JOIN ${project} ON ${eq(projectDoc.projectId, project.id)}
@@ -1809,6 +2369,7 @@ export async function financeList({
         description: string | null;
         amount: string;
         currency: string | null;
+        balance: string | null;
       }>,
       provenance: { source: "postgres" as const },
     };
@@ -1835,6 +2396,8 @@ export async function financeGroupByMonth({
       documentType,
       vendorContains: filters?.vendor_contains,
     });
+    const senderFilter = buildInvoiceSenderContainsFilter(filters?.sender_contains);
+    const recipientFilter = buildInvoiceRecipientContainsFilter(filters?.recipient_contains);
     const dateClauses = buildDateRangeFilter({
       documentType,
       dateStart: filters?.date_start,
@@ -1848,6 +2411,8 @@ export async function financeGroupByMonth({
       ];
       if (docIdFilter) whereClauses.push(docIdFilter);
       if (vendorFilter) whereClauses.push(vendorFilter);
+      if (senderFilter) whereClauses.push(senderFilter);
+      if (recipientFilter) whereClauses.push(recipientFilter);
       whereClauses.push(...dateClauses);
 
       const rows = await db
@@ -1938,6 +2503,8 @@ export async function financeGroupByMerchant({
       documentType,
       vendorContains: filters?.vendor_contains,
     });
+    const senderFilter = buildInvoiceSenderContainsFilter(filters?.sender_contains);
+    const recipientFilter = buildInvoiceRecipientContainsFilter(filters?.recipient_contains);
     const dateClauses = buildDateRangeFilter({
       documentType,
       dateStart: filters?.date_start,
@@ -1951,6 +2518,8 @@ export async function financeGroupByMerchant({
       ];
       if (docIdFilter) whereClauses.push(docIdFilter);
       if (vendorFilter) whereClauses.push(vendorFilter);
+      if (senderFilter) whereClauses.push(senderFilter);
+      if (recipientFilter) whereClauses.push(recipientFilter);
       whereClauses.push(...dateClauses);
 
       const rows = await db

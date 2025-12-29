@@ -6,6 +6,7 @@ import {
   deleteProjectDocById,
   getProjectByIdForUser,
   getProjectDocById,
+  getProjectRole,
   markProjectDocDeleting,
 } from "@/lib/db/queries";
 import { deleteByFilterFromTurbopuffer } from "@/lib/rag/turbopuffer";
@@ -32,6 +33,11 @@ export async function DELETE(
 
   const { projectId, docId } = await params;
 
+  const role = await getProjectRole({ projectId, userId: session.user.id });
+  if (!role) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
   const project = await getProjectByIdForUser({
     projectId,
     userId: session.user.id,
@@ -44,6 +50,10 @@ export async function DELETE(
   const doc = await getProjectDocById({ docId });
   if (!doc || doc.projectId !== project.id) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  if (role === "member" && doc.createdBy !== session.user.id) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   await markProjectDocDeleting({ docId: doc.id });
@@ -65,7 +75,7 @@ export async function DELETE(
     await del(doc.blobUrl);
   }
 
-  await deleteProjectDocById({ docId: doc.id });
+  await deleteProjectDocById({ docId: doc.id, userId: session.user.id });
 
   return NextResponse.json({ deleted: true }, { status: 200 });
 }

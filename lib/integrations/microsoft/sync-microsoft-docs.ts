@@ -5,6 +5,7 @@ import {
   getProjectDocByMicrosoftItemId,
   markProjectDocIndexError,
   markProjectDocIndexed,
+  upsertInvoiceForDocument,
   updateProjectDoc,
 } from "@/lib/db/queries";
 import {
@@ -78,6 +79,8 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
   items,
   token,
   documentType,
+  invoiceSender,
+  invoiceRecipient,
 }: {
   userId: string;
   project: Project;
@@ -85,6 +88,8 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
   items: Array<{ itemId: string; filename: string }>;
   token?: string;
   documentType?: "general_doc" | "bank_statement" | "cc_statement" | "invoice";
+  invoiceSender?: string;
+  invoiceRecipient?: string;
 }): Promise<MicrosoftSyncResult[]> {
   const accessToken = token ?? (await getMicrosoftAccessTokenForUser(userId));
   const namespace = getDocsNamespace(project.isDefault, project.id);
@@ -329,6 +334,28 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
             },
           },
         });
+
+        if (effectiveDocumentType === "invoice") {
+          const sender =
+            typeof invoiceSender === "string" && invoiceSender.trim().length > 0
+              ? invoiceSender.trim().slice(0, 500)
+              : undefined;
+          const recipient =
+            typeof invoiceRecipient === "string" &&
+            invoiceRecipient.trim().length > 0
+              ? invoiceRecipient.trim().slice(0, 500)
+              : undefined;
+
+          if (sender || recipient) {
+            await upsertInvoiceForDocument({
+              documentId: doc.id,
+              data: {
+                sender,
+                recipient,
+              },
+            });
+          }
+        }
 
         // Trigger structured parsing for financial docs AFTER general indexing/status update
         if (effectiveDocumentType !== "general_doc") {

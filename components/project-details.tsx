@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { ShareProjectDialog } from "@/components/share-project-dialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -104,6 +105,7 @@ export function ProjectDetails({
     fetcher
   );
 
+  const [isShareOpen, setIsShareOpen] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -207,18 +209,29 @@ export function ProjectDetails({
             </div>
           </div>
 
-          {!selectedProject?.isDefault && (
-            <div className="mt-auto pt-6">
+          <div className="mt-auto pt-6">
+            {selectedProjectId && (
+              <Button
+                variant="outline"
+                className="w-full mb-2"
+                onClick={() => setIsShareOpen(true)}
+                type="button"
+              >
+                Share Project
+              </Button>
+            )}
+            {!selectedProject?.isDefault && (
               <Button
                 variant="destructive"
                 className="w-full"
                 onClick={() => setShowDeleteDialog(true)}
+                type="button"
               >
                 <Trash2 className="mr-2 h-4 w-4" />
                 Delete Project
               </Button>
-            </div>
-          )}
+            )}
+          </div>
         </SheetContent>
       </Sheet>
 
@@ -243,6 +256,14 @@ export function ProjectDetails({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {selectedProjectId && (
+        <ShareProjectDialog
+          projectId={selectedProjectId}
+          open={isShareOpen}
+          onOpenChange={setIsShareOpen}
+        />
+      )}
     </>
   );
 }

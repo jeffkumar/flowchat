@@ -7,6 +7,14 @@ import { fetcher, getLocalStorage } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
@@ -166,6 +174,35 @@ function formatMicrosoftItemLocation(item: Item): { text: string; title?: string
   return { text: "", title: rawTitle };
 }
 
+type DisplayStatus =
+  | { label: "Processing"; detail?: string; isProcessing: true }
+  | { label: "Failed"; detail?: string; isProcessing: false }
+  | { label: "Synced"; detail?: string; isProcessing: false };
+
+function getDisplayStatus({
+  parseStatus,
+  isSyncing,
+}: {
+  parseStatus: SyncedDoc["parseStatus"] | undefined;
+  isSyncing: boolean;
+}): DisplayStatus {
+  if (isSyncing || parseStatus === "pending") {
+    return { label: "Processing", isProcessing: true };
+  }
+  if (parseStatus === "failed") {
+    return { label: "Failed", isProcessing: false };
+  }
+  if (parseStatus === "needs_review") {
+    return { label: "Synced", detail: "Needs review", isProcessing: false };
+  }
+  if (parseStatus === "parsed") {
+    return { label: "Synced", isProcessing: false };
+  }
+  return { label: "Synced", isProcessing: false };
+}
+
+type InvoiceParties = { senders: string[]; recipients: string[] };
+
 export function MicrosoftIntegrationCard() {
   const { selectedProjectId } = useProjectSelector();
 
@@ -197,6 +234,19 @@ export function MicrosoftIntegrationCard() {
   
   const [recentLocations, setRecentLocations] = useState<RecentLocation[]>([]);
 
+  const [invoiceSender, setInvoiceSender] = useState(() => {
+    const v = getLocalStorage("invoice_sender_last") as unknown;
+    return typeof v === "string" ? v : "";
+  });
+  const [invoiceRecipient, setInvoiceRecipient] = useState(() => {
+    const v = getLocalStorage("invoice_recipient_last") as unknown;
+    return typeof v === "string" ? v : "";
+  });
+  const [invoiceSyncDialog, setInvoiceSyncDialog] = useState<{
+    driveId: string;
+    items: Array<{ itemId: string; filename: string }>;
+  } | null>(null);
+
   useEffect(() => {
     // Project-scoped UI state: reset on project switch to avoid showing stale results.
     setSearchResults(null);
@@ -209,6 +259,14 @@ export function MicrosoftIntegrationCard() {
     setSharePointUrl("");
     setDocTypeByKey({});
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    localStorage.setItem("invoice_sender_last", invoiceSender);
+  }, [invoiceSender]);
+
+  useEffect(() => {
+    localStorage.setItem("invoice_recipient_last", invoiceRecipient);
+  }, [invoiceRecipient]);
 
   const getTypeForKey = (key: string): IngestDocumentType =>
     docTypeByKey[key] ?? "general_doc";
@@ -227,6 +285,19 @@ export function MicrosoftIntegrationCard() {
       : null,
     fetcher,
     { shouldRetryOnError: false }
+  );
+
+  const { data: invoiceParties } = useSWR<InvoiceParties>(
+    selectedProjectId ? `/api/projects/${selectedProjectId}/invoices/parties` : null,
+    fetcher
+  );
+
+  const syncedDocByKey = (syncedDocsData?.docs ?? []).reduce<Record<string, SyncedDoc>>(
+    (acc, doc) => {
+      acc[`${doc.driveId}:${doc.itemId}`] = doc;
+      return acc;
+    },
+    {}
   );
 
   useEffect(() => {
@@ -302,10 +373,14 @@ export function MicrosoftIntegrationCard() {
     driveId,
     items,
     documentType,
+    invoiceSender,
+    invoiceRecipient,
   }: {
     driveId: string;
     items: Array<{ itemId: string; filename: string }>;
     documentType: IngestDocumentType;
+    invoiceSender?: string;
+    invoiceRecipient?: string;
   }) => {
     if (!selectedProjectId) {
       toast.error("Select a project first");
@@ -323,13 +398,61 @@ export function MicrosoftIntegrationCard() {
       for (const key of keys) next.add(key);
       return next;
     });
+
+    if (selectedProjectId) {
+      const nowIso = new Date().toISOString();
+      const optimisticDocs: SyncedDoc[] = (syncedDocsData?.docs ?? []).slice();
+      for (const item of items) {
+        const syncKey = `${driveId}:${item.itemId}`;
+        const existing = syncedDocByKey[syncKey];
+        if (existing) {
+          const idx = optimisticDocs.findIndex((d) => d.docId === existing.docId);
+          if (idx >= 0) {
+            optimisticDocs[idx] = {
+              ...existing,
+              filename: item.filename,
+              documentType,
+              parseStatus: "pending",
+              lastSyncedAt: nowIso,
+            };
+          }
+        } else {
+          optimisticDocs.unshift({
+            docId: `optimistic:${driveId}:${item.itemId}`,
+            filename: item.filename,
+            url: null,
+            documentType,
+            parseStatus: "pending",
+            itemId: item.itemId,
+            driveId,
+            lastSyncedAt: nowIso,
+          });
+        }
+      }
+
+      await mutateSyncedDocs({ docs: optimisticDocs }, { revalidate: false });
+    }
     try {
+      const sender =
+        documentType === "invoice" && typeof invoiceSender === "string"
+          ? invoiceSender.trim()
+          : "";
+      const recipient =
+        documentType === "invoice" && typeof invoiceRecipient === "string"
+          ? invoiceRecipient.trim()
+          : "";
       const res = await fetch(
         `/api/projects/${selectedProjectId}/integrations/microsoft/sync`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ driveId, items, documentType }),
+          body: JSON.stringify({
+            driveId,
+            items,
+            documentType,
+            invoiceSender: sender.length > 0 ? sender : undefined,
+            invoiceRecipient: recipient.length > 0 ? recipient : undefined,
+          }),
         }
       );
 
@@ -363,7 +486,7 @@ export function MicrosoftIntegrationCard() {
 
       if (syncedCount > 0) {
         toast.success(
-          `Sync started for ${syncedCount} file(s)${
+          `Sync completed for ${syncedCount} file(s)${
             skippedCount > 0 || failedCount > 0
               ? ` (${skippedCount} skipped, ${failedCount} failed)`
               : ""
@@ -382,6 +505,7 @@ export function MicrosoftIntegrationCard() {
       await mutateSyncedDocs();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Sync failed");
+      await mutateSyncedDocs();
     } finally {
       setInFlightSyncKeys((prev) => {
         const next = new Set(prev);
@@ -389,6 +513,22 @@ export function MicrosoftIntegrationCard() {
         return next;
       });
     }
+  };
+
+  const requestSync = ({
+    driveId,
+    items,
+    documentType,
+  }: {
+    driveId: string;
+    items: Array<{ itemId: string; filename: string }>;
+    documentType: IngestDocumentType;
+  }) => {
+    if (documentType === "invoice") {
+      setInvoiceSyncDialog({ driveId, items });
+      return;
+    }
+    void syncItems({ driveId, items, documentType });
   };
 
   const removeSyncedDoc = async (doc: SyncedDoc) => {
@@ -521,10 +661,12 @@ export function MicrosoftIntegrationCard() {
               <OneDriveIcon size={16} />
             </span>
             <span>Microsoft (SharePoint / OneDrive)</span>
-          </div>
-          <div className="text-xs text-muted-foreground">
-            Connect to SharePoint/Teams/OneDrive and import PDF/DOCX files.
-          </div>
+          </div>  
+          {status?.connected && (
+            <div className="mt-3 text-xs text-muted-foreground">
+              Connected as {status.accountEmail ?? "Unknown account"}
+            </div>
+          )}
         </div>
 
         {!status?.connected ? (
@@ -564,11 +706,7 @@ export function MicrosoftIntegrationCard() {
         )}
       </div>
 
-      {status?.connected && (
-        <div className="mt-3 text-xs text-muted-foreground">
-          Connected as {status.accountEmail ?? "Unknown account"}
-        </div>
-      )}
+       
 
       {status?.connected && (
         <div className="mt-6 space-y-6">
@@ -626,13 +764,53 @@ export function MicrosoftIntegrationCard() {
             )}
           </div>
 
+          {/* Other options */}
+          <Collapsible className="space-y-2">
+            <CollapsibleTrigger asChild>
+              <Button
+                className="group h-auto justify-between px-0 py-0 text-xs font-medium"
+                type="button"
+                variant="ghost"
+              >
+                <span>Other options</span>
+                <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-2">
+              <div className="text-xs font-medium text-muted-foreground">
+                Paste a SharePoint link
+              </div>
+              <div className="flex items-end gap-2">
+                <Input
+                  className="flex-1"
+                  onChange={(e) => setSharePointUrl(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      void jumpToSharePointUrl();
+                    }
+                  }}
+                  placeholder="https://company.sharepoint.com/sites/..."
+                  value={sharePointUrl}
+                />
+                <Button
+                  disabled={isBusy}
+                  onClick={() => void jumpToSharePointUrl()}
+                  type="button"
+                  variant="secondary"
+                >
+                  Open
+                </Button>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+
           {/* Search results */}
           {searchResults && (
             <div className="rounded-md border p-2">
               <div className="text-xs font-medium text-muted-foreground mb-2 px-2">
                 {searchResults.length} results found
               </div>
-              <ScrollArea className="h-64">
+              <div className="max-h-[260px] overflow-y-auto">
                 <div className="divide-y">
                   {searchResults.map((item) => {
                     const driveId = item.driveId;
@@ -696,7 +874,7 @@ export function MicrosoftIntegrationCard() {
                               >
                                 <SelectTrigger
                                   className="h-8 w-[190px] text-xs [&>span]:flex-1 [&>span]:text-left"
-                                  disabled={isSyncing || !item.driveId || !selectedProjectId}
+                                  disabled={!item.driveId || !selectedProjectId}
                                 >
                                   <SelectValue placeholder="Doc type" />
                                 </SelectTrigger>
@@ -714,20 +892,30 @@ export function MicrosoftIntegrationCard() {
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   if (!item.driveId) return;
-                                  void syncItems({
+                                  requestSync({
                                     driveId: item.driveId,
                                     items: [{ itemId: item.id, filename: label }],
                                     documentType: selectedType,
                                   });
                                 }}
-                                aria-label="Refresh file"
-                                title="Refresh file"
-                                size="icon"
+                                aria-label="Sync file"
+                                title={isSyncing ? "Processing" : "Sync"}
+                                size="sm"
                                 type="button"
                                 variant="outline"
-                                className="h-8 w-8"
+                                className="shrink-0 whitespace-nowrap"
                               >
-                                <RefreshCw className="h-4 w-4" />
+                                {isSyncing ? (
+                                  <>
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    Processing…
+                                  </>
+                                ) : (
+                                  <>
+                                    <RefreshCw className="h-4 w-4" />
+                                    Sync
+                                  </>
+                                )}
                               </Button>
                             </>
                           ) : (
@@ -750,46 +938,9 @@ export function MicrosoftIntegrationCard() {
                     </div>
                   )}
                 </div>
-              </ScrollArea>
+              </div>
             </div>
           )}
-
-          {/* Paste Link */}
-          <Collapsible className="space-y-2">
-            <CollapsibleTrigger asChild>
-              <Button
-                className="group h-auto justify-between px-0 py-0 text-xs font-medium"
-                type="button"
-                variant="ghost"
-              >
-                <span>Or paste a SharePoint link</span>
-                <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
-              </Button>
-            </CollapsibleTrigger>
-            <CollapsibleContent className="space-y-2">
-              <div className="flex items-end gap-2">
-                <Input
-                  className="flex-1"
-                  onChange={(e) => setSharePointUrl(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      void jumpToSharePointUrl();
-                    }
-                  }}
-                  placeholder="https://company.sharepoint.com/sites/..."
-                  value={sharePointUrl}
-                />
-                <Button
-                  disabled={isBusy}
-                  onClick={() => void jumpToSharePointUrl()}
-                  type="button"
-                  variant="secondary"
-                >
-                  Open
-                </Button>
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
 
           {/* Synced files (table) */}
           {selectedProjectId && (syncedDocsData?.docs ?? []).length > 0 && (
@@ -802,7 +953,7 @@ export function MicrosoftIntegrationCard() {
               </div>
 
               <div className="rounded-md border overflow-hidden">
-                <div className="grid grid-cols-[1fr_120px_80px_150px_100px] gap-3 px-3 py-2 text-xs text-muted-foreground border-b">
+                <div className="hidden sm:grid grid-cols-[1fr_120px_100px_150px_100px] gap-3 px-3 py-2 text-xs text-muted-foreground border-b">
                   <div>Name</div>
                   <div>Document type</div>
                   <div>Status</div>
@@ -816,24 +967,51 @@ export function MicrosoftIntegrationCard() {
                     const isRemoving = inFlightRemoveDocIds.has(doc.docId);
                     const displayName = truncateLabel(doc.filename);
                     const selectedType = getTypeForKey(syncKey);
+                    const status = getDisplayStatus({
+                      parseStatus: doc.parseStatus,
+                      isSyncing,
+                    });
                     return (
                       <div
-                        className="grid grid-cols-[1fr_120px_80px_150px_100px] items-center gap-3 px-3 py-2 text-xs"
+                        className="flex flex-col gap-2 px-3 py-3 text-xs sm:grid sm:grid-cols-[1fr_120px_100px_150px_100px] sm:items-center sm:gap-3 sm:py-2"
                         key={doc.docId}
                       >
-                        <div className="min-w-0 truncate" title={doc.filename}>
-                          {displayName}
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium" title={doc.filename}>
+                            {displayName}
+                          </div>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground sm:hidden">
+                            <span>{formatDocType(selectedType)}</span>
+                            <span>·</span>
+                            <span className="inline-flex items-center gap-1">
+                              {status.isProcessing ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : null}
+                              {status.label}
+                            </span>
+                            {status.detail ? <span>({status.detail})</span> : null}
+                          </div>
                         </div>
-                        <div className="min-w-0 truncate text-muted-foreground">
+                        <div className="hidden sm:block min-w-0 truncate text-muted-foreground">
                           {formatDocType(selectedType)}
                         </div>
-                        <div className="min-w-0 truncate text-muted-foreground">
-                          {doc.parseStatus ?? ""}
+                        <div className="hidden sm:block min-w-0 truncate text-muted-foreground">
+                          <span className="inline-flex items-center gap-1">
+                            {status.isProcessing ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : null}
+                            {status.label}
+                          </span>
+                          {status.detail ? (
+                            <span className="ml-1 text-muted-foreground" title={status.detail}>
+                              ({status.detail})
+                            </span>
+                          ) : null}
                         </div>
-                        <div className="truncate text-muted-foreground">
+                        <div className="hidden sm:block truncate text-muted-foreground">
                           {new Date(doc.lastSyncedAt).toLocaleString()}
                         </div>
-                        <div className="flex items-center justify-end gap-1">
+                        <div className="flex items-center justify-end gap-1 sm:justify-end">
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button
@@ -875,20 +1053,24 @@ export function MicrosoftIntegrationCard() {
                           <Button
                             disabled={isSyncing || !selectedProjectId}
                             onClick={() => {
-                              void syncItems({
+                              requestSync({
                                 driveId: doc.driveId,
                                 items: [{ itemId: doc.itemId, filename: doc.filename }],
                                 documentType: selectedType,
                               });
                             }}
-                            aria-label="Refresh file"
-                            title="Refresh file"
+                            aria-label="Sync file"
+                            title={isSyncing ? "Processing" : "Sync"}
                             size="icon"
                             type="button"
                             variant="outline"
                             className="h-8 w-8"
                           >
-                            <RefreshCw className="h-4 w-4" />
+                            {isSyncing ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <RefreshCw className="h-4 w-4" />
+                            )}
                           </Button>
                           <Button
                             aria-label="Remove from context"
@@ -1030,7 +1212,7 @@ export function MicrosoftIntegrationCard() {
                               <Button
                                 disabled={isSyncing || !selectedProjectId}
                                 onClick={() => {
-                                  void syncItems({
+                                  requestSync({
                                     driveId: selectedDriveId,
                                     items: [{ itemId: item.id, filename: label }],
                                     documentType: selectedType,
@@ -1092,6 +1274,94 @@ export function MicrosoftIntegrationCard() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open) setInvoiceSyncDialog(null);
+        }}
+        open={invoiceSyncDialog !== null}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Invoice metadata (optional)</DialogTitle>
+            <DialogDescription>
+              Add sender/recipient to improve invoice search and reporting. You can leave these blank.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-3">
+            <div className="grid gap-1">
+              <label
+                className="text-xs text-muted-foreground"
+                htmlFor="ms-invoice-sender"
+              >
+                Sender (optional)
+              </label>
+              <Input
+                autoComplete="off"
+                id="ms-invoice-sender"
+                list="ms-invoice-sender-options"
+                onChange={(e) => setInvoiceSender(e.target.value)}
+                placeholder="Select or type sender"
+                value={invoiceSender}
+              />
+              <datalist id="ms-invoice-sender-options">
+                {(invoiceParties?.senders ?? []).map((value) => (
+                  <option key={value} value={value} />
+                ))}
+              </datalist>
+            </div>
+
+            <div className="grid gap-1">
+              <label
+                className="text-xs text-muted-foreground"
+                htmlFor="ms-invoice-recipient"
+              >
+                Recipient (optional)
+              </label>
+              <Input
+                autoComplete="off"
+                id="ms-invoice-recipient"
+                list="ms-invoice-recipient-options"
+                onChange={(e) => setInvoiceRecipient(e.target.value)}
+                placeholder="Select or type recipient"
+                value={invoiceRecipient}
+              />
+              <datalist id="ms-invoice-recipient-options">
+                {(invoiceParties?.recipients ?? []).map((value) => (
+                  <option key={value} value={value} />
+                ))}
+              </datalist>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              onClick={() => setInvoiceSyncDialog(null)}
+              type="button"
+              variant="outline"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (!invoiceSyncDialog) return;
+                void syncItems({
+                  driveId: invoiceSyncDialog.driveId,
+                  items: invoiceSyncDialog.items,
+                  documentType: "invoice",
+                  invoiceSender,
+                  invoiceRecipient,
+                });
+                setInvoiceSyncDialog(null);
+              }}
+              type="button"
+            >
+              Sync
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

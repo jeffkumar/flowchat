@@ -22,10 +22,13 @@ import {
   SidebarFooter,
   SidebarHeader,
   SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar";
 import { useProjectSelector } from "@/hooks/use-project-selector";
 import { cn } from "@/lib/utils";
+import { Plug2 } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -152,6 +155,21 @@ export function AppSidebar({ user }: { user: User | undefined }) {
               <PlusIcon />
               <span className="ml-2">Create Project</span>
             </Button>
+          </div>
+          <div className="px-2 pb-2">
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild>
+                  <Link
+                    href="/integrations"
+                    onClick={() => setOpenMobile(false)}
+                  >
+                    <Plug2 className="h-4 w-4" />
+                    <span>Integrations</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
           </div>
           <SidebarHistory user={user} />
         </SidebarContent>

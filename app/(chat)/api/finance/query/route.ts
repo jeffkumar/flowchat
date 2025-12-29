@@ -15,6 +15,8 @@ const FiltersSchema = z.object({
   date_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   date_end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   vendor_contains: z.string().min(1).max(200).optional(),
+  sender_contains: z.string().min(1).max(200).optional(),
+  recipient_contains: z.string().min(1).max(200).optional(),
   amount_min: z.number().finite().optional(),
   amount_max: z.number().finite().optional(),
 });

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/app/(auth)/auth";
-import { getProjectByIdForUser } from "@/lib/db/queries";
+import { getProjectByIdForUser, getProjectRole } from "@/lib/db/queries";
 import { getMicrosoftAccessTokenForUser } from "@/lib/integrations/microsoft/graph";
 import {
   syncMicrosoftDriveItemsToProjectDocs,
@@ -116,6 +116,14 @@ export async function POST(
   }
 
   const { projectId } = await params;
+  const role = await getProjectRole({ projectId, userId: session.user.id });
+  if (!role) {
+    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  }
+  if (role === "member") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   const project = await getProjectByIdForUser({
     projectId,
     userId: session.user.id,

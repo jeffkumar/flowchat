@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { SidebarToggle } from "@/components/sidebar-toggle";
 import { ProjectSwitcher } from "@/components/project-switcher";
-import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,6 +14,7 @@ import {
 import { Settings, Settings2 } from "lucide-react";
 import { ViewDocs } from "@/components/view-docs";
 import { useProjectSelector } from "@/hooks/use-project-selector";
+import { Button } from "@/components/ui/button";
 
 export function IntegrationsHeader() {
   const [isViewDocsOpen, setIsViewDocsOpen] = useState(false);
@@ -27,9 +27,6 @@ export function IntegrationsHeader() {
         <SidebarToggle />
         <ProjectSwitcher />
         <div className="ml-auto flex items-center gap-1">
-          <Button disabled size="sm" type="button" variant="outline">
-            Integrations
-          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="gap-1" type="button">

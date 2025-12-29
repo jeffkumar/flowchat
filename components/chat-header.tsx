@@ -14,10 +14,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { PlusIcon } from "./icons";
-import { Settings, Settings2 } from "lucide-react";
+import { Settings, Settings2, UserPlus } from "lucide-react";
 import { useSidebar } from "./ui/sidebar";
 import { ViewDocs } from "./view-docs";
 import type { VisibilityType } from "@/lib/types";
+import { useProjectSelector } from "@/hooks/use-project-selector";
+import { ShareProjectDialog } from "@/components/share-project-dialog";
 
 export type RetrievalRangePreset = "all" | "1d" | "7d" | "30d" | "90d";
 
@@ -37,6 +39,8 @@ function PureChatHeader({
   const router = useRouter();
   const { open } = useSidebar();
   const [isViewDocsOpen, setIsViewDocsOpen] = useState(false);
+  const [isShareOpen, setIsShareOpen] = useState(false);
+  const { selectedProjectId } = useProjectSelector();
 
   const { width: windowWidth } = useWindowSize();
 
@@ -45,29 +49,32 @@ function PureChatHeader({
       <SidebarToggle />
       <ProjectSwitcher />
 
-      {(!open || windowWidth < 768) && (
-        <Button
-          className="order-2 ml-auto h-8 px-2 md:order-1 md:ml-0 md:h-fit md:px-2"
-          onClick={() => {
-            router.push("/");
-            router.refresh();
-          }}
-          variant="outline"
-        >
-          <PlusIcon />
-          <span className="md:sr-only">New Chat</span>
-        </Button>
-      )}
-
       {!isReadonly && (
         <div className="ml-auto flex items-center gap-1">
+          {(!open || windowWidth < 768) && (
+            <Button
+              className="h-8 px-2 md:h-fit md:px-2"
+              onClick={() => {
+                router.push("/");
+                router.refresh();
+              }}
+              variant="outline"
+              type="button"
+            >
+              <PlusIcon />
+              <span className="md:sr-only">New Chat</span>
+            </Button>
+          )}
+
           <Button
-            onClick={() => router.push("/integrations")}
             size="sm"
             type="button"
             variant="outline"
+            disabled={!selectedProjectId}
+            onClick={() => setIsShareOpen(true)}
           >
-            Integrations
+            <UserPlus className="mr-2 h-4 w-4" />
+            Add people
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -94,6 +101,14 @@ function PureChatHeader({
             ignoredDocIds={ignoredDocIds}
             setIgnoredDocIds={setIgnoredDocIds}
           />
+
+          {selectedProjectId && (
+            <ShareProjectDialog
+              projectId={selectedProjectId}
+              open={isShareOpen}
+              onOpenChange={setIsShareOpen}
+            />
+          )}
         </div>
       )}
     </header>

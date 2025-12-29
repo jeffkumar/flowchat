@@ -146,6 +146,8 @@ export const invoice = pgTable(
       .unique()
       .references(() => projectDoc.id, { onDelete: "cascade" }),
     vendor: text("vendor"),
+    sender: text("sender"),
+    recipient: text("recipient"),
     invoiceNumber: text("invoice_number"),
     invoiceDate: date("invoice_date"),
     dueDate: date("due_date"),
@@ -411,3 +413,50 @@ export const projectIntegrationSource = pgTable(
 export type ProjectIntegrationSource = InferSelectModel<
   typeof projectIntegrationSource
 >;
+
+export const projectUser = pgTable(
+  "ProjectUser",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    projectId: uuid("projectId")
+      .notNull()
+      .references(() => project.id),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => user.id),
+    role: varchar("role", { enum: ["admin", "member"] }).notNull(),
+    createdAt: timestamp("createdAt").notNull(),
+  },
+  (table) => ({
+    projectUserIdx: uniqueIndex("project_user_idx").on(
+      table.projectId,
+      table.userId
+    ),
+  })
+);
+
+export type ProjectUser = InferSelectModel<typeof projectUser>;
+
+export const projectInvitation = pgTable(
+  "ProjectInvitation",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    projectId: uuid("projectId")
+      .notNull()
+      .references(() => project.id),
+    email: varchar("email").notNull(),
+    role: varchar("role", { enum: ["admin", "member"] }).notNull(),
+    invitedBy: uuid("invitedBy")
+      .notNull()
+      .references(() => user.id),
+    createdAt: timestamp("createdAt").notNull(),
+  },
+  (table) => ({
+    projectInvitationIdx: uniqueIndex("project_invitation_idx").on(
+      table.projectId,
+      table.email
+    ),
+  })
+);
+
+export type ProjectInvitation = InferSelectModel<typeof projectInvitation>;

@@ -15,6 +15,7 @@ import {
   getProjectByIdForUser,
   markProjectDocIndexError,
   markProjectDocIndexed,
+  upsertInvoiceForDocument,
   updateProjectDoc,
 } from "@/lib/db/queries";
 import {
@@ -66,6 +67,8 @@ export async function POST(request: Request) {
     const rawCategory = formData.get("category");
     const rawDescription = formData.get("description");
     const rawDocumentType = formData.get("documentType");
+    const rawInvoiceSender = formData.get("invoiceSender");
+    const rawInvoiceRecipient = formData.get("invoiceRecipient");
 
     if (!file) {
       return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
@@ -99,6 +102,16 @@ export async function POST(request: Request) {
       rawDocumentType === "invoice"
         ? rawDocumentType
         : "general_doc";
+
+    const invoiceSender =
+      typeof rawInvoiceSender === "string" && rawInvoiceSender.trim().length > 0
+        ? rawInvoiceSender.trim().slice(0, 500)
+        : undefined;
+    const invoiceRecipient =
+      typeof rawInvoiceRecipient === "string" &&
+      rawInvoiceRecipient.trim().length > 0
+        ? rawInvoiceRecipient.trim().slice(0, 500)
+        : undefined;
 
     if (
       (file.type === "text/csv" || file.type === "application/csv") &&
@@ -175,6 +188,16 @@ export async function POST(request: Request) {
         documentType,
         parseStatus: documentType === "general_doc" ? "pending" : "pending",
       });
+
+      if (documentType === "invoice" && (invoiceSender || invoiceRecipient)) {
+        await upsertInvoiceForDocument({
+          documentId: doc.id,
+          data: {
+            sender: invoiceSender,
+            recipient: invoiceRecipient,
+          },
+        });
+      }
 
       const shouldIngest =
         documentType === "general_doc" &&

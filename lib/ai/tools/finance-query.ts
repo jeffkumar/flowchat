@@ -15,7 +15,7 @@ type FinanceQueryProps = {
 export const financeQuery = ({ session }: FinanceQueryProps) =>
   tool({
     description:
-      "Run deterministic finance queries over parsed financial documents. Always use this for totals/sums/aggregations; never do math over retrieved chunks. Use filters.amount_min > 0 for deposits-only and filters.amount_max < 0 for withdrawals-only. IMPORTANT: date_end is exclusive; for a month, use the first day of the next month.",
+      "Run deterministic finance queries over parsed financial documents. Always use this for totals/sums/aggregations; never do math over retrieved chunks. Use filters.amount_min > 0 for deposits-only and filters.amount_max < 0 for withdrawals-only. IMPORTANT: date_end is exclusive; for a month, use the first day of the next month. The 'list' query type returns header fields and line items for invoices, and transaction details (including running balance) for bank statements. When checking for payments, ensure date_start is set to the invoice date or later.",
     inputSchema: z.object({
       query_type: z.enum(["sum", "list", "group_by_month", "group_by_merchant"]),
       document_type: z.enum(["bank_statement", "cc_statement", "invoice"]),
@@ -32,6 +32,8 @@ export const financeQuery = ({ session }: FinanceQueryProps) =>
           date_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
           date_end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
           vendor_contains: z.string().min(1).max(200).optional(),
+          sender_contains: z.string().min(1).max(200).optional(),
+          recipient_contains: z.string().min(1).max(200).optional(),
           amount_min: z.number().finite().optional(),
           amount_max: z.number().finite().optional(),
         })

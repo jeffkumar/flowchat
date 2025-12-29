@@ -6,6 +6,7 @@ import {
   deleteProjectDocsByProjectId,
   getProjectByIdForUser,
   getProjectDocsByProjectId,
+  getProjectRole,
   markProjectDocDeleting,
 } from "@/lib/db/queries";
 import { deleteByFilterFromTurbopuffer } from "@/lib/rag/turbopuffer";
@@ -31,6 +32,14 @@ export async function POST(
   }
 
   const { projectId } = await params;
+
+  const role = await getProjectRole({ projectId, userId: session.user.id });
+  if (!role) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  if (role === "member") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   const project = await getProjectByIdForUser({
     projectId,

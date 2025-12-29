@@ -11,6 +11,7 @@ import {
   getProjectDocById,
   deleteFinancialTransactionsByDocumentId,
   deleteInvoiceByDocumentId,
+  deleteInvoiceLineItemsByDocumentId,
   insertFinancialTransactions,
   insertInvoiceLineItems,
   updateProjectDoc,
@@ -314,6 +315,11 @@ export async function POST(
           : "invoice_v1";
 
     if (isCsv) {
+      if (doc.documentType === "invoice") {
+        throw new Error(
+          "CSV files are not supported for Invoices. Please use PDF or image formats, or choose Bank/CC Statement type."
+        );
+      }
       if (doc.documentType !== "bank_statement" && doc.documentType !== "cc_statement") {
         throw new Error("CSV parsing is only supported for bank/cc statements right now");
       }
@@ -473,23 +479,35 @@ export async function POST(
           : {};
       const lineItems = Array.isArray(obj.line_items) ? obj.line_items : [];
 
-      // On re-parse, replace invoice + line items for this document to reflect the latest file contents.
-      await deleteInvoiceByDocumentId({ documentId: doc.id });
+      // Replace line items for this document to reflect the latest file contents.
+      // Keep invoice row so manual metadata (e.g. sender/recipient) is not wiped.
+      await deleteInvoiceLineItemsByDocumentId({ documentId: doc.id });
       const invoiceRow = await upsertInvoiceForDocument({
         documentId: doc.id,
         data: {
-          vendor: typeof header.vendor === "string" ? header.vendor.trim().slice(0, 500) : null,
+          vendor:
+            typeof header.vendor === "string"
+              ? header.vendor.trim().slice(0, 500)
+              : undefined,
+          sender:
+            typeof header.vendor === "string"
+              ? header.vendor.trim().slice(0, 500)
+              : undefined,
           invoiceNumber:
             typeof header.invoice_number === "string"
               ? header.invoice_number.trim().slice(0, 200)
-              : null,
+              : undefined,
           invoiceDate: parseYmdDate(header.invoice_date),
           dueDate: parseYmdDate(header.due_date),
           subtotal: parseDecimalString(header.subtotal),
           tax: parseDecimalString(header.tax),
           total: parseDecimalString(header.total),
-          currency: typeof header.currency === "string" ? header.currency.trim().slice(0, 16) : null,
+          currency:
+            typeof header.currency === "string"
+              ? header.currency.trim().slice(0, 16)
+              : undefined,
         },
+        fillOnly: true,
       });
 
       const normalizedLineItems = lineItems

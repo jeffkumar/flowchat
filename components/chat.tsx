@@ -44,6 +44,29 @@ import { MultimodalInput } from "./multimodal-input";
 import { getChatHistoryPaginationKey } from "./sidebar-history";
 import { toast } from "./toast";
 import type { VisibilityType } from "@/lib/types";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+
+type UploadDocumentType =
+  | "general_doc"
+  | "bank_statement"
+  | "cc_statement"
+  | "invoice";
 
 function getSourceTypes(includeSlack: boolean): Array<"slack" | "docs"> {
   return includeSlack ? ["slack", "docs"] : ["docs"];
@@ -301,6 +324,129 @@ export function Chat({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const isArtifactVisible = useArtifactSelector((state) => state.isVisible);
 
+  const [invoiceSender, setInvoiceSender] = useState("");
+  const [invoiceRecipient, setInvoiceRecipient] = useState("");
+
+  useEffect(() => {
+    const sender = localStorage.getItem("invoice_sender_last");
+    const recipient = localStorage.getItem("invoice_recipient_last");
+    if (typeof sender === "string") setInvoiceSender(sender);
+    if (typeof recipient === "string") setInvoiceRecipient(recipient);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("invoice_sender_last", invoiceSender);
+  }, [invoiceSender]);
+
+  useEffect(() => {
+    localStorage.setItem("invoice_recipient_last", invoiceRecipient);
+  }, [invoiceRecipient]);
+
+  const { data: invoiceParties } = useSWR<{
+    senders: string[];
+    recipients: string[];
+  }>(
+    selectedProjectId ? `/api/projects/${selectedProjectId}/invoices/parties` : null,
+    fetcher
+  );
+
+  const [isDragging, setIsDragging] = useState(false);
+  const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
+  const [selectedFileType, setSelectedFileType] =
+    useState<UploadDocumentType>("general_doc");
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isReadonly) {
+      setIsDragging(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    if (isReadonly) return;
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      setDroppedFiles(files);
+    }
+  };
+
+  const uploadFile = async (file: File, type: UploadDocumentType) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("documentType", type);
+    if (type === "invoice") {
+      const sender = invoiceSender.trim();
+      const recipient = invoiceRecipient.trim();
+      if (sender) formData.append("invoiceSender", sender);
+      if (recipient) formData.append("invoiceRecipient", recipient);
+    }
+    if (selectedProjectId) {
+      formData.append("projectId", selectedProjectId);
+    }
+
+    try {
+      const response = await fetch("/api/files/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const { url, pathname, contentType } = data;
+
+        if (selectedProjectId) {
+          mutate(`/api/projects/${selectedProjectId}/docs`);
+        }
+
+        return {
+          url,
+          name: pathname,
+          contentType,
+        };
+      }
+      const { error } = await response.json();
+      toast({ type: "error", description: error });
+    } catch (_error) {
+      toast({
+        type: "error",
+        description: "Failed to upload file, please try again!",
+      });
+    }
+  };
+
+  const handleUploadDroppedFiles = async () => {
+    const filesToUpload = [...droppedFiles];
+    const type = selectedFileType;
+    setDroppedFiles([]);
+
+    try {
+      const uploadPromises = filesToUpload.map((file) => uploadFile(file, type));
+      const uploadedAttachments = await Promise.all(uploadPromises);
+      const successfullyUploadedAttachments = uploadedAttachments.filter(
+        (attachment): attachment is Attachment => attachment !== undefined
+      );
+
+      setAttachments((currentAttachments) => [
+        ...currentAttachments,
+        ...successfullyUploadedAttachments,
+      ]);
+    } catch (error) {
+      console.error("Error uploading dropped files!", error);
+    }
+  };
+
   useAutoResume({
     autoResume,
     initialMessages,
@@ -310,7 +456,26 @@ export function Chat({
 
   return (
     <>
-      <div className="overscroll-behavior-contain flex h-dvh min-w-0 touch-pan-y flex-col bg-background dark:bg-auth-charcoal">
+      <div
+        className={cn(
+          "overscroll-behavior-contain flex h-dvh min-w-0 touch-pan-y flex-col bg-background dark:bg-auth-charcoal relative",
+          isDragging && "ring-4 ring-primary ring-inset"
+        )}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {isDragging && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/60 backdrop-blur-sm pointer-events-none">
+            <div className="flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-primary bg-background p-8 shadow-xl">
+              <p className="text-lg font-medium">Drop files to upload</p>
+              <p className="text-sm text-muted-foreground">
+                Release to select document type
+              </p>
+            </div>
+          </div>
+        )}
+
         <ChatHeader
           chatId={id}
           isReadonly={isReadonly}
@@ -451,6 +616,107 @@ export function Chat({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        open={droppedFiles.length > 0}
+        onOpenChange={(open) => {
+          if (!open) setDroppedFiles([]);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Upload Files</DialogTitle>
+            <DialogDescription>
+              Select the type of document for the {droppedFiles.length} file(s)
+              you dropped.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-4">
+            <div className="mb-2 text-sm font-medium">Document Type</div>
+            <Select
+              value={selectedFileType}
+              onValueChange={(value) =>
+                setSelectedFileType(value as UploadDocumentType)
+              }
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Select type" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="general_doc">General doc</SelectItem>
+                <SelectItem value="bank_statement">Bank statement</SelectItem>
+                <SelectItem value="cc_statement">
+                  Credit card statement
+                </SelectItem>
+                <SelectItem value="invoice">Invoice</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {selectedFileType === "invoice" && (
+              <div className="mt-4 grid gap-3">
+                <div className="grid gap-1">
+                  <label
+                    className="text-xs text-muted-foreground"
+                    htmlFor="chat-drop-invoice-sender"
+                  >
+                    Sender
+                  </label>
+                  <Input
+                    autoComplete="off"
+                    id="chat-drop-invoice-sender"
+                    list="chat-drop-invoice-sender-options"
+                    onChange={(e) => setInvoiceSender(e.target.value)}
+                    placeholder="Select or type sender"
+                    value={invoiceSender}
+                  />
+                  <datalist id="chat-drop-invoice-sender-options">
+                    {(invoiceParties?.senders ?? []).map((value) => (
+                      <option key={value} value={value} />
+                    ))}
+                  </datalist>
+                </div>
+                <div className="grid gap-1">
+                  <label
+                    className="text-xs text-muted-foreground"
+                    htmlFor="chat-drop-invoice-recipient"
+                  >
+                    Recipient
+                  </label>
+                  <Input
+                    autoComplete="off"
+                    id="chat-drop-invoice-recipient"
+                    list="chat-drop-invoice-recipient-options"
+                    onChange={(e) => setInvoiceRecipient(e.target.value)}
+                    placeholder="Select or type recipient"
+                    value={invoiceRecipient}
+                  />
+                  <datalist id="chat-drop-invoice-recipient-options">
+                    {(invoiceParties?.recipients ?? []).map((value) => (
+                      <option key={value} value={value} />
+                    ))}
+                  </datalist>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-4 flex flex-col gap-1 max-h-40 overflow-y-auto rounded-md border p-2">
+              {droppedFiles.map((file, i) => (
+                <div key={`${file.name}-${i}`} className="text-xs truncate">
+                  {file.name}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDroppedFiles([])}>
+              Cancel
+            </Button>
+            <Button onClick={handleUploadDroppedFiles}>Upload</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

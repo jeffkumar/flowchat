@@ -113,6 +113,20 @@
       "when": 1766880000000,
       "tag": "0015_add_txn_hash",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1766968407133,
+      "tag": "0016_breezy_zzzax",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1767050000000,
+      "tag": "0017_invoice_parties",
+      "breakpoints": true
     }
   ]
 }
