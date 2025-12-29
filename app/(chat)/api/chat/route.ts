@@ -1446,7 +1446,7 @@ export async function POST(request: Request) {
         }
 
         const synergySystemPrompt =
-          "You are Synergy (FrontlineAgent). You answer questions based on retrieved context (Slack messages and uploaded docs).\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n- runCitationsAgent: validate claims against sources and add inline citations like 【N】.\n\nRules:\n- Use runFinanceAgent for any totals/sums/counts/aggregations; do not compute totals yourself.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n- If you used retrieved context, optionally call runCitationsAgent at the end to add citations.\n\nKeep clarifying questions short and actionable.";
+          "You are Synergy (FrontlineAgent).\n\nYou answer questions based primarily on the conversation (the user's messages and your prior replies). Retrieved context (Slack messages and uploaded docs) is OPTIONAL background and may be irrelevant; only use it when it clearly helps answer the current question.\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n- runCitationsAgent: validate claims against sources and add inline citations like 【N】.\n\nRules:\n- Use runFinanceAgent for any totals/sums/counts/aggregations; do not compute totals yourself.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n- If you used retrieved context, optionally call runCitationsAgent at the end to add citations.\n\nKeep clarifying questions short and actionable.";
 
         const baseMessages = convertToModelMessages(uiMessages);
 
@@ -1469,16 +1469,28 @@ export async function POST(request: Request) {
 
         // For aggregation/finance questions, don't inject retrieved/project context into the main prompt.
         // The frontline is required to call FinanceAgent tools instead of trusting potentially stale context.
-        const messagesWithContext =
-          retrievedContext && !isAggregationQuery
-            ? [
-                {
-                  role: "system" as const,
-                  content: `Here is retrieved context:\n\n${retrievedContext}${citationInstructions ?? ""}`,
-                },
-                ...baseMessages,
-              ]
-            : baseMessages;
+        const messagesWithContext = (() => {
+          if (!retrievedContext || isAggregationQuery) return baseMessages;
+
+          const lastUserIndex = (() => {
+            for (let i = baseMessages.length - 1; i >= 0; i -= 1) {
+              const m = baseMessages[i] as { role?: unknown };
+              if (m?.role === "user") return i;
+            }
+            return -1;
+          })();
+          if (lastUserIndex === -1) return baseMessages;
+
+          const injected = {
+            role: "user" as const,
+            content: `Background retrieved context (may be irrelevant):\n\n${retrievedContext}${citationInstructions ?? ""}`,
+          };
+          return [
+            ...baseMessages.slice(0, lastUserIndex),
+            injected,
+            ...baseMessages.slice(lastUserIndex),
+          ];
+        })();
 
         const basetenApiKey = process.env.BASETEN_API_KEY;
         const mustUseTextOnly =

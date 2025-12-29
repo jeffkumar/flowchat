@@ -80,6 +80,43 @@ export async function runFinanceAgent({
     return best;
   };
 
+  const inferSearchTermFromText = (text: string): string | null => {
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+
+    // Prefer quoted phrases: "RENEWAL MEMBERSHIP FEE"
+    const quoted = trimmed.match(/"([^"]{2,200})"/);
+    if (quoted && typeof quoted[1] === "string") {
+      const q = quoted[1].trim();
+      if (q.length > 1) return q;
+    }
+
+    // Heuristic: "was there a/an <thing> in/on/for ..."
+    const lower = trimmed.toLowerCase();
+    const m = lower.match(/\bwas\s+there\s+(?:an|a)\s+(.+?)\s+(?:in|on|for)\b/i);
+    if (m && typeof m[1] === "string") {
+      const term = trimmed.slice(m.index ?? 0).replace(/\s+/g, " ");
+      // Re-run extraction on original casing by locating the captured group boundaries.
+      const start = lower.indexOf(m[1], m.index ?? 0);
+      if (start >= 0) {
+        const raw = trimmed.slice(start, start + m[1].length).trim();
+        if (raw.length > 1 && raw.length <= 200) return raw;
+      }
+      // Fallback to lower-cased capture
+      const cap = m[1].trim();
+      if (cap.length > 1 && cap.length <= 200) return cap;
+    }
+
+    // If the user typed a mostly-uppercase token group, treat it as a search term.
+    const upperish = trimmed.match(/\b([A-Z0-9][A-Z0-9 &'\-]{5,120})\b/);
+    if (upperish && typeof upperish[1] === "string") {
+      const t = upperish[1].trim();
+      if (t.length > 1) return t;
+    }
+
+    return null;
+  };
+
   const listBusinessEntityNames = async (): Promise<string[]> => {
     if (!parsed.projectId) return [];
     const rows = await getProjectEntitySummaryForUser({
@@ -349,6 +386,212 @@ Return JSON only.`;
           ],
           citations: [],
           confidence: sum.count === 0 ? "low" : "medium",
+        });
+      }
+    }
+
+    // Business spend: find transactions matching a description term (e.g. "was there a RENEWAL MEMBERSHIP FEE in 2025?").
+    if (parsed.projectId && wantsBusiness && isSpendLike) {
+      const term = inferSearchTermFromText(parsed.question);
+      const year =
+        parsed.time_hint?.kind === "year"
+          ? parsed.time_hint.year ?? null
+          : inferYearFromText(parsed.question) ?? new Date().getUTCFullYear();
+
+      if (term && typeof year === "number" && Number.isFinite(year)) {
+        const businessNames = await listBusinessEntityNames();
+        const hintedName = parsed.entity_hint?.entity_name?.trim();
+        const inferredName = inferBusinessNameFromText(parsed.question, businessNames);
+        const entityName =
+          hintedName && hintedName.length > 0
+            ? hintedName
+            : inferredName
+              ? inferredName
+              : businessNames.length === 1
+                ? businessNames[0]
+                : null;
+
+        if (!entityName) {
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: "",
+            questions_for_user: [
+              businessNames.length > 0
+                ? `Which business should I search? (${businessNames.join(", ")})`
+                : "Which business should I search?",
+            ],
+            assumptions: [],
+            tool_calls: [],
+            citations: [],
+            confidence: "low",
+          });
+        }
+
+        const date_start = `${year}-01-01`;
+        const date_end = `${year + 1}-01-01`;
+
+        const ccPos = await financeList({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "cc_statement",
+          filters: {
+            entity_kind: "business",
+            entity_name: entityName,
+            vendor_contains: term,
+            date_start,
+            date_end,
+            amount_min: 0.01,
+          },
+        });
+        const ccPosRows = ccPos.query_type === "list" ? ccPos.rows : [];
+
+        const ccNeg =
+          ccPosRows.length === 0
+            ? await financeList({
+                userId: session.user.id,
+                projectId: parsed.projectId,
+                documentType: "cc_statement",
+                filters: {
+                  entity_kind: "business",
+                  entity_name: entityName,
+                  vendor_contains: term,
+                  date_start,
+                  date_end,
+                  amount_max: -0.01,
+                },
+              })
+            : null;
+        const ccNegRows = ccNeg && ccNeg.query_type === "list" ? ccNeg.rows : [];
+
+        const bankPos =
+          ccPosRows.length === 0 && ccNegRows.length === 0
+            ? await financeList({
+                userId: session.user.id,
+                projectId: parsed.projectId,
+                documentType: "bank_statement",
+                filters: {
+                  entity_kind: "business",
+                  entity_name: entityName,
+                  vendor_contains: term,
+                  date_start,
+                  date_end,
+                },
+              })
+            : null;
+        const bankRows = bankPos && bankPos.query_type === "list" ? bankPos.rows : [];
+
+        const absDecimalString = (s: string): string => (s.startsWith("-") ? s.slice(1) : s);
+        const isTxnRow = (row: unknown): row is { txnDate: string; description: string | null; amount: string } => {
+          if (!row || typeof row !== "object") return false;
+          const r = row as Record<string, unknown>;
+          return (
+            typeof r.txnDate === "string" &&
+            typeof r.amount === "string" &&
+            (typeof r.description === "string" || r.description === null)
+          );
+        };
+
+        const summarizeRows = (rows: unknown[], negAmounts: boolean): string[] => {
+          const out: string[] = [];
+          for (const row of rows) {
+            if (!isTxnRow(row)) continue;
+            const desc = typeof row.description === "string" ? row.description.trim() : "";
+            const amount = negAmounts ? absDecimalString(row.amount) : row.amount;
+            out.push(`${row.txnDate} • ${desc || "(no description)"} • $${amount}`);
+            if (out.length >= 20) break;
+          }
+          return out;
+        };
+
+        const found =
+          ccPosRows.length > 0 || ccNegRows.length > 0 || bankRows.length > 0;
+        const sourceLabel =
+          ccPosRows.length > 0
+            ? "business credit card (positive amounts)"
+            : ccNegRows.length > 0
+              ? "business credit card (negative amounts; shown as absolute)"
+              : bankRows.length > 0
+                ? "business bank statement"
+                : null;
+
+        const lines =
+          ccPosRows.length > 0
+            ? summarizeRows(ccPosRows, false)
+            : ccNegRows.length > 0
+              ? summarizeRows(ccNegRows, true)
+              : bankRows.length > 0
+                ? summarizeRows(bankRows, false)
+                : [];
+
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: found
+            ? [
+                `Yes — I found matching transactions for "${term}" in ${entityName} (${year}).`,
+                sourceLabel ? `Source: ${sourceLabel}` : "",
+                "",
+                "Matches (date • description • amount):",
+                ...lines,
+                lines.length >= 20 ? "\n(Showing first 20 matches.)" : "",
+              ]
+                .filter((s) => s.length > 0)
+                .join("\n")
+            : `No — I didn’t find any ${entityName} transactions in ${year} whose description matches "${term}".`,
+          questions_for_user: [],
+          assumptions: [
+            "Matching is done by searching the transaction description field.",
+            "For credit-card statements, charges may be stored as positive or negative amounts depending on export; this check tries both conventions.",
+          ],
+          tool_calls: [
+            {
+              toolName: "financeList",
+              input: {
+                document_type: "cc_statement",
+                entity_kind: "business",
+                entity_name: entityName,
+                vendor_contains: term,
+                date_start,
+                date_end,
+                amount_min: 0.01,
+              },
+              output: ccPos,
+            },
+            ...(ccNeg
+              ? [
+                  {
+                    toolName: "financeList",
+                    input: {
+                      document_type: "cc_statement",
+                      entity_kind: "business",
+                      entity_name: entityName,
+                      vendor_contains: term,
+                      date_start,
+                      date_end,
+                      amount_max: -0.01,
+                    },
+                    output: ccNeg,
+                  },
+                ]
+              : []),
+            ...(bankPos
+              ? [
+                  {
+                    toolName: "financeList",
+                    input: {
+                      document_type: "bank_statement",
+                      entity_kind: "business",
+                      entity_name: entityName,
+                      vendor_contains: term,
+                      date_start,
+                      date_end,
+                    },
+                    output: bankPos,
+                  },
+                ]
+              : []),
+          ],
+          citations: [],
+          confidence: found ? "medium" : "low",
         });
       }
     }
@@ -1592,6 +1835,9 @@ Return JSON only.`;
         q.includes("amex") ||
         q.includes("visa") ||
         q.includes("mastercard");
+      const wantsSpendSearch =
+        (q.includes("was there") || q.includes("did i") || q.includes("do i have")) &&
+        (q.includes("fee") || q.includes("charge") || q.includes("charges") || q.includes("spent") || q.includes("spend"));
 
       if (wantsPersonal && isIncomeLike) {
         const year =
@@ -1640,6 +1886,124 @@ Return JSON only.`;
             confidence: sum.count === 0 ? "low" : "medium",
           });
         }
+      }
+
+      // Fallback: business spend search by description (when model output is empty/invalid).
+      if (wantsBusinessOnly && isSpendLike && wantsSpendSearch) {
+        const businessNames = await listBusinessEntityNames();
+        const year =
+          parsed.time_hint?.kind === "year"
+            ? parsed.time_hint.year ?? null
+            : inferYearFromText(parsed.question) ?? new Date().getUTCFullYear();
+
+        const hintedName = parsed.entity_hint?.entity_name?.trim();
+        const inferredName = inferBusinessNameFromText(parsed.question, businessNames);
+        const entityName =
+          hintedName && hintedName.length > 0
+            ? hintedName
+            : inferredName
+              ? inferredName
+              : businessNames.length === 1
+                ? businessNames[0]
+                : null;
+
+        const term = inferSearchTermFromText(parsed.question);
+
+        if (!entityName) {
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: "",
+            questions_for_user: [
+              businessNames.length > 0
+                ? `Which business should I search? (${businessNames.join(", ")})`
+                : "Which business should I search?",
+            ],
+            assumptions: [],
+            tool_calls: [],
+            citations: [],
+            confidence: "low",
+          });
+        }
+
+        if (!term || !(typeof year === "number" && Number.isFinite(year))) {
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: "",
+            questions_for_user: [
+              "What exact description should I search for? (You can put it in quotes, e.g. \"RENEWAL MEMBERSHIP FEE\".)",
+            ],
+            assumptions: [],
+            tool_calls: [],
+            citations: [],
+            confidence: "low",
+          });
+        }
+
+        const date_start = `${year}-01-01`;
+        const date_end = `${year + 1}-01-01`;
+
+        const list = await financeList({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "cc_statement",
+          filters: {
+            entity_kind: "business",
+            entity_name: entityName,
+            vendor_contains: term,
+            date_start,
+            date_end,
+          },
+        });
+
+        const rowsAny: unknown[] = list.query_type === "list" ? (list.rows as unknown[]) : [];
+        const isTxnRow = (row: unknown): row is { txnDate: string; description: string | null; amount: string } => {
+          if (!row || typeof row !== "object") return false;
+          const r = row as Record<string, unknown>;
+          return (
+            typeof r.txnDate === "string" &&
+            typeof r.amount === "string" &&
+            (typeof r.description === "string" || r.description === null)
+          );
+        };
+
+        const lines = rowsAny
+          .filter(isTxnRow)
+          .slice(0, 20)
+          .map((r) => `${r.txnDate} • ${(r.description ?? "").trim() || "(no description)"} • $${r.amount}`);
+
+        const found = lines.length > 0;
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: found
+            ? [
+                `Yes — I found matching transactions for "${term}" in ${entityName} (${year}).`,
+                "",
+                "Matches (date • description • amount):",
+                ...lines,
+                rowsAny.length > 20 ? "\n(Showing first 20 matches.)" : "",
+              ]
+                .filter((s) => s.length > 0)
+                .join("\n")
+            : `No — I didn’t find any ${entityName} credit-card transactions in ${year} whose description matches "${term}".`,
+          questions_for_user: [],
+          assumptions: ["Matching is done by searching the transaction description field."],
+          tool_calls: [
+            {
+              toolName: "financeList",
+              input: {
+                document_type: "cc_statement",
+                entity_kind: "business",
+                entity_name: entityName,
+                vendor_contains: term,
+                date_start,
+                date_end,
+              },
+              output: list,
+            },
+          ],
+          citations: [],
+          confidence: found ? "medium" : "low",
+        });
       }
 
       if (wantsBusinessOnly && isIncomeLike) {
