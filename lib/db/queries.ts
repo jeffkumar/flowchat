@@ -2913,7 +2913,7 @@ export async function financeGroupByMerchant({
         )
         .where(and(...whereClauses))
         .groupBy(invoice.vendor)
-        .orderBy(desc(sql`COALESCE(SUM(${invoice.total}), 0)`))
+        .orderBy(desc(sql`ABS(COALESCE(SUM(${invoice.total}), 0))`))
         .limit(200);
 
       return {
@@ -2961,7 +2961,7 @@ export async function financeGroupByMerchant({
         ORDER BY ${dedupeKey} ASC, ${projectDoc.createdAt} ASC, ${financialTransaction.id} ASC
       ) t
       GROUP BY t.merchant
-      ORDER BY COALESCE(SUM(t.amount), 0) DESC
+      ORDER BY ABS(COALESCE(SUM(t.amount), 0)) DESC
       LIMIT 200
     `);
 

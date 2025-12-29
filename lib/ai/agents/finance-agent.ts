@@ -726,7 +726,7 @@ Return JSON only.`;
     }
 
     // Personal spend summary: use transaction description via group_by_merchant (merchant=description for statements).
-    if (wantsSummary && isSpendLike && wantsPersonal && parsed.projectId) {
+    if (wantsSummary && isSpendLike && wantsPersonal && parsed.projectId && !monthFromText) {
       const year =
         parsed.time_hint?.kind === "year"
           ? parsed.time_hint.year ?? null
@@ -1092,11 +1092,41 @@ Return JSON only.`;
             ? " (note: amounts were stored as negatives; total shown as absolute)"
             : "";
 
+        const breakdownLines = await (async () => {
+          try {
+            const top = await financeGroupByMerchant({
+              userId: session.user.id,
+              projectId: parsed.projectId,
+              documentType: "cc_statement",
+              filters: {
+                doc_ids: [doc.id],
+                date_start,
+                date_end,
+                ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }),
+              },
+            });
+            const rows = Array.isArray(top.rows) ? top.rows : [];
+            if (rows.length === 0) return "";
+            const lines = rows.slice(0, 8).map((r) => {
+              const merchant =
+                typeof r.merchant === "string" && r.merchant.trim().length > 0
+                  ? r.merchant.trim()
+                  : "(unknown)";
+              const amt = typeof r.total === "string" ? absDecimalString(r.total) : String(r.total);
+              return `- ${merchant}: $${amt}`;
+            });
+            return `\n\nTop spending by merchant:\n${lines.join("\n")}`;
+          } catch (err) {
+            console.warn("FinanceAgent: breakdown shortcut failed", err);
+            return "";
+          }
+        })();
+
         return SpecialistAgentResponseSchema.parse({
           kind: "finance",
           answer_draft: wantsBusiness && entityName
-            ? `You spent $${total} on ${entityName}${mentionsAmex ? " Amex" : ""} in ${year}-${mm}${signNote}.`
-            : `You spent $${total} on your personal credit card${mentionsAmex ? " (Amex)" : ""} in ${year}-${mm}${signNote}.`,
+            ? `You spent $${total} on ${entityName}${mentionsAmex ? " Amex" : ""} in ${year}-${mm}${signNote}.${breakdownLines}`
+            : `You spent $${total} on your personal credit card${mentionsAmex ? " (Amex)" : ""} in ${year}-${mm}${signNote}.${breakdownLines}`,
           questions_for_user: [],
           assumptions: ["Spend is computed from cc_statement transactions for the specified month; transfers/payments are not included unless present as transactions."],
           tool_calls: [
@@ -1110,6 +1140,17 @@ Return JSON only.`;
                 ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }),
               },
               output: used,
+            },
+            {
+              toolName: "financeGroupByMerchant",
+              input: {
+                document_type: "cc_statement",
+                doc_ids: [doc.id],
+                date_start,
+                date_end,
+                ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }),
+              },
+              output: { note: "See answer text for summary" },
             },
           ],
           citations: [],
@@ -1407,7 +1448,8 @@ Return JSON only.`;
     // Deterministic fallback: at least ask the right clarifying question, or compute when unambiguous.
     try {
       const q = parsed.question.toLowerCase();
-      const wantsBusinessOnly = q.includes("business") && !q.includes("personal") && !q.includes("combined");
+      const wantsPersonal = q.includes("personal") || parsed.entity_hint?.entity_kind === "personal";
+      const wantsBusinessOnly = q.includes("business") && !wantsPersonal && !q.includes("combined");
       const isIncomeLike =
         q.includes("income") ||
         q.includes("revenue") ||
@@ -1416,6 +1458,7 @@ Return JSON only.`;
         q.includes("how much did we make") ||
         q.includes("bring in") ||
         q.includes("made");
+      
       const isSpendLike =
         q.includes("spend") ||
         q.includes("spent") ||
@@ -1430,6 +1473,55 @@ Return JSON only.`;
         q.includes("amex") ||
         q.includes("visa") ||
         q.includes("mastercard");
+
+      if (wantsPersonal && isIncomeLike) {
+        const year =
+          parsed.time_hint?.kind === "year"
+            ? parsed.time_hint.year ?? null
+            : inferYearFromText(parsed.question) ?? new Date().getUTCFullYear();
+
+        if (typeof year === "number" && Number.isFinite(year)) {
+          const sum = await financeSum({
+            userId: session.user.id,
+            projectId: parsed.projectId,
+            documentType: "bank_statement",
+            filters: {
+              entity_kind: "personal",
+              amount_min: 0.01,
+              exclude_categories: ["transfer", "credit card payment"],
+              date_start: `${year}-01-01`,
+              date_end: `${year + 1}-01-01`,
+            },
+          });
+
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: `Personal deposit income for ${year}: ${sum.total} (rows: ${sum.count}).`,
+            questions_for_user:
+              sum.count === 0
+                ? [
+                    `I found 0 matching personal bank-statement deposits for ${year}. Are your personal statements tagged "Personal"?`,
+                  ]
+                : [],
+            assumptions: [
+              "Income is computed as bank-statement deposits (amount > 0) to Personal accounts, excluding transfers and credit-card payments.",
+            ],
+            tool_calls: [
+              {
+                toolName: "financeSum",
+                input: {
+                  document_type: "bank_statement",
+                  entity_kind: "personal",
+                  year,
+                },
+                output: sum,
+              },
+            ],
+            citations: [],
+            confidence: sum.count === 0 ? "low" : "medium",
+          });
+        }
+      }
 
       if (wantsBusinessOnly && isIncomeLike) {
         const businessNames = await listBusinessEntityNames();
