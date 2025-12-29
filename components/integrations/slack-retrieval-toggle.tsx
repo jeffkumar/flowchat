@@ -5,6 +5,11 @@ import { useRetrievalSettings } from "@/hooks/use-retrieval-settings";
 import { Button } from "@/components/ui/button";
 
 export function SlackRetrievalToggle() {
+  const slackEnabled = process.env.NEXT_PUBLIC_ENABLE_SLACK_RETRIEVAL === "1";
+  if (!slackEnabled) {
+    return null;
+  }
+
   const { includeSlack, setIncludeSlack } = useRetrievalSettings();
   const id = useId();
 

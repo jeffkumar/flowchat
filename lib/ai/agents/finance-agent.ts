@@ -2,7 +2,7 @@ import { generateText, tool } from "ai";
 import type { Session } from "next-auth";
 import { z } from "zod";
 import { myProvider } from "@/lib/ai/providers";
-import { financeQuery } from "@/lib/ai/tools/finance-query";
+import { financeQuery as financeQueryTool } from "@/lib/ai/tools/finance-query";
 import {
   financeGroupByMonth,
   financeGroupByMerchant,
@@ -18,12 +18,20 @@ import {
 
 const FinanceAgentInputSchema = z.object({
   question: z.string().min(1).max(4000),
+  chat_history: z.string().max(10_000).optional(),
   // Optional hints the frontline can pass
   projectId: z.string().uuid().optional(),
   entity_hint: z
     .object({
       entity_kind: z.enum(["personal", "business"]).optional(),
       entity_name: z.string().min(1).max(200).optional(),
+    })
+    .optional(),
+  preferences: z
+    .object({
+      doc_type: z.enum(["cc_statement", "bank_statement"]).optional(),
+      card_brand: z.enum(["amex"]).optional(),
+      credit_card_only: z.boolean().optional(),
     })
     .optional(),
   time_hint: z
@@ -95,6 +103,100 @@ export async function runFinanceAgent({
     return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b));
   };
 
+  const resolveEntityScope = async (): Promise<{ entity_kind: "personal" | "business"; entity_name: string } | null> => {
+    const q = parsed.question.toLowerCase();
+    const hintedKind = parsed.entity_hint?.entity_kind;
+    const hintedName = parsed.entity_hint?.entity_name?.trim();
+
+    // Always normalize personal to a stable name.
+    const wantsPersonal = hintedKind === "personal" || q.includes("personal");
+    const wantsBusiness = hintedKind === "business" || q.includes("business");
+
+    if (wantsPersonal && !wantsBusiness) {
+      return { entity_kind: "personal", entity_name: "Personal" };
+    }
+
+    const projectIdValue = parsed.projectId;
+    if (!projectIdValue) {
+      if (wantsBusiness && hintedName) {
+        return { entity_kind: "business", entity_name: hintedName };
+      }
+      if (wantsPersonal) {
+        return { entity_kind: "personal", entity_name: "Personal" };
+      }
+      return null;
+    }
+
+    const entityRows = await getProjectEntitySummaryForUser({
+      userId: session.user.id,
+      projectId: projectIdValue,
+    });
+
+    const businessNames: string[] = [];
+    let hasPersonal = false;
+    for (const row of entityRows) {
+      if (row.entityKind === "personal") hasPersonal = true;
+      if (row.entityKind !== "business") continue;
+      if (typeof row.entityName !== "string") continue;
+      const name = row.entityName.trim();
+      if (name.length > 0) businessNames.push(name);
+    }
+    const uniqueBusinesses = Array.from(new Set(businessNames)).sort((a, b) => a.localeCompare(b));
+
+    if (!wantsBusiness && hasPersonal && uniqueBusinesses.length === 0) {
+      return { entity_kind: "personal", entity_name: "Personal" };
+    }
+
+    if (wantsBusiness) {
+      if (hintedName && hintedName.length > 0) {
+        return { entity_kind: "business", entity_name: hintedName };
+      }
+      const inferred = inferBusinessNameFromText(parsed.question, uniqueBusinesses);
+      if (inferred) {
+        return { entity_kind: "business", entity_name: inferred };
+      }
+      if (uniqueBusinesses.length === 1) {
+        return { entity_kind: "business", entity_name: uniqueBusinesses[0] };
+      }
+      return null;
+    }
+
+    // No explicit personal/business: only auto-select if unambiguous.
+    if (hasPersonal && uniqueBusinesses.length === 0) {
+      return { entity_kind: "personal", entity_name: "Personal" };
+    }
+    if (!hasPersonal && uniqueBusinesses.length === 1) {
+      return { entity_kind: "business", entity_name: uniqueBusinesses[0] };
+    }
+    if (hasPersonal && uniqueBusinesses.length === 1) {
+      // Still ambiguous without user intent; ask.
+      return null;
+    }
+    return null;
+  };
+
+  const resolvedEntityScope = await resolveEntityScope();
+  if (!resolvedEntityScope) {
+    const businessNames = await listBusinessEntityNames();
+    const options = [
+      "Personal",
+      ...businessNames.map((n) => `Business: ${n}`),
+    ];
+    return SpecialistAgentResponseSchema.parse({
+      kind: "finance",
+      answer_draft: "",
+      questions_for_user: [
+        options.length > 0
+          ? `Which entity should I use? (${options.join(", ")})`
+          : "Which entity should I use (Personal or a specific business)?",
+      ],
+      assumptions: [],
+      tool_calls: [],
+      citations: [],
+      confidence: "low",
+    });
+  }
+
   const parseRollingWindowDays = (text: string): number | null => {
     const preset = text.match(
       /\b(?:last|past)\s+(week|month|quarter|year)\b|\b(?:last)\s+(90)\s+days\b/i
@@ -156,6 +258,94 @@ export async function runFinanceAgent({
     return out;
   };
 
+  const parseCents = (amount: string): number | null => {
+    const trimmed = amount.trim();
+    const m = trimmed.match(/^(-)?(\d+)(?:\.(\d{1,2}))?$/);
+    if (!m) return null;
+    const neg = Boolean(m[1]);
+    const dollars = Number(m[2]);
+    const centsPart = m[3] ?? "0";
+    const cents = Number(centsPart.padEnd(2, "0"));
+    if (!Number.isFinite(dollars) || !Number.isFinite(cents)) return null;
+    const value = dollars * 100 + cents;
+    return neg ? -value : value;
+  };
+
+  const formatDollars = (cents: number): string => {
+    const sign = cents < 0 ? "-" : "";
+    const abs = Math.abs(cents);
+    const dollars = Math.floor(abs / 100);
+    const rem = String(abs % 100).padStart(2, "0");
+    return `${sign}${dollars}.${rem}`;
+  };
+
+  const categorizeExpense = (description: string): string => {
+    const d = description.toLowerCase();
+    if (/\b(uber|lyft|taxi|rideshare|parking|toll|metro|transit|train)\b/.test(d)) {
+      return "Transport";
+    }
+    if (/\b(hotel|airbnb|vrbo|flight|airlines|delta|united|american airlines|southwest|jetblue)\b/.test(d)) {
+      return "Travel";
+    }
+    if (/\b(restaurant|cafe|coffee|starbucks|doordash|uber eats|grubhub|postmates|bar|brewery)\b/.test(d)) {
+      return "Dining";
+    }
+    if (/\b(grocery|supermarket|market|trader joe|whole foods|safeway|kroger|costco)\b/.test(d)) {
+      return "Groceries";
+    }
+    if (/\b(netflix|spotify|hulu|prime video|youtube|icloud|google one|dropbox|subscription|subscr)\b/.test(d)) {
+      return "Subscriptions";
+    }
+    if (/\b(amazon|target|walmart|shop|store|retail|clothing|apparel)\b/.test(d)) {
+      return "Shopping";
+    }
+    if (/\b(movie|cinema|theater|ticketmaster|stubhub|concert|show|museum|park|ski|resort|bowling|arcade)\b/.test(d)) {
+      return "Entertainment";
+    }
+    if (/\b(gym|fitness|yoga|pilates|spa|massage)\b/.test(d)) {
+      return "Fitness";
+    }
+    if (/\b(pharmacy|doctor|dentist|medical|hospital|clinic)\b/.test(d)) {
+      return "Health";
+    }
+    return "Other";
+  };
+
+  const categorizeBusinessExpense = (description: string): string => {
+    const d = description.toLowerCase();
+    if (/\b(google workspace|gusto|quickbooks|xero|stripe|shopify|notion|figma|linear|github|aws|azure|gcp|openai|anthropic|slack|zoom)\b/.test(d)) {
+      return "Software / SaaS";
+    }
+    if (/\b(ads|adwords|google ads|facebook|meta|instagram|tiktok|linkedin|twitter|x)\b/.test(d)) {
+      return "Marketing / Ads";
+    }
+    if (/\b(consult|contract|freelance|agency|retainer|legal|attorney|law|accounting|cpa|bookkeep)\b/.test(d)) {
+      return "Professional services";
+    }
+    if (/\b(uber|lyft|taxi|rideshare|parking|toll|metro|transit|train)\b/.test(d)) {
+      return "Transport";
+    }
+    if (/\b(hotel|airbnb|vrbo|flight|airlines|delta|united|american airlines|southwest|jetblue)\b/.test(d)) {
+      return "Travel";
+    }
+    if (/\b(restaurant|cafe|coffee|starbucks|doordash|uber eats|grubhub|postmates|meal)\b/.test(d)) {
+      return "Meals";
+    }
+    if (/\b(hosting|domain|dns|mailgun|sendgrid|twilio)\b/.test(d)) {
+      return "Infrastructure";
+    }
+    if (/\b(office|cowork|wework|supplies|staples|fedex|ups|usps|shipping|print)\b/.test(d)) {
+      return "Office / Ops";
+    }
+    if (/\b(equipment|hardware|laptop|computer|monitor|camera|iphone|phone|electronics)\b/.test(d)) {
+      return "Equipment";
+    }
+    if (/\b(tax|irs|franchise tax|state tax|fee)\b/.test(d)) {
+      return "Taxes / fees";
+    }
+    return "Other";
+  };
+
   const system = `You are FinanceAgent.
 
 You MUST return ONLY valid JSON that matches this schema:
@@ -180,11 +370,14 @@ Rules:
 - Keep answer_draft concise; frontline will present final answer.
 `;
 
-  const prompt = `User question:
+  const prompt = `Conversation context (may be empty):
+${parsed.chat_history ?? ""}
+
+User question:
 ${parsed.question}
 
 Hints:
-${JSON.stringify({ entity_hint: parsed.entity_hint ?? null, time_hint: parsed.time_hint ?? null }, null, 2)}
+${JSON.stringify({ entity_hint: resolvedEntityScope, time_hint: parsed.time_hint ?? null }, null, 2)}
 
 Return JSON only.`;
 
@@ -198,9 +391,11 @@ Return JSON only.`;
     const isIncomeLike =
       q.includes("income") ||
       q.includes("revenue") ||
+      q.includes("deposit") ||
       q.includes("deposits") ||
       q.includes("bring in") ||
-      q.includes("made");
+      q.includes("how much did i make") ||
+      q.includes("how much did we make");
     const monthFromText = (() => {
       const byName: Record<string, number> = {
         january: 1,
@@ -231,6 +426,11 @@ Return JSON only.`;
       for (const [k, v] of Object.entries(byName)) {
         if (q.includes(k)) return v;
       }
+      const m = q.match(/\b(19\d{2}|20\d{2})-(\d{2})\b/);
+      if (m) {
+        const month = Number(m[2]);
+        if (Number.isFinite(month) && month >= 1 && month <= 12) return month;
+      }
       return null;
     })();
     const wantsSummary =
@@ -256,11 +456,163 @@ Return JSON only.`;
       q.includes("visa") ||
       q.includes("mastercard");
     const wantsPersonal =
-      q.includes("personal") || parsed.entity_hint?.entity_kind === "personal";
-    const wantsBusiness = q.includes("business") || parsed.entity_hint?.entity_kind === "business";
+      q.includes("personal") || q.includes("personally") || resolvedEntityScope.entity_kind === "personal";
+    const wantsBusiness = q.includes("business") || resolvedEntityScope.entity_kind === "business";
 
     // Personal income over a rolling window (e.g. "last 90 days", "past 3 weeks"): sum bank_statement deposits.
     const rollingDays = parseRollingWindowDays(parsed.question);
+
+    // Personal spend over a rolling window (e.g. "last 90 days", "past 3 months").
+    // Prefer bank-statement outflows (excluding transfers/cc payments) and optionally add cc charges.
+    if (parsed.projectId && wantsPersonal && isSpendLike && typeof rollingDays === "number") {
+      const dayMs = 24 * 60 * 60 * 1000;
+      const now = Date.now();
+      const start = new Date(now - rollingDays * dayMs);
+      const end = new Date(now + dayMs); // exclusive end = tomorrow (UTC)
+      const date_start = start.toISOString().slice(0, 10);
+      const date_end = end.toISOString().slice(0, 10);
+
+      const docs = await getProjectDocsByProjectId({ projectId: parsed.projectId });
+      const personalBankDocs = docs
+        .filter((d) => d.documentType === "bank_statement")
+        .filter((d) => d.entityKind === "personal");
+      const personalCcDocs = docs
+        .filter((d) => d.documentType === "cc_statement")
+        .filter((d) => d.entityKind === "personal");
+
+      const bankDocIds = personalBankDocs.map((d) => d.id);
+      const ccDocIds = personalCcDocs.map((d) => d.id);
+
+      if (bankDocIds.length === 0 && ccDocIds.length === 0) {
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: "",
+          questions_for_user: [
+            `I don’t see any Personal bank or credit-card statements tagged Personal. Which statement(s) should I use to summarize your personal spend in the last ${rollingDays} days?`,
+          ],
+          assumptions: [],
+          tool_calls: [],
+          citations: [],
+          confidence: "low",
+        });
+      }
+
+      const bankFilters = {
+        doc_ids: bankDocIds,
+        date_start,
+        date_end,
+        amount_max: -0.01,
+        exclude_categories: ["transfer", "credit card payment"],
+      };
+
+      const bankTotal = bankDocIds.length
+        ? await financeSum({
+            userId: session.user.id,
+            projectId: parsed.projectId,
+            documentType: "bank_statement",
+            filters: bankFilters,
+          })
+        : { total: "0", count: 0 };
+
+      const bankTop = bankDocIds.length
+        ? await financeGroupByMerchant({
+            userId: session.user.id,
+            projectId: parsed.projectId,
+            documentType: "bank_statement",
+            filters: bankFilters,
+          })
+        : { rows: [] as unknown[] };
+
+      const ccPos = ccDocIds.length
+        ? await financeSum({
+            userId: session.user.id,
+            projectId: parsed.projectId,
+            documentType: "cc_statement",
+            filters: { doc_ids: ccDocIds, date_start, date_end, amount_min: 0.01 },
+          })
+        : { total: "0", count: 0 };
+
+      const ccNeg =
+        ccDocIds.length && ccPos.count === 0
+          ? await financeSum({
+              userId: session.user.id,
+              projectId: parsed.projectId,
+              documentType: "cc_statement",
+              filters: { doc_ids: ccDocIds, date_start, date_end, amount_max: -0.01 },
+            })
+          : null;
+
+      const ccUsed = ccNeg && ccPos.count === 0 ? ccNeg : ccPos;
+      const ccToolInput =
+        ccNeg && ccPos.count === 0
+          ? { document_type: "cc_statement", doc_ids: ccDocIds, date_start, date_end, amount_max: -0.01 }
+          : { document_type: "cc_statement", doc_ids: ccDocIds, date_start, date_end, amount_min: 0.01 };
+
+      const topRows = Array.isArray((bankTop as any).rows) ? (bankTop as any).rows.slice(0, 15) : [];
+      const topLines = topRows.map((r: any) => {
+        const merchant = typeof r?.merchant === "string" && r.merchant.trim().length > 0 ? r.merchant.trim() : "(unknown)";
+        const total = typeof r?.total === "string" ? r.total : "";
+        const count = typeof r?.count === "number" ? r.count : null;
+        return `- ${merchant}: ${total}${typeof count === "number" ? ` (${count} txns)` : ""}`;
+      });
+
+      const bankCount = typeof (bankTotal as any).count === "number" ? (bankTotal as any).count : 0;
+      const ccCount = typeof (ccUsed as any).count === "number" ? (ccUsed as any).count : 0;
+
+      return SpecialistAgentResponseSchema.parse({
+        kind: "finance",
+        answer_draft: [
+          `Personal spending in the last ${rollingDays} days (${date_start} to ${date_end}):`,
+          `- Bank outflows (excl transfers/cc payments): ${bankTotal.total} (rows: ${bankTotal.count})`,
+          `- Credit-card charges: ${ccUsed.total} (rows: ${ccUsed.count})`,
+          topLines.length > 0 ? "" : "",
+          topLines.length > 0 ? "Top bank outflow descriptions:" : "",
+          ...topLines,
+        ]
+          .filter((s) => s.length > 0)
+          .join("\n"),
+        questions_for_user: [],
+        assumptions: [
+          "Bank spend is computed as bank-statement outflows (amount < 0), excluding transfers and credit-card payments.",
+          "Credit-card spend is computed from cc_statement charges; if positive-amount charges return 0 rows, a negative-amount convention is tried.",
+          "The date range is computed in UTC; date_end is exclusive.",
+        ],
+        tool_calls: [
+          {
+            toolName: "financeSum",
+            input: {
+              document_type: "bank_statement",
+              doc_ids: bankDocIds,
+              date_start,
+              date_end,
+              amount_max: -0.01,
+              exclude_categories: ["transfer", "credit card payment"],
+            },
+            output: bankTotal,
+          },
+          {
+            toolName: "financeSum",
+            input: ccToolInput,
+            output: ccUsed,
+          },
+          {
+            toolName: "financeGroupByMerchant",
+            input: {
+              document_type: "bank_statement",
+              doc_ids: bankDocIds,
+              date_start,
+              date_end,
+              amount_max: -0.01,
+              exclude_categories: ["transfer", "credit card payment"],
+            },
+            output: bankTop,
+          },
+        ],
+        citations: [],
+        confidence: bankCount > 0 || ccCount > 0 ? "medium" : "low",
+      });
+    }
+
     if (parsed.projectId && wantsPersonal && isIncomeLike && typeof rollingDays === "number") {
       const dayMs = 24 * 60 * 60 * 1000;
       const now = Date.now();
@@ -436,6 +788,91 @@ Return JSON only.`;
         citations: [],
         confidence: sum.count === 0 ? "low" : "medium",
       });
+    }
+
+    // Personal income for a specific year (e.g. "income in 2025"): sum bank_statement deposits for that calendar year.
+    if (parsed.projectId && wantsPersonal && isIncomeLike && typeof rollingDays !== "number" && !monthFromText) {
+      const year =
+        parsed.time_hint?.kind === "year"
+          ? parsed.time_hint.year ?? null
+          : inferYearFromText(parsed.question);
+
+      if (typeof year === "number" && Number.isFinite(year)) {
+        const date_start = `${year}-01-01`;
+        const date_end = `${year + 1}-01-01`;
+
+        const docs = await getProjectDocsByProjectId({ projectId: parsed.projectId });
+        const personalBankDocs = docs
+          .filter((d) => d.documentType === "bank_statement")
+          .filter((d) => {
+            if (d.entityKind === "personal") return true;
+            const name = typeof d.entityName === "string" ? d.entityName.trim().toLowerCase() : "";
+            return name === "personal";
+          });
+        const docIds = personalBankDocs.map((d) => d.id);
+
+        if (docIds.length === 0) {
+          const anyBank = docs
+            .filter((d) => d.documentType === "bank_statement")
+            .slice(0, 12)
+            .map((d) => d.filename);
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: "",
+            questions_for_user: [
+              anyBank.length > 0
+                ? `I didn’t find any bank statements tagged Personal. Which statement should I use for your personal deposits in ${year}? (${anyBank.join("; ")})`
+                : "I don’t see any bank statements in this project yet.",
+            ],
+            assumptions: [],
+            tool_calls: [],
+            citations: [],
+            confidence: "low",
+          });
+        }
+
+        const sum = await financeSum({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "bank_statement",
+          filters: {
+            doc_ids: docIds,
+            date_start,
+            date_end,
+            amount_min: 0.01,
+            exclude_categories: ["transfer", "credit card payment"],
+          },
+        });
+
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: `Personal deposits in ${year} (${date_start} to ${date_end}): $${sum.total} (rows: ${sum.count}).`,
+          questions_for_user:
+            sum.count === 0
+              ? ["I found 0 matching deposits in that year. Are your personal bank statements tagged Personal, or are they unassigned?"]
+              : [],
+          assumptions: [
+            "Income is computed as bank-statement deposits (amount > 0), excluding transfers and credit-card payments.",
+            "The date range is computed in UTC; date_end is exclusive.",
+          ],
+          tool_calls: [
+            {
+              toolName: "financeSum",
+              input: {
+                document_type: "bank_statement",
+                doc_ids: docIds,
+                date_start,
+                date_end,
+                amount_min: 0.01,
+                exclude_categories: ["transfer", "credit card payment"],
+              },
+              output: sum,
+            },
+          ],
+          citations: [],
+          confidence: sum.count === 0 ? "low" : "medium",
+        });
+      }
     }
 
     // Business income over a rolling window (e.g. "last 90 days", "past 3 weeks"): sum bank_statement deposits.
@@ -725,6 +1162,283 @@ Return JSON only.`;
       }
     }
 
+    // Personal total spend for a specific month (e.g. "December 2025 personal").
+    // Prefer bank-statement outflows (excluding transfers/cc payments) and optionally add cc charges.
+    if (isSpendLike && wantsPersonal && monthFromText && parsed.projectId) {
+      const year =
+        parsed.time_hint?.kind === "year"
+          ? parsed.time_hint.year ?? null
+          : inferYearFromText(parsed.question) ?? new Date().getUTCFullYear();
+
+      if (typeof year === "number" && Number.isFinite(year)) {
+        const mm = String(monthFromText).padStart(2, "0");
+        const date_start = `${year}-${mm}-01`;
+        const endYear = monthFromText === 12 ? year + 1 : year;
+        const endMonth = monthFromText === 12 ? 1 : monthFromText + 1;
+        const endMm = String(endMonth).padStart(2, "0");
+        const date_end = `${endYear}-${endMm}-01`;
+
+        const parseMoneyToCents = (value: string): bigint | null => {
+          const trimmed = value.trim();
+          const m = trimmed.match(/^(-)?(\d+)(?:\.(\d{1,2}))?$/);
+          if (!m) return null;
+          const sign = m[1] ? -1n : 1n;
+          const whole = BigInt(m[2] ?? "0");
+          const fracRaw = m[3] ?? "0";
+          const frac = BigInt(fracRaw.padEnd(2, "0"));
+          return sign * (whole * 100n + frac);
+        };
+
+        const centsToMoney = (centsAbs: bigint): string => {
+          const whole = centsAbs / 100n;
+          const frac = centsAbs % 100n;
+          return `${whole.toString()}.${frac.toString().padStart(2, "0")}`;
+        };
+
+        const docs = await getProjectDocsByProjectId({ projectId: parsed.projectId });
+        const personalBankDocs = docs
+          .filter((d) => d.documentType === "bank_statement")
+          .filter((d) => d.entityKind === "personal");
+        const personalCcDocs = docs
+          .filter((d) => d.documentType === "cc_statement")
+          .filter((d) => d.entityKind === "personal");
+
+        const bankDocIds = personalBankDocs.map((d) => d.id);
+        const ccDocIds = personalCcDocs.map((d) => d.id);
+
+        const bank = bankDocIds.length
+          ? await financeSum({
+              userId: session.user.id,
+              projectId: parsed.projectId,
+              documentType: "bank_statement",
+              filters: {
+                doc_ids: bankDocIds,
+                date_start,
+                date_end,
+                amount_max: -0.01,
+                exclude_categories: ["transfer", "credit card payment"],
+              },
+            })
+          : { total: "0", count: 0 };
+
+        const ccPos = ccDocIds.length
+          ? await financeSum({
+              userId: session.user.id,
+              projectId: parsed.projectId,
+              documentType: "cc_statement",
+              filters: {
+                doc_ids: ccDocIds,
+                date_start,
+                date_end,
+                amount_min: 0.01,
+              },
+            })
+          : { total: "0", count: 0 };
+
+        const ccNeg =
+          ccDocIds.length && ccPos.count === 0
+            ? await financeSum({
+                userId: session.user.id,
+                projectId: parsed.projectId,
+                documentType: "cc_statement",
+                filters: {
+                  doc_ids: ccDocIds,
+                  date_start,
+                  date_end,
+                  amount_max: -0.01,
+                },
+              })
+            : null;
+
+        const ccUsed = ccNeg && ccPos.count === 0 ? ccNeg : ccPos;
+
+        const bankCents = parseMoneyToCents(String(bank.total)) ?? 0n;
+        const ccCents = parseMoneyToCents(String(ccUsed.total)) ?? 0n;
+        const bankAbs = bankCents < 0n ? -bankCents : bankCents;
+        const ccAbs = ccCents < 0n ? -ccCents : ccCents;
+        const totalAbs = bankAbs + ccAbs;
+
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: [
+            `Personal spending in ${year}-${mm}:`,
+            `- Total: $${centsToMoney(totalAbs)}`,
+            `- Bank outflows (excl transfers/cc payments): $${centsToMoney(bankAbs)} (rows: ${bank.count})`,
+            `- Credit-card charges: $${centsToMoney(ccAbs)} (rows: ${ccUsed.count})`,
+          ].join("\n"),
+          questions_for_user:
+            bankDocIds.length === 0 && ccDocIds.length === 0
+              ? [
+                  `I don’t see any Personal bank or credit-card statements tagged Personal for ${year}-${mm}. Which statement(s) should I use?`,
+                ]
+              : [],
+          assumptions: [
+            "Bank spend is computed as bank-statement outflows (amount < 0), excluding transfers and credit-card payments.",
+            "Credit-card spend is computed from cc_statement charges; if positive-amount charges return 0 rows, a negative-amount convention is tried and reported as an absolute value.",
+          ],
+          tool_calls: [
+            {
+              toolName: "financeSum",
+              input: {
+                document_type: "bank_statement",
+                doc_ids: bankDocIds,
+                date_start,
+                date_end,
+                amount_max: -0.01,
+                exclude_categories: ["transfer", "credit card payment"],
+              },
+              output: bank,
+            },
+            {
+              toolName: "financeSum",
+              input: {
+                document_type: "cc_statement",
+                doc_ids: ccDocIds,
+                date_start,
+                date_end,
+                amount_min: 0.01,
+              },
+              output: ccUsed,
+            },
+          ],
+          citations: [],
+          confidence:
+            (bankDocIds.length > 0 || ccDocIds.length > 0) &&
+            ((typeof (bank as any).count === "number" && (bank as any).count > 0) ||
+              (typeof (ccUsed as any).count === "number" && (ccUsed as any).count > 0))
+              ? "medium"
+              : "low",
+        });
+      }
+    }
+
+    // Personal bank outflows breakdown for a specific month.
+    if (wantsPersonal && monthFromText && parsed.projectId) {
+      const wantsBankOutflows =
+        q.includes("bank outflows") ||
+        (q.includes("bank") &&
+          (q.includes("outflow") ||
+            q.includes("outflows") ||
+            q.includes("transactions") ||
+            q.includes("spent on") ||
+            q.includes("what i spent on") ||
+            q.includes("what did i spend on")));
+
+      if (wantsBankOutflows) {
+        const year =
+          parsed.time_hint?.kind === "year"
+            ? parsed.time_hint.year ?? null
+            : inferYearFromText(parsed.question) ?? new Date().getUTCFullYear();
+
+        if (typeof year === "number" && Number.isFinite(year)) {
+          const mm = String(monthFromText).padStart(2, "0");
+          const date_start = `${year}-${mm}-01`;
+          const endYear = monthFromText === 12 ? year + 1 : year;
+          const endMonth = monthFromText === 12 ? 1 : monthFromText + 1;
+          const endMm = String(endMonth).padStart(2, "0");
+          const date_end = `${endYear}-${endMm}-01`;
+
+          const docs = await getProjectDocsByProjectId({ projectId: parsed.projectId });
+          const personalBankDocs = docs
+            .filter((d) => d.documentType === "bank_statement")
+            .filter((d) => d.entityKind === "personal");
+          const bankDocIds = personalBankDocs.map((d) => d.id);
+
+          if (bankDocIds.length === 0) {
+            return SpecialistAgentResponseSchema.parse({
+              kind: "finance",
+              answer_draft: "",
+              questions_for_user: [
+                `I don’t see any Personal bank statements tagged Personal for ${year}-${mm}. Which bank statement should I use?`,
+              ],
+              assumptions: [],
+              tool_calls: [],
+              citations: [],
+              confidence: "low",
+            });
+          }
+
+          const filters = {
+            doc_ids: bankDocIds,
+            date_start,
+            date_end,
+            amount_max: -0.01,
+            exclude_categories: ["transfer", "credit card payment"],
+          };
+
+          const total = await financeSum({
+            userId: session.user.id,
+            projectId: parsed.projectId,
+            documentType: "bank_statement",
+            filters,
+          });
+
+          const grouped = await financeGroupByMerchant({
+            userId: session.user.id,
+            projectId: parsed.projectId,
+            documentType: "bank_statement",
+            filters,
+          });
+
+          const rows = Array.isArray(grouped.rows) ? grouped.rows : [];
+          const topRows = rows.slice(0, 20);
+          const lines = topRows.map((r) => {
+            const merchant =
+              typeof r.merchant === "string" && r.merchant.trim().length > 0
+                ? r.merchant.trim()
+                : "(unknown)";
+            return `- ${merchant}: ${r.total} (${r.count} txns)`;
+          });
+
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: [
+              `Personal bank outflows for ${year}-${mm} (excluding transfers and credit-card payments):`,
+              `- Total: ${total.total}`,
+              `- Transactions: ${total.count}`,
+              "",
+              "Top descriptions by outflow:",
+              ...lines,
+            ].join("\n"),
+            questions_for_user: [],
+            assumptions: [
+              "Outflows are bank-statement transactions with amount < 0.",
+              'Transfers and "credit card payment" categories are excluded.',
+              "Descriptions are grouped verbatim.",
+            ],
+            tool_calls: [
+              {
+                toolName: "financeSum",
+                input: {
+                  document_type: "bank_statement",
+                  doc_ids: bankDocIds,
+                  date_start,
+                  date_end,
+                  amount_max: -0.01,
+                  exclude_categories: ["transfer", "credit card payment"],
+                },
+                output: total,
+              },
+              {
+                toolName: "financeGroupByMerchant",
+                input: {
+                  document_type: "bank_statement",
+                  doc_ids: bankDocIds,
+                  date_start,
+                  date_end,
+                  amount_max: -0.01,
+                  exclude_categories: ["transfer", "credit card payment"],
+                },
+                output: grouped,
+              },
+            ],
+            citations: [],
+            confidence: total.count === 0 ? "low" : "medium",
+          });
+        }
+      }
+    }
+
     // Personal spend summary: use transaction description via group_by_merchant (merchant=description for statements).
     if (wantsSummary && isSpendLike && wantsPersonal && parsed.projectId) {
       const year =
@@ -813,6 +1527,477 @@ Return JSON only.`;
           ],
           citations: [],
           confidence: total.count === 0 ? "low" : "medium",
+        });
+      }
+    }
+
+    // "Waste" (personal) by category: deterministic categorization using transaction descriptions.
+    if (
+      parsed.projectId &&
+      resolvedEntityScope.entity_kind === "personal" &&
+      q.includes("waste") &&
+      (q.includes("category") || q.includes("categories")) &&
+      parsed.time_hint?.kind === "year" &&
+      typeof parsed.time_hint.year === "number" &&
+      Number.isFinite(parsed.time_hint.year)
+    ) {
+      const year = parsed.time_hint.year;
+      const docs = await getProjectDocsByProjectId({ projectId: parsed.projectId });
+      const personalCcDocs = docs
+        .filter((d) => d.documentType === "cc_statement")
+        .filter((d) => d.entityKind === "personal");
+      const docIds = personalCcDocs.map((d) => d.id);
+      if (docIds.length === 0) {
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: "",
+          questions_for_user: [
+            `I don’t see any personal credit-card statements tagged Personal yet. Which statement should I use to categorize ${year} spend?`,
+          ],
+          assumptions: [],
+          tool_calls: [],
+          citations: [],
+          confidence: "low",
+        });
+      }
+
+      const list = await financeList({
+        userId: session.user.id,
+        projectId: parsed.projectId,
+        documentType: "cc_statement",
+        filters: {
+          doc_ids: docIds,
+          date_start: `${year}-01-01`,
+          date_end: `${year + 1}-01-01`,
+          amount_min: 0.01,
+        },
+      });
+
+      const isTxnRow = (
+        row: (typeof list.rows)[number]
+      ): row is (typeof list.rows)[number] & { description: string | null; amount: string } => {
+        if (typeof row !== "object" || row === null) return false;
+        const r = row as Record<string, unknown>;
+        return (
+          typeof r.amount === "string" &&
+          (typeof r.description === "string" || r.description === null)
+        );
+      };
+
+      const rows = list.query_type === "list" ? list.rows.filter(isTxnRow) : [];
+      const totals = new Map<string, number>();
+      for (const r of rows) {
+        const amtCents = parseCents(r.amount);
+        if (amtCents === null) continue;
+        const desc = typeof r.description === "string" ? r.description : "";
+        const cat = categorizeExpense(desc);
+        totals.set(cat, (totals.get(cat) ?? 0) + amtCents);
+      }
+
+      const sorted = Array.from(totals.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 12)
+        .map(([cat, cents]) => `- ${cat}: $${formatDollars(cents)}`);
+
+      return SpecialistAgentResponseSchema.parse({
+        kind: "finance",
+        answer_draft: [
+          `${year} personal spend, organized by category (heuristic from transaction descriptions):`,
+          "",
+          ...sorted,
+        ].join("\n"),
+        questions_for_user: [],
+        assumptions: [
+          "Categories are heuristic (derived from transaction descriptions), not issuer-provided categories.",
+          "Spend is computed as positive cc_statement amounts (amount > 0).",
+        ],
+        tool_calls: [
+          {
+            toolName: "financeList",
+            input: {
+              document_type: "cc_statement",
+              doc_ids: docIds,
+              date_start: `${year}-01-01`,
+              date_end: `${year + 1}-01-01`,
+              amount_min: 0.01,
+            },
+            output: list,
+          },
+        ],
+        citations: [],
+        confidence: rows.length === 0 ? "low" : "medium",
+      });
+    }
+
+    // Personal discretionary highlights (YTD/year): deterministic categorization using transaction descriptions.
+    if (
+      parsed.projectId &&
+      resolvedEntityScope.entity_kind === "personal" &&
+      (q.includes("discretion") || q.includes("discretionary") || q.includes("discretional"))
+    ) {
+      const year =
+        parsed.time_hint?.kind === "year"
+          ? parsed.time_hint.year ?? null
+          : inferYearFromText(parsed.question) ?? new Date().getUTCFullYear();
+      if (typeof year === "number" && Number.isFinite(year)) {
+        const docs = await getProjectDocsByProjectId({ projectId: parsed.projectId });
+        const mentionsAmex = q.includes("amex") || q.includes("american express");
+        const personalCcDocs = docs
+          .filter((d) => d.documentType === "cc_statement")
+          .filter((d) => d.entityKind === "personal")
+          .filter((d) => {
+            if (!mentionsAmex) return true;
+            return d.filename.toLowerCase().includes("amex");
+          });
+
+        const docIds = personalCcDocs.map((d) => d.id);
+        if (docIds.length === 0) {
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: "",
+            questions_for_user: [
+              mentionsAmex
+                ? `I don’t see any personal Amex statements tagged Personal yet. Which statement should I use for ${year} discretionary spend?`
+                : `I don’t see any personal credit-card statements tagged Personal yet. Which statement should I use for ${year} discretionary spend?`,
+            ],
+            assumptions: [],
+            tool_calls: [],
+            citations: [],
+            confidence: "low",
+          });
+        }
+
+        const list = await financeList({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "cc_statement",
+          filters: {
+            doc_ids: docIds,
+            date_start: `${year}-01-01`,
+            date_end: `${year + 1}-01-01`,
+            amount_min: 0.01,
+          },
+        });
+
+        const isTxnRow = (
+          row: (typeof list.rows)[number]
+        ): row is (typeof list.rows)[number] & { description: string | null; amount: string } => {
+          if (typeof row !== "object" || row === null) return false;
+          const r = row as Record<string, unknown>;
+          return (
+            typeof r.amount === "string" &&
+            (typeof r.description === "string" || r.description === null)
+          );
+        };
+
+        const discretionaryCats = new Set([
+          "Dining",
+          "Travel",
+          "Shopping",
+          "Subscriptions",
+          "Entertainment",
+          "Fitness",
+          "Transport",
+        ]);
+
+        const totalsByCat = new Map<string, number>();
+        const totalsByDesc = new Map<string, { cents: number; count: number }>();
+        let totalDiscretionary = 0;
+
+        const rows = list.query_type === "list" ? list.rows.filter(isTxnRow) : [];
+        for (const r of rows) {
+          const cents = parseCents(r.amount);
+          if (cents === null) continue;
+          const desc = typeof r.description === "string" ? r.description.trim() : "";
+          const cat = categorizeExpense(desc);
+          if (!discretionaryCats.has(cat)) continue;
+
+          totalDiscretionary += cents;
+          totalsByCat.set(cat, (totalsByCat.get(cat) ?? 0) + cents);
+          const key = desc.length > 0 ? desc : "(no description)";
+          const prev = totalsByDesc.get(key);
+          totalsByDesc.set(key, {
+            cents: (prev?.cents ?? 0) + cents,
+            count: (prev?.count ?? 0) + 1,
+          });
+        }
+
+        const catLines = Array.from(totalsByCat.entries())
+          .sort((a, b) => b[1] - a[1])
+          .map(([cat, cents]) => `- ${cat}: $${formatDollars(cents)}`);
+
+        const topDesc = Array.from(totalsByDesc.entries())
+          .sort((a, b) => b[1].cents - a[1].cents)
+          .slice(0, 12)
+          .map(([desc, v]) => `- ${desc}: $${formatDollars(v.cents)} (${v.count} txns)`);
+
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: [
+            `${year} personal${mentionsAmex ? " Amex" : ""} discretionary highlights (heuristic from descriptions):`,
+            `- Discretionary total: $${formatDollars(totalDiscretionary)}`,
+            "",
+            "By category:",
+            ...(catLines.length > 0 ? catLines : ["- (none matched discretionary categories)"]),
+            "",
+            "Top discretionary descriptions by spend:",
+            ...(topDesc.length > 0 ? topDesc : ["- (none)"]),
+          ].join("\n"),
+          questions_for_user: [],
+          assumptions: [
+            "Discretionary is inferred from descriptions; this is a heuristic, not accounting categorization.",
+            "Spend is computed as positive cc_statement amounts (amount > 0).",
+          ],
+          tool_calls: [
+            {
+              toolName: "financeList",
+              input: {
+                document_type: "cc_statement",
+                doc_ids: docIds,
+                date_start: `${year}-01-01`,
+                date_end: `${year + 1}-01-01`,
+                amount_min: 0.01,
+              },
+              output: list,
+            },
+          ],
+          citations: [],
+          confidence: totalDiscretionary === 0 ? "low" : "medium",
+        });
+      }
+    }
+
+    // "Waste"/"discretionary" (business) by category: deterministic categorization using transaction descriptions.
+    if (
+      parsed.projectId &&
+      resolvedEntityScope.entity_kind === "business" &&
+      (q.includes("waste") || q.includes("discretion"))
+    ) {
+      const year =
+        parsed.time_hint?.kind === "year"
+          ? parsed.time_hint.year ?? null
+          : inferYearFromText(parsed.question) ?? new Date().getUTCFullYear();
+      if (typeof year === "number" && Number.isFinite(year)) {
+        const docs = await getProjectDocsByProjectId({ projectId: parsed.projectId });
+        const target = resolvedEntityScope.entity_name.trim().toLowerCase();
+
+        const creditCardOnly =
+          parsed.preferences?.credit_card_only === true ||
+          parsed.preferences?.doc_type === "cc_statement" ||
+          q.includes("credit card only") ||
+          q.includes("card only");
+        const mentionsAmex =
+          parsed.preferences?.card_brand === "amex" ||
+          q.includes("amex") ||
+          q.includes("american express");
+
+        const allCcDocs = docs.filter((d) => d.documentType === "cc_statement");
+        const baseCcCandidates = (() => {
+          if (!mentionsAmex) return allCcDocs;
+          const amex = allCcDocs.filter((d) => d.filename.toLowerCase().includes("amex"));
+          return amex.length > 0 ? amex : allCcDocs;
+        })();
+        const taggedToBusiness = baseCcCandidates
+          .filter((d) => d.entityKind === "business")
+          .filter((d) => (typeof d.entityName === "string" ? d.entityName.trim().toLowerCase() : "") === target);
+        const nonPersonal = baseCcCandidates.filter((d) => d.entityKind !== "personal");
+        const ccCandidates = taggedToBusiness.length > 0 ? taggedToBusiness : nonPersonal;
+        const businessBankDocs = docs
+          .filter((d) => d.documentType === "bank_statement")
+          .filter((d) => d.entityKind === "business")
+          .filter((d) => (typeof d.entityName === "string" ? d.entityName.trim().toLowerCase() : "") === target);
+
+        const ccDocIds = ccCandidates.map((d) => d.id);
+        const bankDocIds = businessBankDocs.map((d) => d.id);
+
+        if (ccDocIds.length === 0 && (!creditCardOnly && bankDocIds.length === 0)) {
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: "",
+            questions_for_user: [
+              `I don’t see any business statements tagged "${resolvedEntityScope.entity_name}" yet. Which business bank/credit-card statement should I use?`,
+            ],
+            assumptions: [],
+            tool_calls: [],
+            citations: [],
+            confidence: "low",
+          });
+        }
+
+        if (creditCardOnly) {
+          if (ccCandidates.length > 1) {
+            const options = ccCandidates.slice(0, 10).map((d) => d.filename);
+            return SpecialistAgentResponseSchema.parse({
+              kind: "finance",
+              answer_draft: "",
+              questions_for_user: [
+                `Which ${resolvedEntityScope.entity_name} credit-card statement should I use for ${year} spend? (${options.join(", ")})`,
+              ],
+              assumptions: [],
+              tool_calls: [],
+              citations: [],
+              confidence: "low",
+            });
+          }
+          if (ccCandidates.length === 0) {
+            return SpecialistAgentResponseSchema.parse({
+              kind: "finance",
+              answer_draft: "",
+              questions_for_user: [
+                `I don’t see any ${resolvedEntityScope.entity_name} credit-card statements that match your request. Which statement should I use?`,
+              ],
+              assumptions: [],
+              tool_calls: [],
+              citations: [],
+              confidence: "low",
+            });
+          }
+        }
+
+        const ccList =
+          ccDocIds.length > 0
+            ? await financeList({
+                userId: session.user.id,
+                projectId: parsed.projectId,
+                documentType: "cc_statement",
+                filters: {
+                  doc_ids: ccDocIds,
+                  date_start: `${year}-01-01`,
+                  date_end: `${year + 1}-01-01`,
+                  amount_min: 0.01,
+                },
+              })
+            : null;
+
+        const bankList =
+          creditCardOnly
+            ? null
+            : bankDocIds.length > 0
+              ? await financeList({
+                  userId: session.user.id,
+                  projectId: parsed.projectId,
+                  documentType: "bank_statement",
+                  filters: {
+                    doc_ids: bankDocIds,
+                    date_start: `${year}-01-01`,
+                    date_end: `${year + 1}-01-01`,
+                    amount_max: -0.01,
+                    exclude_categories: ["transfer", "credit card payment"],
+                  },
+                })
+              : null;
+
+        const discretionaryCats = new Set(["Meals", "Travel", "Marketing / Ads", "Office / Ops"]);
+        const discretionaryTotals = new Map<string, number>();
+        const addDiscretionary = (cat: string, cents: number) => {
+          if (!discretionaryCats.has(cat)) return;
+          discretionaryTotals.set(cat, (discretionaryTotals.get(cat) ?? 0) + cents);
+        };
+        const isDiscretionaryRequest = q.includes("discretion") || q.includes("discretionary");
+
+        const isTxnRow = (
+          row: unknown
+        ): row is { description: string | null; amount: string } => {
+          if (typeof row !== "object" || row === null) return false;
+          const r = row as Record<string, unknown>;
+          return (
+            typeof r.amount === "string" &&
+            (typeof r.description === "string" || r.description === null)
+          );
+        };
+
+        const totals = new Map<string, number>();
+        const merchants = new Map<string, number>();
+        const ingestRows = (rows: Array<{ description: string | null; amount: string }>) => {
+          for (const r of rows) {
+            const amtCents = parseCents(r.amount);
+            if (amtCents === null) continue;
+            const abs = Math.abs(amtCents);
+            const desc = typeof r.description === "string" ? r.description : "";
+            const cat = categorizeBusinessExpense(desc);
+            totals.set(cat, (totals.get(cat) ?? 0) + abs);
+            addDiscretionary(cat, abs);
+            const key = desc.trim().length > 0 ? desc.trim() : "(no description)";
+            merchants.set(key, (merchants.get(key) ?? 0) + abs);
+          }
+        };
+
+        if (ccList?.query_type === "list" && Array.isArray(ccList.rows)) {
+          ingestRows(ccList.rows.filter(isTxnRow) as Array<{ description: string | null; amount: string }>);
+        }
+        if (bankList?.query_type === "list" && Array.isArray(bankList.rows)) {
+          ingestRows(bankList.rows.filter(isTxnRow) as Array<{ description: string | null; amount: string }>);
+        }
+
+        const categoryLines = Array.from(totals.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 12)
+          .map(([cat, cents]) => `- ${cat}: $${formatDollars(cents)}`);
+
+        const discretionaryLines = Array.from(discretionaryTotals.entries())
+          .sort((a, b) => b[1] - a[1])
+          .map(([cat, cents]) => `- ${cat}: $${formatDollars(cents)}`);
+
+        const topMerchants = Array.from(merchants.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 12)
+          .map(([m, cents]) => `- ${m}: $${formatDollars(cents)}`);
+
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: [
+            `${year} business spend for ${resolvedEntityScope.entity_name}${mentionsAmex ? " (Amex)" : ""}${creditCardOnly ? " (credit card only)" : ""}, organized by category (heuristic from descriptions):`,
+            "",
+            ...(isDiscretionaryRequest && discretionaryLines.length > 0
+              ? ["Discretionary candidates (heuristic):", ...discretionaryLines, ""]
+              : []),
+            ...categoryLines,
+            "",
+            "Top descriptions by spend:",
+            ...topMerchants,
+          ].join("\n"),
+          questions_for_user: [],
+          assumptions: [
+            "Categories are heuristic (derived from transaction descriptions), not accounting categories.",
+            creditCardOnly
+              ? "Business spend includes credit-card charges (amount > 0) only."
+              : "Business spend includes credit-card charges (amount > 0) and bank withdrawals (amount < 0) excluding transfers and credit-card payments.",
+          ],
+          tool_calls: [
+            ...(ccList
+              ? [
+                  {
+                    toolName: "financeList",
+                    input: {
+                      document_type: "cc_statement",
+                      doc_ids: ccDocIds,
+                      date_start: `${year}-01-01`,
+                      date_end: `${year + 1}-01-01`,
+                      amount_min: 0.01,
+                    },
+                    output: ccList,
+                  },
+                ]
+              : []),
+            ...(bankList
+              ? [
+                  {
+                    toolName: "financeList",
+                    input: {
+                      document_type: "bank_statement",
+                      doc_ids: bankDocIds,
+                      date_start: `${year}-01-01`,
+                      date_end: `${year + 1}-01-01`,
+                      amount_max: -0.01,
+                      exclude_categories: ["transfer", "credit card payment"],
+                    },
+                    output: bankList,
+                  },
+                ]
+              : []),
+          ],
+          citations: [],
+          confidence: totals.size === 0 ? "low" : "medium",
         });
       }
     }
@@ -1329,13 +2514,65 @@ Return JSON only.`;
         parsed.question.length > 200 ? `${parsed.question.slice(0, 200)}…` : parsed.question,
     });
 
+  const financeQueryInputSchema = z.object({
+    query_type: z.enum(["sum", "list", "group_by_month", "group_by_merchant"]),
+    document_type: z.enum(["bank_statement", "cc_statement", "invoice"]),
+    fallback_to_invoice_if_empty: z.boolean().optional(),
+    time_window: z
+      .object({
+        kind: z.enum(["year", "month"]),
+        year: z.number().int().min(1900).max(2200).optional(),
+        month: z.number().int().min(1).max(12).optional(),
+      })
+      .optional(),
+    filters: z
+      .object({
+        doc_ids: z.array(z.string().uuid()).optional(),
+        date_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        date_end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        vendor_contains: z.string().min(1).max(200).optional(),
+        sender_contains: z.string().min(1).max(200).optional(),
+        recipient_contains: z.string().min(1).max(200).optional(),
+        amount_min: z.number().finite().optional(),
+        amount_max: z.number().finite().optional(),
+        entity_kind: z.enum(["personal", "business"]).optional(),
+        entity_name: z.string().min(1).max(200).optional(),
+        exclude_categories: z.array(z.string().min(1).max(64)).max(10).optional(),
+      })
+      .optional(),
+  });
+
+  const financeQueryScoped = tool({
+    description:
+      "Run deterministic finance queries over parsed financial documents (scoped to the resolved entity).",
+    inputSchema: financeQueryInputSchema,
+    execute: async (input) => {
+      const base = input.filters ?? {};
+      const scoped = {
+        ...input,
+        filters: {
+          ...base,
+          entity_kind: resolvedEntityScope.entity_kind,
+          entity_name: resolvedEntityScope.entity_name,
+        },
+      };
+      const underlying = financeQueryTool({ session, projectId: parsed.projectId }) as unknown as {
+        execute?: (args: unknown, context: unknown) => Promise<unknown>;
+      };
+      if (typeof underlying.execute !== "function") {
+        return { error: "financeQuery tool is unavailable" };
+      }
+      return await underlying.execute(scoped, {});
+    },
+  });
+
   const result = await generateText({
     model,
     system,
     prompt,
     maxRetries: 1,
     tools: {
-      financeQuery: financeQuery({ session, projectId: parsed.projectId }),
+      financeQuery: financeQueryScoped,
         projectEntitySummary: tool({
           description:
             "List the distinct entity tags (personal/business + entity name) present in the current project, with doc counts. Use this to ask the user to pick the right entity when needed.",
@@ -1448,10 +2685,10 @@ Return JSON only.`;
 
         if (!entityName) {
           log("fallback_clarify_entity", { businessNames });
-          return SpecialistAgentResponseSchema.parse({
-            kind: "finance",
-            answer_draft: "",
-            questions_for_user: [
+    return SpecialistAgentResponseSchema.parse({
+      kind: "finance",
+      answer_draft: "",
+      questions_for_user: [
               businessNames.length > 0
                 ? `Which business should I use? (${businessNames.join(", ")})`
                 : "Which business should I use? (I don't see any business entities tagged yet.)",

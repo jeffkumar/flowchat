@@ -26,6 +26,7 @@ import type { ChatModel } from "@/lib/ai/models";
 import { type RequestHints, systemPrompt } from "@/lib/ai/prompts";
 import { myProvider } from "@/lib/ai/providers";
 import { decideFrontlineRouting } from "@/lib/ai/agents/frontline-agent";
+import { runFrontlineAgent } from "@/lib/ai/agents/frontline-agent";
 import { runFinanceAgent } from "@/lib/ai/agents/finance-agent";
 import { runProjectAgent } from "@/lib/ai/agents/project-agent";
 import { runCitationsAgent } from "@/lib/ai/agents/citations-agent";
@@ -34,6 +35,7 @@ import { financeQuery } from "@/lib/ai/tools/finance-query";
 import { getWeather } from "@/lib/ai/tools/get-weather";
 import { requestSuggestions } from "@/lib/ai/tools/request-suggestions";
 import { updateDocument } from "@/lib/ai/tools/update-document";
+import { isAdminSession } from "@/lib/admin";
 import { isProductionEnvironment } from "@/lib/constants";
 import {
   createStreamId,
@@ -55,9 +57,9 @@ import {
   type SourceType,
 } from "@/lib/rag/source-routing";
 import {
-  formatRetrievedContext,
-  queryTurbopuffer,
-} from "@/lib/rag/turbopuffer";
+  formatCollectionsRetrievedContext,
+  queryCollectionsNamespaces,
+} from "@/lib/ai/tools/collections-agent";
 import type { ChatMessage } from "@/lib/types";
 import type { AppUsage } from "@/lib/usage";
 import { convertToUIMessages, generateUUID } from "@/lib/utils";
@@ -82,7 +84,8 @@ const AGGREGATION_HINT_RE =
 const INCOME_INTENT_RE =
   /\b(how\s+much\s+did\s+i\s+make|how\s+much\s+did\s+we\s+make|how\s+much\s+did\s+we\s+bring\s+in|bring\s+in|income|deposits?|revenue|made|paid)\b/i;
 
-const SPEND_INTENT_RE = /\b(spend|spent|spending|expense|expenses|charges?|rent|mortgage|lease)\b/i;
+const SPEND_INTENT_RE =
+  /\b(spend|spent|spending|expense|expenses|charges?|rent|mortgage|lease|waste|wasted)\b/i;
 
 const INVOICE_REVENUE_RE = /\binvoice\s+revenue\b/i;
 
@@ -108,6 +111,7 @@ type TimeWindowKind =
   | "relativeDay"
   | "absoluteDate"
   | "lastWeekday"
+  | "lastWeek"
   | "lastWeekSegment";
 
 type TimeWindowIntent =
@@ -122,6 +126,7 @@ type TimeWindowIntent =
       matchedText?: string;
     }
   | { kind: "lastWeekday"; weekday: WeekdayToken; matchedText?: string }
+  | { kind: "lastWeek"; matchedText?: string }
   | {
       kind: "lastWeekSegment";
       segment: "wed-sun" | "thu-sat";
@@ -137,6 +142,18 @@ function stripMatchedText(fullText: string, matchedText: string | undefined) {
   if (!needle) return fullText;
   const re = new RegExp(escapeRegExp(needle), "gi");
   return fullText.replace(re, " ").replace(/\s+/g, " ").trim();
+}
+
+function inferSlackChannelName(text: string): string | null {
+  const m = text.match(/(?:^|\s)#([a-z0-9_-]{1,80})\b/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
+function inferSlackUserName(text: string): string | null {
+  // Handle simple "did Janez..." / "what did Janez..." patterns.
+  const m = text.match(/\b(?:did|what)\s+([A-Z][a-z0-9_-]{1,60})\b/);
+  if (!m) return null;
+  return m[1].toLowerCase();
 }
 
 function messageContentToText(content: unknown): string {
@@ -430,6 +447,30 @@ function windowForLastWeekSegment({
   };
 }
 
+function windowForLastCalendarWeek({
+  nowMs,
+  timeZone,
+}: {
+  nowMs: number;
+  timeZone: string;
+}): { startMs: number; endMs: number } | null {
+  // Define "last week" as the previous full Mon–Sun week in the user's time zone.
+  const weekStartDow: WeekdayIndex = 1; // Monday
+  const nowLocal = getZonedParts(nowMs, timeZone);
+  const nowDow = getZonedWeekdayIndex(nowMs, timeZone);
+  if (nowDow === null) return null;
+  const offsetToWeekStart = (nowDow - weekStartDow + 7) % 7;
+  const startThisWeek = addDaysToYmd(
+    { year: nowLocal.year, month: nowLocal.month, day: nowLocal.day },
+    -offsetToWeekStart
+  );
+  const startLastWeek = addDaysToYmd(startThisWeek, -7);
+  return {
+    startMs: startOfLocalDayUtcMs({ ...startLastWeek, timeZone }),
+    endMs: startOfLocalDayUtcMs({ ...startThisWeek, timeZone }),
+  };
+}
+
 function isValidYmd({
   year,
   month,
@@ -502,6 +543,9 @@ function computeWindowFromIntent({
     }
     return windowForLastWeekSegment({ nowMs, timeZone, startDow: 4, endDow: 6 });
   }
+  if (intent.kind === "lastWeek") {
+    return windowForLastCalendarWeek({ nowMs, timeZone });
+  }
   if (intent.kind === "absoluteDate") {
     const year =
       typeof intent.year === "number" && Number.isFinite(intent.year)
@@ -533,6 +577,7 @@ function validateTimeWindowIntent(intent: TimeWindowIntent): boolean {
   if (intent.kind === "relativeDay") return true;
   if (intent.kind === "absoluteDate") return true;
   if (intent.kind === "lastWeekday") return true;
+  if (intent.kind === "lastWeek") return true;
   if (intent.kind === "lastWeekSegment") return true;
   return false;
 }
@@ -553,6 +598,7 @@ async function inferTimeWindowIntent({
       "relativeDay",
       "absoluteDate",
       "lastWeekday",
+      "lastWeek",
       "lastWeekSegment",
     ]),
     preset: z.enum(["all", "1d", "7d", "30d", "90d"]).optional(),
@@ -572,8 +618,9 @@ async function inferTimeWindowIntent({
       "- If no time constraint is implied, choose kind='none'.\n" +
       "- If the user asks for a specific day window, choose kind='relativeDay' or kind='lastWeekday'.\n" +
       "- If the user asks for an absolute date like 'Dec 2nd', '12/2', or '2025-12-02', choose kind='absoluteDate' with month/day and optional year.\n" +
+      "- If the user asks for 'last week' (the previous full calendar week), choose kind='lastWeek'.\n" +
       "- If the user asks for 'end of last week' and implies a segment (e.g. Wed-Sun or Thu-Sat), choose kind='lastWeekSegment'.\n" +
-      "- If the user asks for a broad range like 'last week' or 'past 30 days', choose kind='preset' with the closest broader preset.\n" +
+      "- If the user asks for a broad range like 'past 30 days' or 'last 90 days', choose kind='preset' with the closest broader preset.\n" +
       "- Provide matchedText as the smallest phrase to remove from the embedding query (optional).\n" +
       `- The UI requestedPreset is: ${requestedPreset ?? "none"}.\n` +
       "You MUST call the provided tool and nothing else.",
@@ -608,6 +655,8 @@ async function inferTimeWindowIntent({
             };
           } else if (v.kind === "lastWeekday" && v.weekday) {
             selected = { kind: "lastWeekday", weekday: v.weekday, matchedText: v.matchedText };
+          } else if (v.kind === "lastWeek") {
+            selected = { kind: "lastWeek", matchedText: v.matchedText };
           } else if (v.kind === "lastWeekSegment" && v.segment) {
             selected = { kind: "lastWeekSegment", segment: v.segment, matchedText: v.matchedText };
           } else {
@@ -863,6 +912,57 @@ export async function POST(request: Request) {
       .join("\n")
       .slice(0, 4000);
 
+    // Finance-first: delegate to FrontlineAgent orchestration before any retrieval / general chat.
+    // If it handles the request, return a minimal stream containing only that answer.
+    if (userText) {
+      const historyForFrontline = (() => {
+        const msgs = uiMessages.slice(0, -1).slice(-6);
+        const lines: string[] = [];
+        for (const m of msgs) {
+          const role = m.role === "assistant" ? "Assistant" : m.role === "user" ? "User" : "Other";
+          const textParts = m.parts.filter(
+            (part): part is Extract<(typeof m.parts)[number], { type: "text" }> =>
+              part.type === "text"
+          );
+          const text = textParts.map((p) => p.text).join("\n").trim();
+          if (!text) continue;
+          lines.push(`${role}: ${text.length > 800 ? `${text.slice(0, 800)}…` : text}`);
+        }
+        return lines.join("\n");
+      })();
+
+      const frontline = await runFrontlineAgent({
+        session,
+        projectId: activeProjectId,
+        input: { question: userText, chat_history: historyForFrontline || undefined },
+      });
+      if (frontline.kind === "handled") {
+        const stream = createUIMessageStream({
+          execute: async ({ writer: dataStream }) => {
+            const msgId = generateUUID();
+            dataStream.write({ type: "text-start", id: msgId });
+            dataStream.write({ type: "text-delta", id: msgId, delta: frontline.text });
+            dataStream.write({ type: "text-end", id: msgId });
+          },
+          generateId: generateUUID,
+          onFinish: async ({ messages }) => {
+            await saveMessages({
+              messages: messages.map((currentMessage) => ({
+                id: currentMessage.id,
+                role: currentMessage.role,
+                parts: currentMessage.parts,
+                createdAt: new Date(),
+                attachments: [],
+                chatId: id,
+              })),
+            });
+          },
+          onError: () => "Oops, an error occurred!",
+        });
+        return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
+      }
+    }
+
     let retrievedContext = "";
     let sources: any[] = [];
 
@@ -870,7 +970,7 @@ export async function POST(request: Request) {
     const skipRetrievalForFinance = AGGREGATION_HINT_RE.test(userText) || SPEND_INTENT_RE.test(userText);
     const shouldLogRetrieval = process.env.DEBUG_TURBOPUFFER === "1";
 
-    if (userText && !skipRetrievalForFinance) {
+    if (process.env.CHAT_PREFETCH_RETRIEVAL === "1" && userText && !skipRetrievalForFinance) {
       try {
         const inferDocLockFilenameHint = (text: string): string | null => {
           // Explicit filename mention (prefer this).
@@ -933,9 +1033,12 @@ export async function POST(request: Request) {
         const requestedSourceTypes = (
           Array.isArray(sourceTypes) ? sourceTypes : undefined
         ) as SourceType[] | undefined;
+        const slackEnabled = process.env.ENABLE_SLACK_RETRIEVAL === "1";
         const effectiveSourceTypes = docLockFilenameHint
           ? (["docs"] satisfies SourceType[])
-          : requestedSourceTypes;
+          : slackEnabled
+            ? requestedSourceTypes
+            : requestedSourceTypes?.filter((t) => t !== "slack");
         const namespaces = namespacesForSourceTypes(
           effectiveSourceTypes,
           activeProjectId,
@@ -1018,39 +1121,19 @@ export async function POST(request: Request) {
           topK: number;
           includeSourceCreatedAtMsFilter: boolean;
         }) => {
-          const filterParts: unknown[] = [];
-
-          if (ignoredDocIds && ignoredDocIds.length > 0) {
-            filterParts.push(["Not", ["doc_id", "In", ignoredDocIds]]);
-          }
-
-          if (includeSourceCreatedAtMsFilter && rangeStartMs !== null) {
-            filterParts.push(["sourceCreatedAtMs", "Gte", rangeStartMs]);
-            filterParts.push(["sourceCreatedAtMs", "Lt", rangeEndMs]);
-          }
-
-          const filters =
-            filterParts.length === 0
-              ? undefined
-              : filterParts.length === 1
-                ? filterParts[0]
-                : ["And", filterParts];
-
-          const nsRows = await queryTurbopuffer({
+          const rowsByNs = await queryCollectionsNamespaces({
+            namespaces: [ns],
             query: retrievalQuery,
             topK,
-            namespace: ns,
-            filters,
+            ignoredDocIds,
+            slackChannelName: inferSlackChannelName(userText),
+            slackUserName: inferSlackUserName(userText),
+            sourceCreatedAtMsRange:
+              includeSourceCreatedAtMsFilter && rangeStartMs !== null
+                ? { startMs: rangeStartMs, endMs: rangeEndMs }
+                : null,
           });
-
-          const inferredSourceType = inferSourceTypeFromNamespace(ns);
-          return nsRows.map((r) => ({
-            ...r,
-            sourceType:
-              typeof (r as any).sourceType === "string"
-                ? (r as any).sourceType
-                : (inferredSourceType ?? ""),
-          }));
+          return rowsByNs[0] ?? [];
         };
 
         const shouldUseSourceCreatedAtMsFilter =
@@ -1324,7 +1407,7 @@ export async function POST(request: Request) {
               })
               .join("\n\n");
           } else {
-            retrievedContext = formatRetrievedContext(usedRows);
+            retrievedContext = formatCollectionsRetrievedContext(usedRows as any);
           }
         }
         const MAX_RETRIEVED_CONTEXT_CHARS = isAggregationQuery ? 20_000 : 12_000;
@@ -1446,7 +1529,7 @@ export async function POST(request: Request) {
         }
 
         const synergySystemPrompt =
-          "You are Synergy (FrontlineAgent). You answer questions based on retrieved context (Slack messages and uploaded docs).\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n- runCitationsAgent: validate claims against sources and add inline citations like 【N】.\n\nRules:\n- Use runFinanceAgent for any totals/sums/counts/aggregations; do not compute totals yourself.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n- If you used retrieved context, optionally call runCitationsAgent at the end to add citations.\n\nKeep clarifying questions short and actionable.";
+          "You are Synergy (FrontlineAgent).\n\nYou can delegate to specialist agents (tools):\n- runCollectionsAgent: retrieve project context (Slack + uploaded docs) from collections.\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n- runCitationsAgent: validate claims against sources and add inline citations like 【N】.\n\nRules:\n- Use runFinanceAgent for any totals/sums/counts/aggregations; do not compute totals yourself.\n- NEVER call runCollectionsAgent for finance questions.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n- If you used retrieved context, optionally call runCitationsAgent at the end to add citations.\n\nKeep clarifying questions short and actionable.";
 
         const baseMessages = convertToModelMessages(uiMessages);
 
@@ -1518,13 +1601,22 @@ export async function POST(request: Request) {
           messages: textOnlyMessages as any,
           stopWhen: stepCountIs(5),
           onStepFinish: async (step) => {
-            const shouldDebugAgentToChat = process.env.NODE_ENV !== "production";
+            const canExposeDebugToUser =
+              process.env.NODE_ENV !== "production" || isAdminSession(session);
+            const shouldDebugAgentToChat = canExposeDebugToUser;
             const shouldDebugFinanceAgentToChat =
-              shouldDebugAgentToChat && process.env.DEBUG_FINANCE_AGENT_CHAT === "1";
+              shouldDebugAgentToChat &&
+              (process.env.DEBUG_FINANCE_AGENT_CHAT === "1" ||
+                process.env.DEBUG_FINANCE_AGENT === "1" ||
+                process.env.DEBUG_AGENT_CHAT === "1");
             const shouldDebugProjectAgentToChat =
-              shouldDebugAgentToChat && process.env.DEBUG_PROJECT_AGENT_CHAT === "1";
+              shouldDebugAgentToChat &&
+              (process.env.DEBUG_PROJECT_AGENT_CHAT === "1" ||
+                process.env.DEBUG_AGENT_CHAT === "1");
             const shouldDebugCitationsAgentToChat =
-              shouldDebugAgentToChat && process.env.DEBUG_CITATIONS_AGENT_CHAT === "1";
+              shouldDebugAgentToChat &&
+              (process.env.DEBUG_CITATIONS_AGENT_CHAT === "1" ||
+                process.env.DEBUG_AGENT_CHAT === "1");
 
             const summarizeAgentOutputForChat = (output: unknown) => {
               if (typeof output !== "object" || output === null) return output;
@@ -1621,6 +1713,7 @@ export async function POST(request: Request) {
                   "updateDocument",
                   "requestSuggestions",
                   "financeQuery",
+                  "runCollectionsAgent",
                   "runFinanceAgent",
                   "runProjectAgent",
                   "runCitationsAgent",
@@ -1635,6 +1728,392 @@ export async function POST(request: Request) {
               dataStream,
             }),
             financeQuery: financeQuery({ session, projectId: activeProjectId }),
+            runCollectionsAgent: tool({
+              description:
+                "Retrieve relevant project context from collections (Slack + uploaded docs). Use this only when you need additional project context. Do not use for finance totals/sums.",
+              inputSchema: z.object({
+                question: z.string().min(1).max(4000),
+              }),
+              execute: async ({ question }) => {
+                dataStream.write({
+                  type: "data-status",
+                  data: "Retrieving project context…",
+                });
+
+                if (
+                  AGGREGATION_HINT_RE.test(question) ||
+                  SPEND_INTENT_RE.test(question) ||
+                  INCOME_INTENT_RE.test(question)
+                ) {
+                  dataStream.write({
+                    type: "data-status",
+                    data: "Skipping retrieval for finance question…",
+                  });
+                  return { retrieved_context: "" };
+                }
+
+                const inferDocLockFilenameHint = (text: string): string | null => {
+                  const explicit = Array.from(
+                    text.matchAll(
+                      /(["'`])([^"'`\n]{1,160}\.(?:pdf|docx?|txt))\1|([^\s\n]{1,160}\.(?:pdf|docx?|txt))/gi
+                    )
+                  )
+                    .map((m) => (m[2] || m[3] || "").trim())
+                    .filter(Boolean);
+                  if (explicit.length > 0) {
+                    return explicit.at(-1)?.toLowerCase() ?? null;
+                  }
+
+                  const normalized = text.toLowerCase();
+                  const asksForOnly =
+                    normalized.includes("just use") ||
+                    normalized.includes("use only") ||
+                    normalized.includes("only use");
+                  if (
+                    asksForOnly &&
+                    normalized.includes("strategy") &&
+                    normalized.includes("doc")
+                  ) {
+                    return "strategy";
+                  }
+
+                  return null;
+                };
+
+                const nowMs = Date.now();
+                const effectiveTimeZone =
+                  typeof retrievalTimeZone === "string" &&
+                  retrievalTimeZone.length > 0
+                    ? retrievalTimeZone
+                    : "UTC";
+
+                const requestedPreset = retrievalRangePreset;
+                const timeFilterModeInfo =
+                  getRetrievalTimeFilterModeInfoForProject(activeProjectId);
+                const timeFilterMode = timeFilterModeInfo.mode;
+
+                const docLockFilenameHint = inferDocLockFilenameHint(question);
+                const hasTimeHint = TIME_RANGE_HINT_RE.test(question);
+                const intent = hasTimeHint
+                  ? await inferTimeWindowIntent({
+                      userText: question,
+                      requestedPreset: requestedPreset ?? "all",
+                    })
+                  : ({ kind: "none" } satisfies TimeWindowIntent);
+
+                const window = computeWindowFromIntent({
+                  intent,
+                  nowMs,
+                  timeZone: effectiveTimeZone,
+                });
+
+                const effectivePreset: RetrievalRangePreset =
+                  window
+                    ? "all"
+                    : intent.kind === "preset"
+                      ? intent.preset
+                      : requestedPreset && requestedPreset !== "all"
+                        ? requestedPreset
+                        : "all";
+
+                const requestedSourceTypes = (
+                  Array.isArray(sourceTypes) ? sourceTypes : undefined
+                ) as SourceType[] | undefined;
+                const slackEnabled = process.env.ENABLE_SLACK_RETRIEVAL === "1";
+                const effectiveSourceTypes = docLockFilenameHint
+                  ? (["docs"] satisfies SourceType[])
+                  : slackEnabled
+                    ? requestedSourceTypes
+                    : requestedSourceTypes?.filter((t) => t !== "slack");
+
+                const namespaces = namespacesForSourceTypes(
+                  effectiveSourceTypes,
+                  activeProjectId,
+                  isDefaultProject
+                );
+
+                const presetStartMs = startMsForPreset(effectivePreset, nowMs);
+                const rangeStartMs = window ? window.startMs : presetStartMs;
+                const rangeEndMs = window ? window.endMs : nowMs;
+
+                const rowTimestampTopK = 160;
+                const perNamespaceTopK =
+                  timeFilterMode === "rowTimestamp" && rangeStartMs !== null
+                    ? rowTimestampTopK
+                    : 24;
+
+                const retrievalQuery = (() => {
+                  const cleaned = stripMatchedText(question, intent.matchedText);
+                  return cleaned.length > 0 ? cleaned : question;
+                })();
+
+                const shouldUseSourceCreatedAtMsFilter =
+                  timeFilterMode === "sourceCreatedAtMs" && rangeStartMs !== null;
+
+                let appliedTimeFilterMode: RetrievalTimeFilterMode = timeFilterMode;
+
+                let rowsByNamespace = await queryCollectionsNamespaces({
+                  namespaces,
+                  query: retrievalQuery,
+                  topK: perNamespaceTopK,
+                  ignoredDocIds,
+                  slackChannelName: inferSlackChannelName(question),
+                  slackUserName: inferSlackUserName(question),
+                  sourceCreatedAtMsRange:
+                    shouldUseSourceCreatedAtMsFilter && rangeStartMs !== null
+                      ? { startMs: rangeStartMs, endMs: rangeEndMs }
+                      : null,
+                });
+
+                if (docLockFilenameHint) {
+                  const hint = docLockFilenameHint.toLowerCase();
+                  rowsByNamespace = rowsByNamespace.map((nsRows) =>
+                    nsRows.filter((row) => {
+                      const filename =
+                        typeof (row as any).filename === "string"
+                          ? (row as any).filename
+                          : "";
+                      return filename.toLowerCase().includes(hint);
+                    })
+                  );
+                }
+
+                const initialRowsCount = rowsByNamespace.reduce(
+                  (sum, nsRows) => sum + nsRows.length,
+                  0
+                );
+
+                if (initialRowsCount === 0 && shouldUseSourceCreatedAtMsFilter) {
+                  appliedTimeFilterMode = "rowTimestamp";
+                  rowsByNamespace = await queryCollectionsNamespaces({
+                    namespaces,
+                    query: retrievalQuery,
+                    topK: rowTimestampTopK,
+                    ignoredDocIds,
+                    slackChannelName: inferSlackChannelName(question),
+                    slackUserName: inferSlackUserName(question),
+                    sourceCreatedAtMsRange: null,
+                  });
+
+                  if (docLockFilenameHint) {
+                    const hint = docLockFilenameHint.toLowerCase();
+                    rowsByNamespace = rowsByNamespace.map((nsRows) =>
+                      nsRows.filter((row) => {
+                        const filename =
+                          typeof (row as any).filename === "string"
+                            ? (row as any).filename
+                            : "";
+                        return filename.toLowerCase().includes(hint);
+                      })
+                    );
+                  }
+                }
+
+                const fusedRows = rowsByNamespace.flat().sort((a, b) => {
+                  const da =
+                    typeof (a as any).$dist === "number"
+                      ? (a as any).$dist
+                      : Number.POSITIVE_INFINITY;
+                  const db =
+                    typeof (b as any).$dist === "number"
+                      ? (b as any).$dist
+                      : Number.POSITIVE_INFINITY;
+                  return da - db;
+                });
+
+                const timeFilteredRows =
+                  rangeStartMs === null
+                    ? fusedRows
+                    : fusedRows.filter((row) => {
+                        const tsMs = timestampMsFromRow(row);
+                        return tsMs !== null && tsMs >= rangeStartMs && tsMs < rangeEndMs;
+                      });
+
+                const isAggregation = AGGREGATION_HINT_RE.test(question);
+                const cappedRows: typeof timeFilteredRows = [];
+                const docIdCounts = new Map<string, number>();
+                const maxChunksPerDoc = isAggregation ? 1 : 10;
+                for (const row of timeFilteredRows) {
+                  const sourceTypeValue =
+                    typeof (row as any).sourceType === "string"
+                      ? (row as any).sourceType
+                      : "";
+                  if (sourceTypeValue === "docs") {
+                    const docId =
+                      typeof (row as any).doc_id === "string"
+                        ? (row as any).doc_id
+                        : null;
+                    if (docId) {
+                      const count = docIdCounts.get(docId) ?? 0;
+                      if (count >= maxChunksPerDoc) continue;
+                      docIdCounts.set(docId, count + 1);
+                    }
+                  }
+                  cappedRows.push(row);
+                }
+
+                const filteredRows = cappedRows.slice(0, isAggregation ? 120 : 24);
+                let usedRows = filteredRows.slice(0, isAggregation ? 40 : 8);
+
+                let retrieved = "";
+                const lastMentionName = extractLastMentionName(question);
+                if (lastMentionName) {
+                  const needle = lastMentionName.toLowerCase();
+                  let bestRow: Record<string, unknown> | null = null;
+                  let bestTsMs = -1;
+
+                  for (const row of timeFilteredRows) {
+                    const r = row as Record<string, unknown>;
+                    const sourceTypeValue =
+                      typeof r.sourceType === "string" ? r.sourceType : "";
+                    if (sourceTypeValue !== "slack") continue;
+
+                    const userName = typeof r.user_name === "string" ? r.user_name : "";
+                    const userEmail = typeof r.user_email === "string" ? r.user_email : "";
+                    const matchesName =
+                      (userName && userName.toLowerCase().includes(needle)) ||
+                      (userEmail && userEmail.toLowerCase().includes(needle));
+                    if (!matchesName) continue;
+
+                    const tsMs = timestampMsFromRow(r);
+                    if (tsMs === null) continue;
+                    if (tsMs > bestTsMs) {
+                      bestTsMs = tsMs;
+                      bestRow = r;
+                    }
+                  }
+
+                  if (bestRow && bestTsMs > 0) {
+                    usedRows = [bestRow as any];
+                    retrieved = formatNewestSlackMatch({
+                      name: lastMentionName,
+                      row: bestRow,
+                      tsMs: bestTsMs,
+                    });
+                  }
+                }
+
+                sources = usedRows;
+
+                const emitSourcesForClient = () => {
+                  if (sources.length === 0) return;
+                  const seen = new Set<string>();
+                  const uniqueSources: Array<{
+                    sourceType: string;
+                    docId?: string;
+                    filename?: string;
+                    channelName?: string;
+                    category?: string;
+                    description?: string;
+                    blobUrl?: string;
+                    content?: string;
+                  }> = [];
+
+                  for (const s of sources) {
+                    const sourceTypeValue =
+                      typeof (s as any).sourceType === "string" ? (s as any).sourceType : "";
+                    const docId = typeof (s as any).doc_id === "string" ? (s as any).doc_id : "";
+                    const blobUrl =
+                      typeof (s as any).blob_url === "string" ? (s as any).blob_url : "";
+                    const sourceUrl =
+                      typeof (s as any).source_url === "string" ? (s as any).source_url : "";
+                    const slackUrl = typeof (s as any).url === "string" ? (s as any).url : "";
+                    const channelName =
+                      typeof (s as any).channel_name === "string" ? (s as any).channel_name : "";
+                    const preferredUrl =
+                      sourceTypeValue === "docs" && sourceUrl.toLowerCase().includes("sharepoint.com")
+                        ? sourceUrl
+                        : sourceTypeValue === "slack" && slackUrl
+                          ? slackUrl
+                          : blobUrl || sourceUrl;
+                    const filename =
+                      typeof (s as any).filename === "string" ? (s as any).filename : "";
+                    const category =
+                      typeof (s as any).doc_category === "string" ? (s as any).doc_category : "";
+                    const description =
+                      typeof (s as any).doc_description === "string"
+                        ? (s as any).doc_description
+                        : "";
+                    const projectId =
+                      typeof (s as any).project_id === "string" ? (s as any).project_id : "";
+                    const key =
+                      sourceTypeValue === "docs" && projectId && filename
+                        ? `${sourceTypeValue}:${projectId}:${filename}`
+                        : docId
+                          ? `${sourceTypeValue}:${docId}`
+                          : blobUrl
+                            ? `${sourceTypeValue}:${blobUrl}`
+                            : `${sourceTypeValue}:${filename}`;
+
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    uniqueSources.push({
+                      sourceType: sourceTypeValue,
+                      docId: docId || undefined,
+                      filename: filename || undefined,
+                      channelName: channelName || undefined,
+                      category: category || undefined,
+                      description: description || undefined,
+                      blobUrl: preferredUrl || undefined,
+                      content:
+                        typeof (s as any).content === "string"
+                          ? String((s as any).content).slice(0, 200)
+                          : undefined,
+                    });
+                  }
+
+                  dataStream.write({
+                    type: "data-sources",
+                    data: uniqueSources,
+                  });
+                };
+
+                emitSourcesForClient();
+
+                if (!retrieved) {
+                  if (isAggregation) {
+                    retrieved = sources
+                      .map((row, index) => {
+                        const contentValue = (row as any).content ?? "";
+                        const content = String(contentValue);
+                        const filename =
+                          typeof (row as any).filename === "string"
+                            ? (row as any).filename
+                            : "";
+                        const channel =
+                          typeof (row as any).channel_name === "string"
+                            ? (row as any).channel_name
+                            : "";
+                        const header = filename
+                          ? filename
+                          : channel
+                            ? `#${channel}`
+                            : `result ${index + 1}`;
+                        const truncated =
+                          content.length > 700 ? `${content.slice(0, 700)}…` : content;
+                        return `${header}\n${truncated}`;
+                      })
+                      .join("\n\n");
+                  } else {
+                    retrieved = formatCollectionsRetrievedContext(sources as any);
+                  }
+                }
+
+                const maxChars = isAggregation ? 20_000 : 12_000;
+                if (retrieved.length > maxChars) {
+                  retrieved = `${retrieved.slice(0, maxChars)}\n\n[Context truncated]`;
+                }
+
+                dataStream.write({
+                  type: "data-status",
+                  data: appliedTimeFilterMode === "rowTimestamp"
+                    ? "Retrieved project context (timestamp fallback)…"
+                    : "Retrieved project context…",
+                });
+
+                return { retrieved_context: retrieved };
+              },
+            }),
             runFinanceAgent: tool({
               description:
                 "Delegate to FinanceAgent for deterministic finance analysis. Returns structured JSON including questions_for_user when clarification is needed.",
@@ -1642,10 +2121,17 @@ export async function POST(request: Request) {
                 question: z.string().min(1).max(4000),
               }),
               execute: async ({ question }) => {
+                dataStream.write({
+                  type: "data-status",
+                  data: "Consulting finance agent…",
+                });
+                // Important: use the actual last user text as the canonical question.
+                // Models sometimes paraphrase the tool input; that can flip spend vs income intent.
+                const effectiveQuestion = lastUserText.trim().length > 0 ? lastUserText : question;
                 return await runFinanceAgent({
                   session,
                   projectId: activeProjectId,
-                  input: { question },
+                  input: { question: effectiveQuestion },
                 });
               },
             }),
@@ -1656,6 +2142,10 @@ export async function POST(request: Request) {
                 question: z.string().min(1).max(4000),
               }),
               execute: async ({ question }) => {
+                dataStream.write({
+                  type: "data-status",
+                  data: "Consulting project agent…",
+                });
                 return await runProjectAgent({
                   session,
                   input: { question, projectId: activeProjectId },
@@ -1670,6 +2160,10 @@ export async function POST(request: Request) {
                 draft_answer: z.string().min(1).max(20000),
               }),
               execute: async ({ question, draft_answer }) => {
+                dataStream.write({
+                  type: "data-status",
+                  data: "Adding citations…",
+                });
                 const sourceItems = sources
                   .slice(0, 20)
                   .map((s, idx) => ({

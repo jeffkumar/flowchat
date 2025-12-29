@@ -8,6 +8,9 @@ const SOURCE_TYPES_STORAGE_KEY = "synergy_retrieval_source_types";
 const RANGE_PRESET_STORAGE_KEY = "synergy_retrieval_range_preset";
 const SETTINGS_CHANGED_EVENT = "synergy:retrieval-settings-changed";
 
+const SLACK_RETRIEVAL_ENABLED =
+  process.env.NEXT_PUBLIC_ENABLE_SLACK_RETRIEVAL === "1";
+
 function readJson<T>(key: string): T | null {
   if (typeof window === "undefined") return null;
   const raw = localStorage.getItem(key);
@@ -104,8 +107,11 @@ export function useRetrievalSettings() {
 
   const includeSlack = useSyncExternalStore<boolean>(
     subscribe,
-    () => readIncludeSlackFromStorage() ?? true,
-    () => true
+    () => {
+      if (!SLACK_RETRIEVAL_ENABLED) return false;
+      return readIncludeSlackFromStorage() ?? false;
+    },
+    () => false
   );
 
   const retrievalRangePreset = useSyncExternalStore<RetrievalRangePreset>(
@@ -115,7 +121,7 @@ export function useRetrievalSettings() {
   );
 
   const setIncludeSlack = useCallback((next: boolean) => {
-    writeJson(INCLUDE_SLACK_STORAGE_KEY, next);
+    writeJson(INCLUDE_SLACK_STORAGE_KEY, SLACK_RETRIEVAL_ENABLED ? next : false);
   }, []);
 
   const setRetrievalRangePreset = useCallback((next: RetrievalRangePreset) => {

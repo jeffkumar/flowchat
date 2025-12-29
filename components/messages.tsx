@@ -20,6 +20,7 @@ type MessagesProps = {
   isArtifactVisible: boolean;
   selectedModelId: string;
   showCitations: boolean;
+  phaseStatus: string | null;
 };
 
 function PureMessages({
@@ -32,6 +33,7 @@ function PureMessages({
   isReadonly,
   selectedModelId: _selectedModelId,
   showCitations,
+  phaseStatus,
 }: MessagesProps) {
   const {
     containerRef: messagesContainerRef,
@@ -44,6 +46,24 @@ function PureMessages({
   });
 
   useDataStream();
+
+  const hasAssistantText = (() => {
+    const lastAssistant = messages
+      .slice()
+      .reverse()
+      .find((m) => m.role === "assistant");
+    if (!lastAssistant) return false;
+    for (const part of lastAssistant.parts) {
+      if (part.type !== "text") continue;
+      if (typeof part.text === "string" && part.text.trim().length > 0) {
+        return true;
+      }
+    }
+    return false;
+  })();
+
+  const showLoading =
+    status === "submitted" || (status === "streaming" && !hasAssistantText);
 
   return (
     <div className="relative flex-1">
@@ -77,7 +97,7 @@ function PureMessages({
             />
           ))}
 
-          {status === "submitted" && <ThinkingMessage />}
+          {showLoading && <ThinkingMessage label={phaseStatus ?? undefined} />}
 
           <div
             className="min-h-[24px] min-w-[24px] shrink-0"
@@ -108,6 +128,9 @@ export const Messages = memo(PureMessages, (prevProps, nextProps) => {
   }
 
   if (prevProps.status !== nextProps.status) {
+    return false;
+  }
+  if (prevProps.phaseStatus !== nextProps.phaseStatus) {
     return false;
   }
   if (prevProps.selectedModelId !== nextProps.selectedModelId) {

@@ -165,7 +165,8 @@ function BusinessNameTypeahead({
 }
 
 function getSourceTypes(includeSlack: boolean): Array<"slack" | "docs"> {
-  return includeSlack ? ["slack", "docs"] : ["docs"];
+  const slackEnabled = process.env.NEXT_PUBLIC_ENABLE_SLACK_RETRIEVAL === "1";
+  return slackEnabled && includeSlack ? ["slack", "docs"] : ["docs"];
 }
 
 function labelForPreset(preset: RetrievalRangePreset) {
@@ -259,6 +260,7 @@ export function Chat({
     null
   );
   const pendingSourcesRef = useRef<RetrievedSource[] | null>(null);
+  const [phaseStatus, setPhaseStatus] = useState<string | null>(null);
 
   const {
     messages,
@@ -302,6 +304,9 @@ export function Chat({
         pendingSourcesRef.current = dataPart.data;
         setPendingSources(dataPart.data);
       }
+      if (dataPart.type === "data-status") {
+        setPhaseStatus(typeof dataPart.data === "string" ? dataPart.data : null);
+      }
     },
     onFinish: (result) => {
       // If we have pending sources, attach them to the last message here
@@ -336,6 +341,7 @@ export function Chat({
           )
         )
       );
+      setPhaseStatus(null);
     },
     onError: (error) => {
       if (error instanceof ChatSDKError) {
@@ -371,6 +377,7 @@ export function Chat({
     if (statusRef.current !== status && status === "submitted") {
       pendingSourcesRef.current = null;
       setPendingSources(null);
+      setPhaseStatus(null);
     }
     statusRef.current = status;
   }, [status]);
@@ -606,6 +613,7 @@ export function Chat({
           status={status}
           votes={votes}
           showCitations={showCitations}
+          phaseStatus={phaseStatus}
         />
 
         <div className="sticky bottom-0 z-1 mx-auto flex w-full max-w-4xl flex-col gap-2 border-t-0 bg-background dark:bg-auth-charcoal px-2 pb-3 md:px-4 md:pb-4">
