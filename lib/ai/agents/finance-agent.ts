@@ -4,6 +4,7 @@ import { z } from "zod";
 import { myProvider } from "@/lib/ai/providers";
 import { financeQuery } from "@/lib/ai/tools/finance-query";
 import {
+  financeGroupByMonth,
   financeGroupByMerchant,
   financeList,
   financeSum,
@@ -95,6 +96,18 @@ export async function runFinanceAgent({
   };
 
   const parseRollingWindowDays = (text: string): number | null => {
+    const preset = text.match(
+      /\b(?:last|past)\s+(week|month|quarter|year)\b|\b(?:last)\s+(90)\s+days\b/i
+    );
+    if (preset) {
+      const unit = preset[1]?.toLowerCase();
+      if (unit === "week") return 7;
+      if (unit === "month") return 30;
+      if (unit === "quarter") return 90;
+      if (unit === "year") return 365;
+      if (preset[2] === "90") return 90;
+    }
+
     const m = text.match(/\b(?:last|past)\s+(\d{1,4})\s*(day|days|week|weeks|month|months|year|years)\b/i);
     if (!m) return null;
     const n = Number(m[1]);
@@ -105,6 +118,42 @@ export async function runFinanceAgent({
     if (unit.startsWith("month")) return n * 30;
     if (unit.startsWith("year")) return n * 365;
     return null;
+  };
+
+  const parseRollingWindowMonths = (text: string): number | null => {
+    const m = text.match(/\b(?:last|past)\s+(\d{1,3})\s*months?\b/i);
+    if (!m) return null;
+    const n = Number(m[1]);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return n;
+  };
+
+  const monthStartYmdUtc = (d: Date): string => {
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    return `${y}-${m}-01`;
+  };
+
+  const addMonthsYmdUtc = (ymd: string, monthsToAdd: number): string => {
+    const [yStr, mStr] = ymd.split("-");
+    const y = Number(yStr);
+    const m = Number(mStr);
+    if (!Number.isFinite(y) || !Number.isFinite(m)) return ymd;
+    const base = new Date(Date.UTC(y, m - 1, 1));
+    base.setUTCMonth(base.getUTCMonth() + monthsToAdd);
+    return monthStartYmdUtc(base);
+  };
+
+  const enumerateMonths = (startYmd: string, endYmd: string): string[] => {
+    const out: string[] = [];
+    let cur = startYmd;
+    // Guard against infinite loops on malformed input
+    for (let i = 0; i < 120; i += 1) {
+      if (cur >= endYmd) break;
+      out.push(cur.slice(0, 7));
+      cur = addMonthsYmdUtc(cur, 1);
+    }
+    return out;
   };
 
   const system = `You are FinanceAgent.
@@ -764,6 +813,307 @@ Return JSON only.`;
           ],
           citations: [],
           confidence: total.count === 0 ? "low" : "medium",
+        });
+      }
+    }
+
+    // Monthly spend on Amex for the last N full calendar months (personal).
+    if (
+      parsed.projectId &&
+      wantsPersonal &&
+      isSpendLike &&
+      wantsCc &&
+      (q.includes("each month") || q.includes("month by month")) &&
+      (q.includes("amex") || q.includes("american express"))
+    ) {
+      const months = parseRollingWindowMonths(parsed.question);
+      if (typeof months === "number") {
+        const safeMonths = Math.min(Math.max(months, 1), 24);
+        const now = new Date();
+        const date_end = monthStartYmdUtc(now); // first day of current month (UTC) => last N *full* months
+        const date_start = addMonthsYmdUtc(date_end, -safeMonths);
+
+        const docs = await getProjectDocsByProjectId({ projectId: parsed.projectId });
+        const personalAmexDocs = docs
+          .filter((d) => d.documentType === "cc_statement")
+          .filter((d) => d.entityKind === "personal")
+          .filter((d) => d.filename.toLowerCase().includes("amex"));
+
+        const docIds = personalAmexDocs.map((d) => d.id);
+        if (docIds.length === 0) {
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: "",
+            questions_for_user: [
+              `I don’t see any personal Amex credit-card statements tagged Personal yet. Which statement should I use to compute the last ${safeMonths} months of spend?`,
+            ],
+            assumptions: [],
+            tool_calls: [],
+            citations: [],
+            confidence: "low",
+          });
+        }
+
+        const grouped = await financeGroupByMonth({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "cc_statement",
+          filters: {
+            doc_ids: docIds,
+            date_start,
+            date_end,
+            amount_min: 0.01,
+          },
+        });
+
+        const wantMonths = enumerateMonths(date_start, date_end);
+        const totalsByMonth = new Map<string, string>();
+        if (Array.isArray(grouped.rows)) {
+          for (const r of grouped.rows) {
+            if (!r || typeof r !== "object") continue;
+            const row = r as { month?: string; total?: string };
+            if (typeof row.month === "string" && typeof row.total === "string") {
+              totalsByMonth.set(row.month, row.total);
+            }
+          }
+        }
+
+        const lines = wantMonths.map((m) => `${m}: $${totalsByMonth.get(m) ?? "0"}`);
+
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: [
+            `Monthly spend on your personal Amex for the last ${safeMonths} full calendar months (${date_start} to ${date_end}):`,
+            "",
+            ...lines,
+          ].join("\n"),
+          questions_for_user: [],
+          assumptions: ["Spend is computed as positive cc_statement amounts (amount > 0)."],
+          tool_calls: [
+            {
+              toolName: "financeGroupByMonth",
+              input: {
+                document_type: "cc_statement",
+                doc_ids: docIds,
+                date_start,
+                date_end,
+                amount_min: 0.01,
+              },
+              output: grouped,
+            },
+          ],
+          citations: [],
+          confidence: "medium",
+        });
+      }
+    }
+
+    // Credit-card spend for a specific month (e.g. "October 2025"): pick the most relevant statement(s) and sum charges for that month.
+    if (
+      isSpendLike &&
+      wantsCc &&
+      (wantsBusiness || wantsPersonal) &&
+      parsed.projectId &&
+      monthFromText
+    ) {
+      const year =
+        parsed.time_hint?.kind === "year"
+          ? parsed.time_hint.year ?? null
+          : inferYearFromText(parsed.question) ?? new Date().getUTCFullYear();
+
+      if (typeof year === "number" && Number.isFinite(year)) {
+        const mm = String(monthFromText).padStart(2, "0");
+        const date_start = `${year}-${mm}-01`;
+        const endYear = monthFromText === 12 ? year + 1 : year;
+        const endMonth = monthFromText === 12 ? 1 : monthFromText + 1;
+        const endMm = String(endMonth).padStart(2, "0");
+        const date_end = `${endYear}-${endMm}-01`;
+
+        const docs = await getProjectDocsByProjectId({ projectId: parsed.projectId });
+        const ccDocs = docs.filter((d) => d.documentType === "cc_statement");
+        const mentionsAmex = q.includes("amex") || q.includes("american express");
+
+        const businessNames = await listBusinessEntityNames();
+        const hintedName = parsed.entity_hint?.entity_name?.trim();
+        const inferredName = inferBusinessNameFromText(parsed.question, businessNames);
+        const entityName =
+          hintedName && hintedName.length > 0
+            ? hintedName
+            : inferredName
+              ? inferredName
+              : businessNames.length === 1
+                ? businessNames[0]
+                : null;
+
+        if (wantsBusiness && !entityName) {
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: "",
+            questions_for_user: [
+              businessNames.length > 0
+                ? `Which business should I use? (${businessNames.join(", ")})`
+                : "Which business should I use?",
+            ],
+            assumptions: [],
+            tool_calls: [],
+            citations: [],
+            confidence: "low",
+          });
+        }
+
+        const ymdFromMaybeDate = (v: unknown): string | null => {
+          if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+          if (v instanceof Date && Number.isFinite(v.getTime())) {
+            return v.toISOString().slice(0, 10);
+          }
+          return null;
+        };
+
+        const overlapsMonth = (doc: (typeof ccDocs)[number]): boolean => {
+          const ps = ymdFromMaybeDate((doc as any).periodStart);
+          const pe = ymdFromMaybeDate((doc as any).periodEnd);
+          if (!ps || !pe) return true; // unknown period => keep as candidate
+          // overlap([ps, pe), [date_start, date_end)) iff pe > start && ps < end
+          return pe > date_start && ps < date_end;
+        };
+
+        const baseCandidates = mentionsAmex
+          ? (() => {
+              const amex = ccDocs.filter((d) => d.filename.toLowerCase().includes("amex"));
+              return amex.length > 0 ? amex : ccDocs;
+            })()
+          : ccDocs;
+
+        const candidates = (() => {
+          if (wantsPersonal) {
+            return baseCandidates.filter((d) => d.entityKind === "personal").filter(overlapsMonth);
+          }
+          if (wantsBusiness) {
+            const target = String(entityName ?? "").trim().toLowerCase();
+            const tagged = baseCandidates
+              .filter((d) => d.entityKind === "business")
+              .filter((d) => {
+                const name = typeof d.entityName === "string" ? d.entityName.trim().toLowerCase() : "";
+                return name.length > 0 && name === target;
+              })
+              .filter(overlapsMonth);
+            if (tagged.length > 0) return tagged;
+            // If nothing explicitly tagged to this business, fall back to non-personal docs that overlap.
+            const nonPersonal = baseCandidates.filter((d) => d.entityKind !== "personal").filter(overlapsMonth);
+            return nonPersonal;
+          }
+          return baseCandidates.filter(overlapsMonth);
+        })();
+
+        logAlwaysInDev("deterministic_month_spend_candidates", {
+          wantsPersonal,
+          wantsBusiness,
+          mentionsAmex,
+          entityName: wantsBusiness ? entityName : null,
+          month: `${year}-${mm}`,
+          candidates: candidates.slice(0, 10).map((d) => ({
+            id: d.id,
+            filename: d.filename,
+            entityKind: d.entityKind,
+            entityName: d.entityName,
+            periodStart: (d as any).periodStart,
+            periodEnd: (d as any).periodEnd,
+          })),
+        });
+
+        if (candidates.length === 0) {
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: "",
+            questions_for_user: [
+              wantsBusiness && entityName
+                ? `I don’t see any credit-card statements for ${entityName} that match ${year}-${mm}. Which statement should I use?`
+                : `I don’t see any personal credit-card statements that match ${year}-${mm}. Which statement should I use?`,
+            ],
+            assumptions: [],
+            tool_calls: [],
+            citations: [],
+            confidence: "low",
+          });
+        }
+
+        if (candidates.length > 1) {
+          const options = candidates.slice(0, 10).map((d) => d.filename);
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: "",
+            questions_for_user: [
+              wantsBusiness && entityName
+                ? `Which ${entityName} credit-card statement should I use for ${year}-${mm} spend? (${options.join(", ")})`
+                : `Which personal credit-card statement should I use for ${year}-${mm} spend? (${options.join(", ")})`,
+            ],
+            assumptions: [],
+            tool_calls: [],
+            citations: [],
+            confidence: "low",
+          });
+        }
+
+        const doc = candidates[0];
+        const absDecimalString = (s: string): string => (s.startsWith("-") ? s.slice(1) : s);
+
+        // Prefer positive-charge convention. If 0 rows, fall back to negative-charge convention and present absolute.
+        const sumPos = (await financeSum({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "cc_statement",
+          filters: {
+            doc_ids: [doc.id],
+            date_start,
+            date_end,
+            amount_min: 0.01,
+          },
+        })) as { total: string; count: number };
+
+        const sumNeg =
+          sumPos.count === 0
+            ? ((await financeSum({
+                userId: session.user.id,
+                projectId: parsed.projectId,
+                documentType: "cc_statement",
+                filters: {
+                  doc_ids: [doc.id],
+                  date_start,
+                  date_end,
+                  amount_max: -0.01,
+                },
+              })) as { total: string; count: number })
+            : null;
+
+        const used = sumNeg && sumNeg.count > 0 ? sumNeg : sumPos;
+        const total = typeof used.total === "string" ? absDecimalString(used.total) : String(used.total);
+        const signNote =
+          sumNeg && sumNeg.count > 0
+            ? " (note: amounts were stored as negatives; total shown as absolute)"
+            : "";
+
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: wantsBusiness && entityName
+            ? `You spent $${total} on ${entityName}${mentionsAmex ? " Amex" : ""} in ${year}-${mm}${signNote}.`
+            : `You spent $${total} on your personal credit card${mentionsAmex ? " (Amex)" : ""} in ${year}-${mm}${signNote}.`,
+          questions_for_user: [],
+          assumptions: ["Spend is computed from cc_statement transactions for the specified month; transfers/payments are not included unless present as transactions."],
+          tool_calls: [
+            {
+              toolName: "financeSum",
+              input: {
+                document_type: "cc_statement",
+                doc_ids: [doc.id],
+                date_start,
+                date_end,
+                ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }),
+              },
+              output: used,
+            },
+          ],
+          citations: [],
+          confidence: used.count === 0 ? "low" : "medium",
         });
       }
     }
