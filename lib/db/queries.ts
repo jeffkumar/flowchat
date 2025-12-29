@@ -2028,6 +2028,164 @@ export async function getProjectEntitySummaryForUser({
   }
 }
 
+function truncateText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+function formatYmd(value: Date | string | null | undefined): string | null {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+  // Date from drizzle date() comes as string (YYYY-MM-DD) typically, but keep safe.
+  try {
+    const yyyy = value.getUTCFullYear();
+    const mm = String(value.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(value.getUTCDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  } catch {
+    return null;
+  }
+}
+
+export async function getProjectContextSnippetForUser({
+  userId,
+  projectId,
+  maxDocs = 12,
+}: {
+  userId: string;
+  projectId: string;
+  maxDocs?: number;
+}): Promise<string> {
+  try {
+    const maxDocsSafe = Number.isFinite(maxDocs) ? Math.max(1, Math.min(25, maxDocs)) : 12;
+
+    // Verify access + get project label
+    const [projRow] = await db
+      .select({
+        id: project.id,
+        name: project.name,
+        isDefault: project.isDefault,
+        createdBy: project.createdBy,
+        memberUserId: projectUser.userId,
+      })
+      .from(project)
+      .leftJoin(
+        projectUser,
+        and(eq(projectUser.projectId, project.id), eq(projectUser.userId, userId))
+      )
+      .where(eq(project.id, projectId))
+      .limit(1);
+
+    if (!projRow || (projRow.createdBy !== userId && projRow.memberUserId !== userId)) {
+      throw new ChatSDKError("forbidden:api", "You do not have access to this project");
+    }
+
+    const entitySummary = await getProjectEntitySummaryForUser({ userId, projectId });
+    const personalPresent =
+      entitySummary.some((e) => e.entityKind === "personal") ||
+      entitySummary.some((e) => e.entityName === "Personal");
+    const businessNames = entitySummary
+      .filter((e) => e.entityKind === "business" && typeof e.entityName === "string")
+      .map((e) => (e.entityName as string).trim())
+      .filter((n) => n.length > 0);
+
+    // Pull top docs + transaction counts (for bank/cc)
+    const docs = await db
+      .select({
+        id: projectDoc.id,
+        filename: projectDoc.filename,
+        documentType: projectDoc.documentType,
+        parseStatus: projectDoc.parseStatus,
+        periodStart: projectDoc.periodStart,
+        periodEnd: projectDoc.periodEnd,
+        entityKind: projectDoc.entityKind,
+        entityName: projectDoc.entityName,
+        createdAt: projectDoc.createdAt,
+        txnCount: sql<number>`COUNT(${financialTransaction.id})::int`.as("txnCount"),
+      })
+      .from(projectDoc)
+      .leftJoin(financialTransaction, eq(financialTransaction.documentId, projectDoc.id))
+      .where(eq(projectDoc.projectId, projectId))
+      .groupBy(projectDoc.id)
+      .orderBy(desc(projectDoc.createdAt))
+      .limit(maxDocsSafe);
+
+    const headerProjectName = projRow.isDefault ? "Default" : projRow.name;
+    const header = `Project: ${headerProjectName} (${projRow.id})`;
+    const entitiesLine = (() => {
+      const parts: string[] = [];
+      if (personalPresent) parts.push("Personal");
+      for (const name of Array.from(new Set(businessNames)).sort((a, b) => a.localeCompare(b))) {
+        parts.push(name);
+      }
+      return parts.length > 0 ? `Entities: ${parts.join(", ")}` : "Entities: (none tagged yet)";
+    })();
+
+    const docLines: string[] = [];
+    for (const d of docs) {
+      const entityLabel =
+        d.entityKind === "business" && typeof d.entityName === "string" && d.entityName.trim()
+          ? `Business:${d.entityName.trim()}`
+          : d.entityKind === "personal"
+            ? "Personal"
+            : "Unassigned";
+      const periodStart = formatYmd(d.periodStart);
+      const periodEnd = formatYmd(d.periodEnd);
+      const period = periodStart && periodEnd ? `${periodStart}–${periodEnd}` : null;
+      const txnInfo =
+        d.documentType === "bank_statement" || d.documentType === "cc_statement"
+          ? `, txns=${d.txnCount ?? 0}`
+          : "";
+      const filename = truncateText(d.filename, 60);
+      const parse = d.parseStatus;
+      const type = d.documentType;
+      docLines.push(
+        `- ${filename} (${type}, ${entityLabel}${period ? `, period=${period}` : ""}, status=${parse}${txnInfo})`
+      );
+    }
+
+    const policy = "Policy: income defaults to bank deposits; transfers excluded unless the user opts in.";
+
+    const full = [header, entitiesLine, "Financial docs (most recent):", ...docLines, policy]
+      .filter((s) => s.length > 0)
+      .join("\n");
+
+    // Hard cap output to keep prompts bounded
+    return truncateText(full, 1900);
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to build project context snippet"
+    );
+  }
+}
+
+export async function invalidateProjectContextSnippetForUserProject({
+  userId,
+  projectId,
+}: {
+  userId: string;
+  projectId: string;
+}): Promise<void> {
+  try {
+    // Set generatedAt to 0 so next chat turn refreshes.
+    await db.execute(sql`
+      UPDATE "Chat"
+      SET "lastContext" = jsonb_set(
+        COALESCE("lastContext", '{}'::jsonb),
+        '{projectContextGeneratedAtMs}',
+        '0'::jsonb,
+        true
+      )
+      WHERE "userId" = ${userId}
+        AND "projectId" = ${projectId}::uuid
+    `);
+  } catch (error) {
+    // Best-effort invalidation; don't hard fail uploads/syncs.
+    console.warn("Failed to invalidate project context snippet", { userId, projectId, error });
+  }
+}
+
 export async function insertInvoiceLineItems({
   invoiceId,
   rows,
@@ -2147,7 +2305,14 @@ function buildEntityFilter({
 }) {
   const clauses: SQL[] = [];
   if (entityKind === "personal" || entityKind === "business") {
-    clauses.push(eq(projectDoc.entityKind, entityKind));
+    if (entityKind === "personal") {
+      // Back-compat: older docs may have entityName='Personal' but a NULL entityKind.
+      clauses.push(
+        sql`(${projectDoc.entityKind} = 'personal' OR LOWER(${projectDoc.entityName}) = 'personal')`
+      );
+    } else {
+      clauses.push(eq(projectDoc.entityKind, "business"));
+    }
   }
   if (typeof entityName === "string") {
     const trimmed = entityName.trim();

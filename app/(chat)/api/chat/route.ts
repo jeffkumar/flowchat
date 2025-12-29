@@ -43,7 +43,6 @@ import {
   getMessagesByChatId,
   getOrCreateDefaultProjectForUser,
   getProjectByIdForUser,
-  getProjectEntitySummaryForUser,
   saveChat,
   saveMessages,
   updateChatLastContextById,
@@ -78,10 +77,12 @@ const TIME_RANGE_HINT_RE =
 
 // Heuristic: aggregation questions need more coverage across many docs (e.g. "sum across 30 invoices").
 const AGGREGATION_HINT_RE =
-  /\b(sum|total|add\s+up|aggregate|roll\s*up|grand\s+total)\b|\b(invoices?|receipts?)\b|\b(by|per|each)\s+month\b|\bmonthly\b|\bacross\s+\d+\b|\b(income|deposits?|revenue|bring\s+in|made)\b/i;
+  /\b(sum|total|add\s+up|aggregate|roll\s*up|grand\s+total)\b|\b(invoices?|receipts?)\b|\b(by|per|each)\s+month\b|\bmonthly\b|\bacross\s+\d+\b|\b(income|deposits?|revenue|bring\s+in|made|paid)\b/i;
 
 const INCOME_INTENT_RE =
-  /\b(how\s+much\s+did\s+i\s+make|how\s+much\s+did\s+we\s+make|how\s+much\s+did\s+we\s+bring\s+in|bring\s+in|income|deposits?|revenue|made)\b/i;
+  /\b(how\s+much\s+did\s+i\s+make|how\s+much\s+did\s+we\s+make|how\s+much\s+did\s+we\s+bring\s+in|bring\s+in|income|deposits?|revenue|made|paid)\b/i;
+
+const SPEND_INTENT_RE = /\b(spend|spent|spending|expense|expenses|charges?|rent|mortgage|lease)\b/i;
 
 const INVOICE_REVENUE_RE = /\binvoice\s+revenue\b/i;
 
@@ -864,7 +865,12 @@ export async function POST(request: Request) {
 
     let retrievedContext = "";
     let sources: any[] = [];
-    if (userText) {
+
+    // Finance questions should not depend on Turbopuffer retrieval.
+    const skipRetrievalForFinance = AGGREGATION_HINT_RE.test(userText) || SPEND_INTENT_RE.test(userText);
+    const shouldLogRetrieval = process.env.DEBUG_TURBOPUFFER === "1";
+
+    if (userText && !skipRetrievalForFinance) {
       try {
         const inferDocLockFilenameHint = (text: string): string | null => {
           // Explicit filename mention (prefer this).
@@ -936,22 +942,24 @@ export async function POST(request: Request) {
           isDefaultProject
         );
 
-        console.log("Chat Retrieval Debug:", {
-          activeProjectId,
-          isDefaultProject,
-          namespaces,
-          requestedSourceTypes: effectiveSourceTypes,
-          ignoredDocIds,
-          docLockFilenameHint,
-          retrievalTimeIntent: intent,
-          retrievalTimeFilterMode: timeFilterMode,
-          retrievalTimeFilterModeDefault: timeFilterModeInfo.defaultMode,
-          retrievalTimeFilterModeProjectAllowlisted: timeFilterModeInfo.projectAllowlisted,
-          retrievalRangePreset: effectivePreset,
-          retrievalRangePresetRequested: requestedPreset,
-          retrievalTimeZone: effectiveTimeZone,
-          retrievalRelativeDay: intent.kind === "relativeDay" ? intent.relativeDay : null,
-        });
+        if (shouldLogRetrieval) {
+          console.log("Chat Retrieval Debug:", {
+            activeProjectId,
+            isDefaultProject,
+            namespaces,
+            requestedSourceTypes: effectiveSourceTypes,
+            ignoredDocIds,
+            docLockFilenameHint,
+            retrievalTimeIntent: intent,
+            retrievalTimeFilterMode: timeFilterMode,
+            retrievalTimeFilterModeDefault: timeFilterModeInfo.defaultMode,
+            retrievalTimeFilterModeProjectAllowlisted: timeFilterModeInfo.projectAllowlisted,
+            retrievalRangePreset: effectivePreset,
+            retrievalRangePresetRequested: requestedPreset,
+            retrievalTimeZone: effectiveTimeZone,
+            retrievalRelativeDay: intent.kind === "relativeDay" ? intent.relativeDay : null,
+          });
+        }
 
         const presetStartMs = startMsForPreset(effectivePreset, nowMs);
         const rangeStartMs = window ? window.startMs : presetStartMs;
@@ -975,27 +983,31 @@ export async function POST(request: Request) {
             month: "2-digit",
             day: "2-digit",
           }).format(new Date(window.endMs));
-          console.log("Chat Retrieval Relative Day Window:", {
-            retrievalRelativeDay:
-              intent.kind === "relativeDay" ? intent.relativeDay : null,
-            retrievalTimeZone: effectiveTimeZone,
-            startLocal,
-            endLocal,
-            startMs: window.startMs,
-            endMs: window.endMs,
-          });
+          if (shouldLogRetrieval) {
+            console.log("Chat Retrieval Relative Day Window:", {
+              retrievalRelativeDay:
+                intent.kind === "relativeDay" ? intent.relativeDay : null,
+              retrievalTimeZone: effectiveTimeZone,
+              startLocal,
+              endLocal,
+              startMs: window.startMs,
+              endMs: window.endMs,
+            });
+          }
         }
 
         const retrievalQuery = (() => {
           const cleaned = stripMatchedText(userText, intent.matchedText);
           return cleaned.length > 0 ? cleaned : userText;
         })();
-        console.log("Chat Retrieval Query:", {
-          userTextLength: userText.length,
-          retrievalQueryLength: retrievalQuery.length,
-          retrievalQueryPreview:
-            retrievalQuery.length > 200 ? `${retrievalQuery.slice(0, 200)}…` : retrievalQuery,
-        });
+        if (shouldLogRetrieval) {
+          console.log("Chat Retrieval Query:", {
+            userTextLength: userText.length,
+            retrievalQueryLength: retrievalQuery.length,
+            retrievalQueryPreview:
+              retrievalQuery.length > 200 ? `${retrievalQuery.slice(0, 200)}…` : retrievalQuery,
+          });
+        }
 
         const queryNamespace = async ({
           ns,
@@ -1073,13 +1085,15 @@ export async function POST(request: Request) {
         const initialRowsCount = rowsByNamespace.reduce((sum, nsRows) => sum + nsRows.length, 0);
         if (initialRowsCount === 0 && shouldUseSourceCreatedAtMsFilter) {
           appliedTimeFilterMode = "rowTimestamp";
-          console.log("Chat Retrieval Time Filter Fallback:", {
-            reason: "no_rows_with_sourceCreatedAtMs_filter",
-            rangeStartMs,
-            rangeEndMs,
-            namespaces,
-            topK: rowTimestampTopK,
-          });
+          if (shouldLogRetrieval) {
+            console.log("Chat Retrieval Time Filter Fallback:", {
+              reason: "no_rows_with_sourceCreatedAtMs_filter",
+              rangeStartMs,
+              rangeEndMs,
+              namespaces,
+              topK: rowTimestampTopK,
+            });
+          }
           rowsByNamespace = await Promise.all(
             namespaces.map(async (ns) =>
               queryNamespace({
@@ -1117,16 +1131,18 @@ export async function POST(request: Request) {
                 return tsMs !== null && tsMs >= rangeStartMs && tsMs < rangeEndMs;
               });
 
-        console.log("Chat Retrieval Time Filter:", {
-          retrievalRangePreset: effectivePreset,
-          retrievalRangePresetRequested: requestedPreset,
-          retrievalTimeFilterModeApplied: appliedTimeFilterMode,
-          rangeStartMs,
-          rangeEndMs,
-          nowMs,
-          fusedRowsCount: fusedRows.length,
-          timeFilteredRowsCount: timeFilteredRows.length,
-        });
+        if (shouldLogRetrieval) {
+          console.log("Chat Retrieval Time Filter:", {
+            retrievalRangePreset: effectivePreset,
+            retrievalRangePresetRequested: requestedPreset,
+            retrievalTimeFilterModeApplied: appliedTimeFilterMode,
+            rangeStartMs,
+            rangeEndMs,
+            nowMs,
+            fusedRowsCount: fusedRows.length,
+            timeFilteredRowsCount: timeFilteredRows.length,
+          });
+        }
 
         const isAggregationQuery = AGGREGATION_HINT_RE.test(userText);
 
@@ -1243,51 +1259,53 @@ export async function POST(request: Request) {
             namespace: namespaces[i],
             rowsCount: nsRows.length,
           }));
-          console.log("Turbopuffer retrieval succeeded", {
-            queryLength: userText.length,
-            requestedSourceTypes,
-            namespaces,
-            perNamespace: byNamespaceCounts,
-            fusedRowsCount: fusedRows.length,
-            selectedRowsCount: filteredRows.length,
-            sample: filteredRows.slice(0, 12).map((r) => ({
-              $dist:
-                typeof r.$dist === "number"
-                  ? Number(r.$dist.toFixed(3))
-                  : r.$dist,
-              sourceType:
-                typeof (r as any).sourceType === "string"
-                  ? (r as any).sourceType
-                  : typeof (r as any).source === "string"
-                    ? (r as any).source
-                    : null,
-              preview: truncatePreview((r as any).content),
-              docId: typeof (r as any).doc_id === "string" ? (r as any).doc_id : null,
-              url: typeof (r as any).url === "string" ? (r as any).url : null,
-              filename:
-                typeof (r as any).filename === "string" ? (r as any).filename : null,
-              blobUrl:
-                typeof (r as any).blob_url === "string" ? (r as any).blob_url : null,
-              projectId:
-                typeof (r as any).project_id === "string" ? (r as any).project_id : null,
-              sourceCreatedAtMs:
-                typeof (r as any).sourceCreatedAtMs === "number"
-                  ? (r as any).sourceCreatedAtMs
-                  : typeof (r as any).sourceCreatedAtMs === "string"
+          if (shouldLogRetrieval) {
+            console.log("Turbopuffer retrieval succeeded", {
+              queryLength: userText.length,
+              requestedSourceTypes,
+              namespaces,
+              perNamespace: byNamespaceCounts,
+              fusedRowsCount: fusedRows.length,
+              selectedRowsCount: filteredRows.length,
+              sample: filteredRows.slice(0, 12).map((r) => ({
+                $dist:
+                  typeof r.$dist === "number"
+                    ? Number(r.$dist.toFixed(3))
+                    : r.$dist,
+                sourceType:
+                  typeof (r as any).sourceType === "string"
+                    ? (r as any).sourceType
+                    : typeof (r as any).source === "string"
+                      ? (r as any).source
+                      : null,
+                preview: truncatePreview((r as any).content),
+                docId: typeof (r as any).doc_id === "string" ? (r as any).doc_id : null,
+                url: typeof (r as any).url === "string" ? (r as any).url : null,
+                filename:
+                  typeof (r as any).filename === "string" ? (r as any).filename : null,
+                blobUrl:
+                  typeof (r as any).blob_url === "string" ? (r as any).blob_url : null,
+                projectId:
+                  typeof (r as any).project_id === "string" ? (r as any).project_id : null,
+                sourceCreatedAtMs:
+                  typeof (r as any).sourceCreatedAtMs === "number"
                     ? (r as any).sourceCreatedAtMs
+                    : typeof (r as any).sourceCreatedAtMs === "string"
+                      ? (r as any).sourceCreatedAtMs
+                      : null,
+                ts: typeof (r as any).ts === "string" ? (r as any).ts : null,
+                channelName:
+                  typeof (r as any).channel_name === "string"
+                    ? (r as any).channel_name
                     : null,
-              ts: typeof (r as any).ts === "string" ? (r as any).ts : null,
-              channelName:
-                typeof (r as any).channel_name === "string"
-                  ? (r as any).channel_name
-                  : null,
-              userName:
-                typeof (r as any).user_name === "string" ? (r as any).user_name : null,
-              userEmail:
-                typeof (r as any).user_email === "string" ? (r as any).user_email : null,
-              row: summarizeRow(r),
-            })),
-          });
+                userName:
+                  typeof (r as any).user_name === "string" ? (r as any).user_name : null,
+                userEmail:
+                  typeof (r as any).user_email === "string" ? (r as any).user_email : null,
+                row: summarizeRow(r),
+              })),
+            });
+          }
         } catch (_e) {
           // Ignore logging failures
         }
@@ -1431,23 +1449,6 @@ export async function POST(request: Request) {
           "You are Synergy (FrontlineAgent). You answer questions based on retrieved context (Slack messages and uploaded docs).\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n- runCitationsAgent: validate claims against sources and add inline citations like 【N】.\n\nRules:\n- Use runFinanceAgent for any totals/sums/counts/aggregations; do not compute totals yourself.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n- If you used retrieved context, optionally call runCitationsAgent at the end to add citations.\n\nKeep clarifying questions short and actionable.";
 
         const baseMessages = convertToModelMessages(uiMessages);
-        const messagesWithContext = retrievedContext
-          ? [
-              {
-                role: "system" as const,
-                content: `Here is retrieved context:\n\n${retrievedContext}${citationInstructions ?? ""}`,
-              },
-              ...baseMessages,
-            ]
-          : baseMessages;
-
-        const basetenApiKey = process.env.BASETEN_API_KEY;
-        const mustUseTextOnly =
-          Boolean(basetenApiKey) ||
-          hasNonImageFileParts(messagesWithContext as unknown[]);
-        const textOnlyMessages = mustUseTextOnly
-          ? coerceMessagesToTextOnly(messagesWithContext as unknown[])
-          : messagesWithContext;
 
         const lastUserMessage = uiMessages.slice().reverse().find((m) => m.role === "user");
         const lastUserTextParts = lastUserMessage
@@ -1466,25 +1467,49 @@ export async function POST(request: Request) {
           .slice(0, 4000);
         const isAggregationQuery = AGGREGATION_HINT_RE.test(lastUserText);
 
+        // For aggregation/finance questions, don't inject retrieved/project context into the main prompt.
+        // The frontline is required to call FinanceAgent tools instead of trusting potentially stale context.
+        const messagesWithContext =
+          retrievedContext && !isAggregationQuery
+            ? [
+                {
+                  role: "system" as const,
+                  content: `Here is retrieved context:\n\n${retrievedContext}${citationInstructions ?? ""}`,
+                },
+                ...baseMessages,
+              ]
+            : baseMessages;
+
+        const basetenApiKey = process.env.BASETEN_API_KEY;
+        const mustUseTextOnly =
+          Boolean(basetenApiKey) ||
+          hasNonImageFileParts(messagesWithContext as unknown[]);
+        const textOnlyMessages = mustUseTextOnly
+          ? coerceMessagesToTextOnly(messagesWithContext as unknown[])
+          : messagesWithContext;
+
         // Frontline router: can short-circuit with a clarifying question before any tool calls.
-        try {
-          const decision = await decideFrontlineRouting({
-            _session: session,
-            input: { question: lastUserText, retrieved_context: retrievedContext },
-          });
-          if (decision.questions_for_user.length > 0) {
-            const msgId = generateUUID();
-            dataStream.write({ type: "text-start", id: msgId });
-            dataStream.write({
-              type: "text-delta",
-              id: msgId,
-              delta: decision.questions_for_user.join(" "),
+        // Skip this for aggregation/finance questions so FinanceAgent can drive entity selection via DB tools.
+        if (!isAggregationQuery) {
+          try {
+            const decision = await decideFrontlineRouting({
+              _session: session,
+              input: { question: lastUserText, retrieved_context: retrievedContext },
             });
-            dataStream.write({ type: "text-end", id: msgId });
-            return;
+            if (decision.questions_for_user.length > 0) {
+              const msgId = generateUUID();
+              dataStream.write({ type: "text-start", id: msgId });
+              dataStream.write({
+                type: "text-delta",
+                id: msgId,
+                delta: decision.questions_for_user.join(" "),
+              });
+              dataStream.write({ type: "text-end", id: msgId });
+              return;
+            }
+          } catch {
+            // Fall through if router fails.
           }
-        } catch {
-          // Fall through if router fails.
         }
 
         const result = streamText({
@@ -1493,6 +1518,61 @@ export async function POST(request: Request) {
           messages: textOnlyMessages as any,
           stopWhen: stepCountIs(5),
           onStepFinish: async (step) => {
+            const shouldDebugAgentToChat = process.env.NODE_ENV !== "production";
+            const shouldDebugFinanceAgentToChat =
+              shouldDebugAgentToChat && process.env.DEBUG_FINANCE_AGENT_CHAT === "1";
+            const shouldDebugProjectAgentToChat =
+              shouldDebugAgentToChat && process.env.DEBUG_PROJECT_AGENT_CHAT === "1";
+            const shouldDebugCitationsAgentToChat =
+              shouldDebugAgentToChat && process.env.DEBUG_CITATIONS_AGENT_CHAT === "1";
+
+            const summarizeAgentOutputForChat = (output: unknown) => {
+              if (typeof output !== "object" || output === null) return output;
+              const o = output as Record<string, unknown>;
+
+              const toolCallsRaw = Array.isArray(o.tool_calls) ? o.tool_calls : [];
+              const tool_calls = toolCallsRaw
+                .filter((tc) => typeof tc === "object" && tc !== null)
+                .slice(0, 25)
+                .map((tc) => {
+                  const t = tc as Record<string, unknown>;
+                  const toolName = typeof t.toolName === "string" ? t.toolName : "tool";
+                  const input = t.input;
+                  const out = t.output;
+
+                  // Prevent dumping huge result sets into chat.
+                  const outputSummary =
+                    typeof out === "object" && out !== null
+                      ? (() => {
+                          const r = out as Record<string, unknown>;
+                          if (Array.isArray(r.rows)) {
+                            return {
+                              ...r,
+                              rowsCount: r.rows.length,
+                              rows: r.rows.slice(0, 5),
+                            };
+                          }
+                          return r;
+                        })()
+                      : out;
+
+                  return {
+                    toolName,
+                    input,
+                    output: outputSummary,
+                  };
+                });
+
+              return {
+                kind: o.kind,
+                confidence: o.confidence,
+                questions_for_user: o.questions_for_user,
+                assumptions: o.assumptions,
+                answer_draft: o.answer_draft,
+                tool_calls,
+              };
+            };
+
             if (step.toolCalls.length > 0 || step.toolResults.length > 0) {
               console.log("[chat] step finish", {
                 stepFinishReason: step.finishReason,
@@ -1506,6 +1586,30 @@ export async function POST(request: Request) {
                   preliminary: r.preliminary ?? false,
                 })),
               });
+            }
+
+            if (step.toolResults.length > 0) {
+              const toolsToDebug = [
+                shouldDebugFinanceAgentToChat ? "runFinanceAgent" : null,
+                shouldDebugProjectAgentToChat ? "runProjectAgent" : null,
+                shouldDebugCitationsAgentToChat ? "runCitationsAgent" : null,
+              ].filter((t): t is string => typeof t === "string");
+
+              for (const toolName of toolsToDebug) {
+                const results = step.toolResults.filter((r) => r.toolName === toolName);
+                for (const r of results) {
+                  const msgId = generateUUID();
+                  const summary = summarizeAgentOutputForChat(r.output);
+                  const payload = JSON.stringify(summary, null, 2);
+                  dataStream.write({ type: "text-start", id: msgId });
+                  dataStream.write({
+                    type: "text-delta",
+                    id: msgId,
+                    delta: `\n\n---\n\n**[debug] ${toolName} output**\n\n\`\`\`json\n${payload}\n\`\`\`\n`,
+                  });
+                  dataStream.write({ type: "text-end", id: msgId });
+                }
+              }
             }
           },
           experimental_activeTools:

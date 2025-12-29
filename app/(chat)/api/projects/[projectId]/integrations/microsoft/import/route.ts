@@ -12,6 +12,7 @@ import {
   getProjectDocById,
   getProjectDocByProjectIdAndFilename,
   getProjectRole,
+  invalidateProjectContextSnippetForUserProject,
   markProjectDocIndexError,
   markProjectDocIndexed,
 } from "@/lib/db/queries";
@@ -260,6 +261,11 @@ export async function POST(
       }
     })
   );
+
+  await invalidateProjectContextSnippetForUserProject({
+    userId: session.user.id,
+    projectId,
+  });
 
   return NextResponse.json({ results }, { status: 200 });
 }

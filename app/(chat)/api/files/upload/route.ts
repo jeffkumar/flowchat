@@ -13,6 +13,7 @@ import {
   getProjectDocByProjectIdAndFilename,
   getOrCreateDefaultProjectForUser,
   getProjectByIdForUser,
+  invalidateProjectContextSnippetForUserProject,
   markProjectDocIndexError,
   markProjectDocIndexed,
   upsertInvoiceForDocument,
@@ -211,6 +212,11 @@ export async function POST(request: Request) {
         parseStatus: documentType === "general_doc" ? "pending" : "pending",
         entityKind,
         entityName,
+      });
+
+      await invalidateProjectContextSnippetForUserProject({
+        userId: session.user.id,
+        projectId,
       });
 
       if (documentType === "invoice" && (invoiceSender || invoiceRecipient)) {

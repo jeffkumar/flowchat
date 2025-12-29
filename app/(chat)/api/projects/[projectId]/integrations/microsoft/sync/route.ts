@@ -5,6 +5,7 @@ import {
   getProjectByIdForUser,
   getProjectDocsByProjectId,
   getProjectRole,
+  invalidateProjectContextSnippetForUserProject,
 } from "@/lib/db/queries";
 import { syncMicrosoftDriveItemsToProjectDocs } from "@/lib/integrations/microsoft/sync-microsoft-docs";
 
@@ -136,6 +137,11 @@ export async function POST(
     entityKind: parsed.data.entityKind,
     invoiceSender: parsed.data.invoiceSender,
     invoiceRecipient: parsed.data.invoiceRecipient,
+  });
+
+  await invalidateProjectContextSnippetForUserProject({
+    userId: session.user.id,
+    projectId,
   });
 
   return NextResponse.json({ results }, { status: 200 });

@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/app/(auth)/auth";
-import { getProjectByIdForUser, getProjectRole } from "@/lib/db/queries";
+import {
+  getProjectByIdForUser,
+  getProjectRole,
+  invalidateProjectContextSnippetForUserProject,
+} from "@/lib/db/queries";
 import { getMicrosoftAccessTokenForUser } from "@/lib/integrations/microsoft/graph";
 import {
   syncMicrosoftDriveItemsToProjectDocs,
@@ -182,6 +186,11 @@ export async function POST(
   const synced = allResults.filter((r) => r.status === "synced").length;
   const skipped = allResults.filter((r) => r.status === "skipped").length;
   const failed = allResults.filter((r) => r.status === "failed").length;
+
+  await invalidateProjectContextSnippetForUserProject({
+    userId: session.user.id,
+    projectId,
+  });
 
   return NextResponse.json(
     {
