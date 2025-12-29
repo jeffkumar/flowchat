@@ -1392,8 +1392,11 @@ export async function getChatById({ id }: { id: string }) {
     }
 
     return selectedChat;
-  } catch (_error) {
-    throw new ChatSDKError("bad_request:database", "Failed to get chat by id");
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to get chat by id"
+    );
   }
 }
 
@@ -1412,10 +1415,10 @@ export async function getMessagesByChatId({ id }: { id: string }) {
       .from(message)
       .where(eq(message.chatId, id))
       .orderBy(asc(message.createdAt));
-  } catch (_error) {
+  } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
-      "Failed to get messages by chat id"
+      error instanceof Error ? error.message : "Failed to get messages by chat id"
     );
   }
 }
@@ -2975,6 +2978,88 @@ export async function financeGroupByMerchant({
     throw new ChatSDKError(
       "bad_request:database",
       error instanceof Error ? error.message : "Failed to run finance group_by_merchant"
+    );
+  }
+}
+
+export async function financeGroupByCategory({
+  userId,
+  projectId,
+  documentType,
+  filters,
+}: {
+  userId: string;
+  projectId?: string;
+  documentType: Exclude<FinanceDocumentType, "invoice">;
+  filters?: FinanceQueryFilters;
+}) {
+  try {
+    const docIdFilter = buildDocIdFilter(filters?.doc_ids);
+    const entityFilter = buildEntityFilter({
+      entityKind: filters?.entity_kind,
+      entityName: filters?.entity_name,
+    });
+    const vendorFilter = buildVendorContainsFilter({
+      documentType,
+      vendorContains: filters?.vendor_contains,
+    });
+    const dateClauses = buildDateRangeFilter({
+      documentType,
+      dateStart: filters?.date_start,
+      dateEnd: filters?.date_end,
+    });
+    const projectScope = typeof projectId === "string" ? eq(project.id, projectId) : null;
+    const accessClause = buildProjectAccessClause(userId);
+    const excludeCategories = buildExcludeCategoriesFilter(filters?.exclude_categories);
+
+    const whereClauses: SQL[] = [accessClause, eq(projectDoc.documentType, documentType)];
+    if (projectScope) whereClauses.push(projectScope);
+    if (docIdFilter) whereClauses.push(docIdFilter);
+    if (entityFilter) whereClauses.push(entityFilter);
+    if (vendorFilter) whereClauses.push(vendorFilter);
+    whereClauses.push(...dateClauses);
+    if (excludeCategories) whereClauses.push(excludeCategories);
+    whereClauses.push(
+      ...buildAmountRangeFilter({
+        amountMin: filters?.amount_min,
+        amountMax: filters?.amount_max,
+      })
+    );
+
+    const whereSql = and(...whereClauses);
+    const dedupeKey = sql<string>`COALESCE(${financialTransaction.txnHash}, (${financialTransaction.documentId}::text || '|' || ${financialTransaction.rowHash}))`;
+
+    const rows = await db.execute(sql`
+      SELECT
+        t.category,
+        COALESCE(SUM(t.amount), 0)::text AS total,
+        COUNT(*)::int AS count
+      FROM (
+        SELECT DISTINCT ON (${dedupeKey})
+          ${financialTransaction.category} AS category,
+          ${financialTransaction.amount} AS amount
+        FROM ${financialTransaction}
+        INNER JOIN ${projectDoc} ON ${eq(financialTransaction.documentId, projectDoc.id)}
+        INNER JOIN ${project} ON ${eq(projectDoc.projectId, project.id)}
+        LEFT JOIN ${projectUser} ON ${and(eq(projectUser.projectId, project.id), eq(projectUser.userId, userId))}
+        WHERE ${whereSql}
+        ORDER BY ${dedupeKey} ASC, ${projectDoc.createdAt} ASC, ${financialTransaction.id} ASC
+      ) t
+      GROUP BY t.category
+      ORDER BY ABS(COALESCE(SUM(t.amount), 0)) DESC
+      LIMIT 200
+    `);
+
+    return {
+      query_type: "group_by_category" as const,
+      document_type: documentType,
+      rows: rows as unknown as Array<{ category: string | null; total: string; count: number }>,
+      provenance: { source: "postgres" as const },
+    };
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to run finance group_by_category"
     );
   }
 }

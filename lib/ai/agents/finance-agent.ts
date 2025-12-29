@@ -4,6 +4,7 @@ import { z } from "zod";
 import { myProvider } from "@/lib/ai/providers";
 import { financeQuery } from "@/lib/ai/tools/finance-query";
 import {
+  financeGroupByCategory,
   financeGroupByMonth,
   financeGroupByMerchant,
   financeList,
@@ -167,6 +168,7 @@ Rules:
 - CRITICAL: For "income" or "revenue" questions, you MUST set filters.exclude_categories=['transfer', 'credit card payment'] unless the user asks for transfers.
 - For "spend"/"spent"/"expenses"/"charges" questions:
   - You MUST run financeQuery (do not say you can't retrieve data unless financeQuery returns an error).
+  - If the user asks for a breakdown "by category", use query_type='group_by_category' (categories may be NULL; include an "Uncategorized" bucket).
   - If the user did not specify which account(s) / statement(s) to include, ask a clarifying question listing which business statements exist.
 - If the user asks about invoice revenue, use document_type='invoice'.
 - If you need to know what entities exist in the project, call projectEntitySummary.
@@ -240,6 +242,7 @@ Return JSON only.`;
       q.includes("what i spent") ||
       q.includes("what did we spend") ||
       q.includes("where did i spend");
+    const wantsCategoryBreakdown = q.includes("by category") || q.includes("categories");
     const isSpendLike =
       q.includes("spend") ||
       q.includes("spent") ||
@@ -258,6 +261,97 @@ Return JSON only.`;
     const wantsPersonal =
       q.includes("personal") || parsed.entity_hint?.entity_kind === "personal";
     const wantsBusiness = q.includes("business") || parsed.entity_hint?.entity_kind === "business";
+
+    const inferMonthWindowUtc = (
+      textLower: string
+    ):
+      | {
+          year: number;
+          month: number; // 1-12
+          date_start: string; // YYYY-MM-01
+          date_end: string; // first day of next month (YYYY-MM-01)
+          label: string; // YYYY-MM
+        }
+      | null => {
+      const hinted =
+        parsed.time_hint?.kind === "month" &&
+        typeof parsed.time_hint.year === "number" &&
+        typeof parsed.time_hint.month === "number"
+          ? { year: parsed.time_hint.year, month: parsed.time_hint.month }
+          : null;
+
+      const month =
+        hinted?.month ??
+        monthFromText ??
+        (textLower.includes("this month") || textLower.includes("month to date") || textLower.includes("mtd")
+          ? new Date().getUTCMonth() + 1
+          : null);
+      if (typeof month !== "number" || !Number.isFinite(month) || month < 1 || month > 12) return null;
+
+      const year =
+        hinted?.year ??
+        (parsed.time_hint?.kind === "year" ? (parsed.time_hint.year ?? null) : null) ??
+        inferYearFromText(parsed.question) ??
+        new Date().getUTCFullYear();
+      if (typeof year !== "number" || !Number.isFinite(year) || year < 1900 || year > 2200) return null;
+
+      const mm = String(month).padStart(2, "0");
+      const date_start = `${year}-${mm}-01`;
+      const endYear = month === 12 ? year + 1 : year;
+      const endMonth = month === 12 ? 1 : month + 1;
+      const endMm = String(endMonth).padStart(2, "0");
+      const date_end = `${endYear}-${endMm}-01`;
+      return { year, month, date_start, date_end, label: `${year}-${mm}` };
+    };
+
+    // Personal income for a specific month (e.g. "December 2025", "this month"): sum bank_statement deposits.
+    if (parsed.projectId && wantsPersonal && isIncomeLike) {
+      const window = inferMonthWindowUtc(q);
+      if (window) {
+        const sum = await financeSum({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "bank_statement",
+          filters: {
+            entity_kind: "personal",
+            amount_min: 0.01,
+            exclude_categories: ["transfer", "credit card payment"],
+            date_start: window.date_start,
+            date_end: window.date_end,
+          },
+        });
+
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: `Personal deposit income in ${window.label}: $${sum.total} (rows: ${sum.count}).`,
+          questions_for_user:
+            sum.count === 0
+              ? [
+                  `I found 0 matching personal bank-statement deposits in ${window.label}. Are your personal bank statements tagged Personal?`,
+                ]
+              : [],
+          assumptions: [
+            "Income is computed as bank-statement deposits (amount > 0) to Personal accounts, excluding transfers and credit-card payments.",
+          ],
+          tool_calls: [
+            {
+              toolName: "financeSum",
+              input: {
+                document_type: "bank_statement",
+                entity_kind: "personal",
+                date_start: window.date_start,
+                date_end: window.date_end,
+                amount_min: 0.01,
+                exclude_categories: ["transfer", "credit card payment"],
+              },
+              output: sum,
+            },
+          ],
+          citations: [],
+          confidence: sum.count === 0 ? "low" : "medium",
+        });
+      }
+    }
 
     // Personal income over a rolling window (e.g. "last 90 days", "past 3 weeks"): sum bank_statement deposits.
     const rollingDays = parseRollingWindowDays(parsed.question);
@@ -1094,6 +1188,31 @@ Return JSON only.`;
 
         const breakdownLines = await (async () => {
           try {
+            if (wantsCategoryBreakdown) {
+              const grouped = await financeGroupByCategory({
+                userId: session.user.id,
+                projectId: parsed.projectId,
+                documentType: "cc_statement",
+                filters: {
+                  doc_ids: [doc.id],
+                  date_start,
+                  date_end,
+                  ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }),
+                },
+              });
+              const rows = Array.isArray(grouped.rows) ? grouped.rows : [];
+              if (rows.length === 0) return "";
+              const lines = rows.slice(0, 12).map((r) => {
+                const category =
+                  typeof r.category === "string" && r.category.trim().length > 0
+                    ? r.category.trim()
+                    : "Uncategorized";
+                const amt = typeof r.total === "string" ? absDecimalString(r.total) : String(r.total);
+                return `- ${category}: $${amt} (${r.count} txns)`;
+              });
+              return `\n\nSpending by category:\n${lines.join("\n")}`;
+            }
+
             const top = await financeGroupByMerchant({
               userId: session.user.id,
               projectId: parsed.projectId,
@@ -1108,14 +1227,14 @@ Return JSON only.`;
             const rows = Array.isArray(top.rows) ? top.rows : [];
             if (rows.length === 0) return "";
             const lines = rows.slice(0, 8).map((r) => {
-              const merchant =
+              const description =
                 typeof r.merchant === "string" && r.merchant.trim().length > 0
                   ? r.merchant.trim()
-                  : "(unknown)";
+                  : "(no description)";
               const amt = typeof r.total === "string" ? absDecimalString(r.total) : String(r.total);
-              return `- ${merchant}: $${amt}`;
+              return `- ${description}: $${amt}`;
             });
-            return `\n\nTop spending by merchant:\n${lines.join("\n")}`;
+            return `\n\nTop spending by description:\n${lines.join("\n")}`;
           } catch (err) {
             console.warn("FinanceAgent: breakdown shortcut failed", err);
             return "";
@@ -1142,7 +1261,7 @@ Return JSON only.`;
               output: used,
             },
             {
-              toolName: "financeGroupByMerchant",
+              toolName: wantsCategoryBreakdown ? "financeGroupByCategory" : "financeGroupByMerchant",
               input: {
                 document_type: "cc_statement",
                 doc_ids: [doc.id],

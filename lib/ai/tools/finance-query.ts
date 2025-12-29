@@ -2,6 +2,7 @@ import { tool } from "ai";
 import type { Session } from "next-auth";
 import { z } from "zod";
 import {
+  financeGroupByCategory,
   financeGroupByMerchant,
   financeGroupByMonth,
   financeList,
@@ -18,7 +19,7 @@ export const financeQuery = ({ session, projectId }: FinanceQueryProps) =>
     description:
       "Run deterministic finance queries over parsed financial documents. Always use this for totals/sums/aggregations; never do math over retrieved chunks. Use filters.amount_min > 0 for deposits-only and filters.amount_max < 0 for withdrawals-only. IMPORTANT: date_end is exclusive; for a month, use the first day of the next month. The 'list' query type returns header fields and line items for invoices, and transaction details (including running balance) for bank statements. When checking for payments, ensure date_start is set to the invoice date or later.",
     inputSchema: z.object({
-      query_type: z.enum(["sum", "list", "group_by_month", "group_by_merchant"]),
+      query_type: z.enum(["sum", "list", "group_by_month", "group_by_merchant", "group_by_category"]),
       document_type: z.enum(["bank_statement", "cc_statement", "invoice"]),
       fallback_to_invoice_if_empty: z.boolean().optional(),
       time_window: z
@@ -277,6 +278,59 @@ export const financeQuery = ({ session, projectId }: FinanceQueryProps) =>
 
           return out;
         }
+        if (input.query_type === "group_by_category") {
+          if (input.document_type === "invoice") {
+            return { error: "group_by_category is not supported for invoice documents" };
+          }
+          const out = await financeGroupByCategory({
+            userId: session.user.id,
+            projectId,
+            documentType: input.document_type,
+            filters: filtersForQuery,
+          });
+          console.log("[financeQuery] result", {
+            query_type: out.query_type,
+            document_type: out.document_type,
+            rowCount: out.rows.length,
+          });
+
+          // Same CC-spend fallback for group_by_category.
+          const shouldFallbackCcSpend =
+            input.document_type === "cc_statement" &&
+            out.rows.length === 0 &&
+            typeof filtersForQuery?.amount_max === "number" &&
+            Number.isFinite(filtersForQuery.amount_max) &&
+            filtersForQuery.amount_max <= 0 &&
+            typeof filtersForQuery.amount_min !== "number";
+
+          if (shouldFallbackCcSpend && filtersForQuery) {
+            const { amount_max: _amountMax, ...rest } = filtersForQuery;
+            const ccSpendAssumingPositive = await financeGroupByCategory({
+              userId: session.user.id,
+              projectId,
+              documentType: "cc_statement",
+              filters: { ...rest, amount_min: 0.01 },
+            });
+
+            if (ccSpendAssumingPositive.rows.length > 0) {
+              return {
+                ...ccSpendAssumingPositive,
+                note:
+                  "CC statement returned 0 rows for amount_max<=0; retried with amount_min>0 (treating positive amounts as spend).",
+                fallback: {
+                  attempted: {
+                    document_type: "cc_statement",
+                    amount_max: filtersForQuery.amount_max,
+                    rowCount: out.rows.length,
+                  },
+                },
+              };
+            }
+          }
+
+          return out;
+        }
+
         const out = await financeGroupByMerchant({
           userId: session.user.id,
           projectId,
