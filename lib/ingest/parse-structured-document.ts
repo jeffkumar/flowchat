@@ -40,6 +40,24 @@ function normalizeDescription(value: unknown): string {
     .slice(0, 2000);
 }
 
+function classifyBankTxnCategory(description: string): string | null {
+  const d = description.toLowerCase();
+  // Conservative transfer signals; can be expanded later.
+  if (
+    d.includes("transfer") ||
+    d.includes("internal transfer") ||
+    d.includes("account transfer") ||
+    d.includes("online transfer") ||
+    d.includes("xfer") ||
+    d.includes("ach transfer") ||
+    d.includes("incoming transfer") ||
+    d.includes("outgoing transfer")
+  ) {
+    return "transfer";
+  }
+  return null;
+}
+
 function parseYmdDate(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -411,6 +429,10 @@ export async function parseStructuredProjectDoc({
           const description = normalizeDescription(t.description);
           const currency = typeof t.currency === "string" ? t.currency.trim().slice(0, 16) : null;
           const balance = t.balance === null || t.balance === undefined ? null : parseDecimalString(t.balance);
+          const category =
+            doc.documentType === "bank_statement"
+              ? classifyBankTxnCategory(description)
+              : null;
           
           const txnHash = sha256Hex(
             `${txnDate}|${amount}|${description.toLowerCase()}|${balance ?? ""}`
@@ -424,6 +446,7 @@ export async function parseStructuredProjectDoc({
             amount,
             currency,
             balance,
+            category,
             rowHash,
             txnHash,
           };

@@ -20,6 +20,7 @@ export const financeQuery = ({ session, projectId }: FinanceQueryProps) =>
     inputSchema: z.object({
       query_type: z.enum(["sum", "list", "group_by_month", "group_by_merchant"]),
       document_type: z.enum(["bank_statement", "cc_statement", "invoice"]),
+      fallback_to_invoice_if_empty: z.boolean().optional(),
       time_window: z
         .object({
           kind: z.enum(["year", "month"]),
@@ -37,6 +38,9 @@ export const financeQuery = ({ session, projectId }: FinanceQueryProps) =>
           recipient_contains: z.string().min(1).max(200).optional(),
           amount_min: z.number().finite().optional(),
           amount_max: z.number().finite().optional(),
+          entity_kind: z.enum(["personal", "business"]).optional(),
+          entity_name: z.string().min(1).max(200).optional(),
+          exclude_categories: z.array(z.string().min(1).max(64)).max(10).optional(),
         })
         .optional(),
     }),
@@ -84,19 +88,47 @@ export const financeQuery = ({ session, projectId }: FinanceQueryProps) =>
       });
 
       if (input.query_type === "sum") {
-        const out = await financeSum({
+        const primary = await financeSum({
           userId: session.user.id,
           projectId,
           documentType: input.document_type,
           filters: effectiveFilters,
         });
         console.log("[financeQuery] result", {
-          query_type: out.query_type,
-          document_type: out.document_type,
-          total: out.total,
-          count: out.count,
+          query_type: primary.query_type,
+          document_type: primary.document_type,
+          total: primary.total,
+          count: primary.count,
         });
-        return out;
+
+        const shouldFallback =
+          input.fallback_to_invoice_if_empty === true &&
+          input.document_type === "bank_statement" &&
+          (effectiveFilters?.amount_min ?? 0) > 0 &&
+          primary.count === 0;
+
+        if (!shouldFallback) return primary;
+
+        const invoice = await financeSum({
+          userId: session.user.id,
+          projectId,
+          documentType: "invoice",
+          filters: effectiveFilters,
+        });
+
+        return {
+          ...invoice,
+          note:
+            "Bank-statement deposits returned no rows; fell back to invoice totals for the same time window/entity scope.",
+          fallback: {
+            attempted: {
+              document_type: "bank_statement",
+              amount_min: effectiveFilters?.amount_min ?? null,
+              count: primary.count,
+              total: primary.total,
+            },
+          },
+        };
       }
       if (input.query_type === "list") {
         const out = await financeList({

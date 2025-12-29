@@ -1939,6 +1939,95 @@ export async function upsertInvoiceForDocument({
   }
 }
 
+export async function getBusinessEntityNamesForUser({
+  userId,
+  limit = 200,
+}: {
+  userId: string;
+  limit?: number;
+}): Promise<string[]> {
+  try {
+    const limitSafe = Number.isFinite(limit) ? Math.max(1, Math.min(500, limit)) : 200;
+
+    const rows = await db.execute(
+      sql`
+        SELECT DISTINCT d."entityName" AS name
+        FROM "ProjectDoc" d
+        INNER JOIN "Project" p ON p."id" = d."projectId"
+        LEFT JOIN "ProjectUser" pu
+          ON pu."projectId" = p."id" AND pu."userId" = ${userId}
+        WHERE (p."createdBy" = ${userId} OR pu."userId" = ${userId})
+          AND d."entityName" IS NOT NULL
+          AND (
+            d."entityKind" = 'business'
+            OR (d."entityKind" IS NULL AND d."entityName" <> 'Personal')
+          )
+        ORDER BY d."entityName" ASC
+        LIMIT ${limitSafe}
+      `
+    );
+
+    const out: string[] = [];
+    for (const row of rows) {
+      const name = (row as { name?: unknown }).name;
+      if (typeof name === "string") {
+        const trimmed = name.trim();
+        if (trimmed.length > 0) out.push(trimmed);
+      }
+    }
+    return out;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to get business entity names"
+    );
+  }
+}
+
+export async function getProjectEntitySummaryForUser({
+  userId,
+  projectId,
+}: {
+  userId: string;
+  projectId: string;
+}): Promise<Array<{ entityKind: "personal" | "business" | null; entityName: string | null; docCount: number }>> {
+  try {
+    const rows = await db.execute(sql`
+      SELECT
+        d."entityKind" AS entity_kind,
+        d."entityName" AS entity_name,
+        COUNT(*)::int AS doc_count
+      FROM "ProjectDoc" d
+      INNER JOIN "Project" p ON p."id" = d."projectId"
+      LEFT JOIN "ProjectUser" pu
+        ON pu."projectId" = p."id" AND pu."userId" = ${userId}
+      WHERE p."id" = ${projectId}
+        AND (p."createdBy" = ${userId} OR pu."userId" = ${userId})
+      GROUP BY d."entityKind", d."entityName"
+      ORDER BY d."entityKind" ASC, d."entityName" ASC
+    `);
+
+    return rows.map((r) => {
+      const entityKindRaw = (r as { entity_kind?: unknown }).entity_kind;
+      const entityNameRaw = (r as { entity_name?: unknown }).entity_name;
+      const docCountRaw = (r as { doc_count?: unknown }).doc_count;
+      return {
+        entityKind:
+          entityKindRaw === "personal" || entityKindRaw === "business"
+            ? entityKindRaw
+            : null,
+        entityName: typeof entityNameRaw === "string" ? entityNameRaw : null,
+        docCount: typeof docCountRaw === "number" ? docCountRaw : 0,
+      };
+    });
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to get project entity summary"
+    );
+  }
+}
+
 export async function insertInvoiceLineItems({
   invoiceId,
   rows,
@@ -2035,6 +2124,9 @@ type FinanceQueryFilters = {
   recipient_contains?: string;
   amount_min?: number;
   amount_max?: number;
+  entity_kind?: "personal" | "business";
+  entity_name?: string;
+  exclude_categories?: string[];
 };
 
 function buildProjectAccessClause(userId: string): SQL {
@@ -2044,6 +2136,44 @@ function buildProjectAccessClause(userId: string): SQL {
 function buildDocIdFilter(docIds: string[] | undefined) {
   if (!Array.isArray(docIds) || docIds.length === 0) return null;
   return inArray(projectDoc.id, docIds);
+}
+
+function buildEntityFilter({
+  entityKind,
+  entityName,
+}: {
+  entityKind: FinanceQueryFilters["entity_kind"] | undefined;
+  entityName: FinanceQueryFilters["entity_name"] | undefined;
+}) {
+  const clauses: SQL[] = [];
+  if (entityKind === "personal" || entityKind === "business") {
+    clauses.push(eq(projectDoc.entityKind, entityKind));
+  }
+  if (typeof entityName === "string") {
+    const trimmed = entityName.trim();
+    if (trimmed.length > 0) {
+      clauses.push(sql`LOWER(${projectDoc.entityName}) = LOWER(${trimmed})`);
+    }
+  }
+  if (clauses.length === 0) return null;
+  return and(...clauses);
+}
+
+function buildExcludeCategoriesFilter(excludeCategories: string[] | undefined) {
+  if (!Array.isArray(excludeCategories) || excludeCategories.length === 0) return null;
+  const normalized = excludeCategories
+    .map((c) => (typeof c === "string" ? c.trim().slice(0, 64) : ""))
+    .filter((c) => c.length > 0)
+    .slice(0, 10);
+  if (normalized.length === 0) return null;
+
+  const valuesSql = sql.join(
+    normalized.map((c) => sql`${c}`),
+    sql`, `
+  );
+
+  // Keep NULL categories (unknown) in results; exclude only explicit matches.
+  return sql`(${financialTransaction.category} IS NULL OR ${financialTransaction.category} NOT IN (${valuesSql}))`;
 }
 
 function buildDateRangeFilter({
@@ -2141,6 +2271,10 @@ export async function financeSum({
 }) {
   try {
     const docIdFilter = buildDocIdFilter(filters?.doc_ids);
+    const entityFilter = buildEntityFilter({
+      entityKind: filters?.entity_kind,
+      entityName: filters?.entity_name,
+    });
     const vendorFilter = buildVendorContainsFilter({
       documentType,
       vendorContains: filters?.vendor_contains,
@@ -2154,6 +2288,7 @@ export async function financeSum({
     });
     const projectScope = typeof projectId === "string" ? eq(project.id, projectId) : null;
     const accessClause = buildProjectAccessClause(userId);
+    const excludeCategories = buildExcludeCategoriesFilter(filters?.exclude_categories);
 
     if (documentType === "invoice") {
       const whereClauses: SQL[] = [
@@ -2162,6 +2297,7 @@ export async function financeSum({
       ];
       if (projectScope) whereClauses.push(projectScope);
       if (docIdFilter) whereClauses.push(docIdFilter);
+      if (entityFilter) whereClauses.push(entityFilter);
       if (vendorFilter) whereClauses.push(vendorFilter);
       if (senderFilter) whereClauses.push(senderFilter);
       if (recipientFilter) whereClauses.push(recipientFilter);
@@ -2199,8 +2335,10 @@ export async function financeSum({
     ];
     if (projectScope) whereClauses.push(projectScope);
     if (docIdFilter) whereClauses.push(docIdFilter);
+    if (entityFilter) whereClauses.push(entityFilter);
     if (vendorFilter) whereClauses.push(vendorFilter);
     whereClauses.push(...dateClauses);
+    if (excludeCategories) whereClauses.push(excludeCategories);
     whereClauses.push(
       ...buildAmountRangeFilter({
         amountMin: filters?.amount_min,
@@ -2277,6 +2415,10 @@ export async function financeList({
 }) {
   try {
     const docIdFilter = buildDocIdFilter(filters?.doc_ids);
+    const entityFilter = buildEntityFilter({
+      entityKind: filters?.entity_kind,
+      entityName: filters?.entity_name,
+    });
     const vendorFilter = buildVendorContainsFilter({
       documentType,
       vendorContains: filters?.vendor_contains,
@@ -2290,6 +2432,7 @@ export async function financeList({
     });
     const projectScope = typeof projectId === "string" ? eq(project.id, projectId) : null;
     const accessClause = buildProjectAccessClause(userId);
+    const excludeCategories = buildExcludeCategoriesFilter(filters?.exclude_categories);
 
     if (documentType === "invoice") {
       const whereClauses: SQL[] = [
@@ -2298,6 +2441,7 @@ export async function financeList({
       ];
       if (projectScope) whereClauses.push(projectScope);
       if (docIdFilter) whereClauses.push(docIdFilter);
+      if (entityFilter) whereClauses.push(entityFilter);
       if (vendorFilter) whereClauses.push(vendorFilter);
       if (senderFilter) whereClauses.push(senderFilter);
       if (recipientFilter) whereClauses.push(recipientFilter);
@@ -2353,8 +2497,10 @@ export async function financeList({
     ];
     if (projectScope) whereClauses.push(projectScope);
     if (docIdFilter) whereClauses.push(docIdFilter);
+    if (entityFilter) whereClauses.push(entityFilter);
     if (vendorFilter) whereClauses.push(vendorFilter);
     whereClauses.push(...dateClauses);
+    if (excludeCategories) whereClauses.push(excludeCategories);
     whereClauses.push(
       ...buildAmountRangeFilter({
         amountMin: filters?.amount_min,
@@ -2429,6 +2575,10 @@ export async function financeGroupByMonth({
 }) {
   try {
     const docIdFilter = buildDocIdFilter(filters?.doc_ids);
+    const entityFilter = buildEntityFilter({
+      entityKind: filters?.entity_kind,
+      entityName: filters?.entity_name,
+    });
     const vendorFilter = buildVendorContainsFilter({
       documentType,
       vendorContains: filters?.vendor_contains,
@@ -2442,6 +2592,7 @@ export async function financeGroupByMonth({
     });
     const projectScope = typeof projectId === "string" ? eq(project.id, projectId) : null;
     const accessClause = buildProjectAccessClause(userId);
+    const excludeCategories = buildExcludeCategoriesFilter(filters?.exclude_categories);
 
     if (documentType === "invoice") {
       const whereClauses: SQL[] = [
@@ -2450,6 +2601,7 @@ export async function financeGroupByMonth({
       ];
       if (projectScope) whereClauses.push(projectScope);
       if (docIdFilter) whereClauses.push(docIdFilter);
+      if (entityFilter) whereClauses.push(entityFilter);
       if (vendorFilter) whereClauses.push(vendorFilter);
       if (senderFilter) whereClauses.push(senderFilter);
       if (recipientFilter) whereClauses.push(recipientFilter);
@@ -2488,8 +2640,10 @@ export async function financeGroupByMonth({
     ];
     if (projectScope) whereClauses.push(projectScope);
     if (docIdFilter) whereClauses.push(docIdFilter);
+    if (entityFilter) whereClauses.push(entityFilter);
     if (vendorFilter) whereClauses.push(vendorFilter);
     whereClauses.push(...dateClauses);
+    if (excludeCategories) whereClauses.push(excludeCategories);
     whereClauses.push(
       ...buildAmountRangeFilter({
         amountMin: filters?.amount_min,
@@ -2547,6 +2701,10 @@ export async function financeGroupByMerchant({
 }) {
   try {
     const docIdFilter = buildDocIdFilter(filters?.doc_ids);
+    const entityFilter = buildEntityFilter({
+      entityKind: filters?.entity_kind,
+      entityName: filters?.entity_name,
+    });
     const vendorFilter = buildVendorContainsFilter({
       documentType,
       vendorContains: filters?.vendor_contains,
@@ -2560,6 +2718,7 @@ export async function financeGroupByMerchant({
     });
     const projectScope = typeof projectId === "string" ? eq(project.id, projectId) : null;
     const accessClause = buildProjectAccessClause(userId);
+    const excludeCategories = buildExcludeCategoriesFilter(filters?.exclude_categories);
 
     if (documentType === "invoice") {
       const whereClauses: SQL[] = [
@@ -2568,6 +2727,7 @@ export async function financeGroupByMerchant({
       ];
       if (projectScope) whereClauses.push(projectScope);
       if (docIdFilter) whereClauses.push(docIdFilter);
+      if (entityFilter) whereClauses.push(entityFilter);
       if (vendorFilter) whereClauses.push(vendorFilter);
       if (senderFilter) whereClauses.push(senderFilter);
       if (recipientFilter) whereClauses.push(recipientFilter);
@@ -2605,8 +2765,10 @@ export async function financeGroupByMerchant({
     ];
     if (projectScope) whereClauses.push(projectScope);
     if (docIdFilter) whereClauses.push(docIdFilter);
+    if (entityFilter) whereClauses.push(entityFilter);
     if (vendorFilter) whereClauses.push(vendorFilter);
     whereClauses.push(...dateClauses);
+    if (excludeCategories) whereClauses.push(excludeCategories);
     whereClauses.push(
       ...buildAmountRangeFilter({
         amountMin: filters?.amount_min,

@@ -67,6 +67,8 @@ export async function POST(request: Request) {
     const rawCategory = formData.get("category");
     const rawDescription = formData.get("description");
     const rawDocumentType = formData.get("documentType");
+    const rawEntityKind = formData.get("entityKind");
+    const rawEntityName = formData.get("entityName");
     const rawInvoiceSender = formData.get("invoiceSender");
     const rawInvoiceRecipient = formData.get("invoiceRecipient");
 
@@ -102,6 +104,26 @@ export async function POST(request: Request) {
       rawDocumentType === "invoice"
         ? rawDocumentType
         : "general_doc";
+
+    const entityKind =
+      rawEntityKind === "personal" || rawEntityKind === "business"
+        ? rawEntityKind
+        : "personal";
+    const entityNameRaw =
+      typeof rawEntityName === "string" ? rawEntityName.trim().slice(0, 200) : "";
+    const entityName =
+      entityKind === "personal"
+        ? "Personal"
+        : entityNameRaw.length > 0
+          ? entityNameRaw
+          : null;
+
+    if (entityKind === "business" && !entityName) {
+      return NextResponse.json(
+        { error: "Business uploads require an entityName" },
+        { status: 400 }
+      );
+    }
 
     const invoiceSender =
       typeof rawInvoiceSender === "string" && rawInvoiceSender.trim().length > 0
@@ -187,6 +209,8 @@ export async function POST(request: Request) {
         sizeBytes: file.size,
         documentType,
         parseStatus: documentType === "general_doc" ? "pending" : "pending",
+        entityKind,
+        entityName,
       });
 
       if (documentType === "invoice" && (invoiceSender || invoiceRecipient)) {

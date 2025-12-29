@@ -1,0 +1,45 @@
+import { z } from "zod";
+
+export const AgentKindSchema = z.enum(["finance", "citations", "project"]);
+export type AgentKind = z.infer<typeof AgentKindSchema>;
+
+export const AgentConfidenceSchema = z.enum(["low", "medium", "high"]);
+export type AgentConfidence = z.infer<typeof AgentConfidenceSchema>;
+
+export const AgentToolCallSchema = z.object({
+  toolName: z.string().min(1).max(200),
+  input: z.unknown().optional(),
+  output: z.unknown().optional(),
+});
+export type AgentToolCall = z.infer<typeof AgentToolCallSchema>;
+
+export const AgentCitationSchema = z.object({
+  sourceIndex: z.number().int().min(1),
+  snippet: z.string().min(1).max(800).optional(),
+});
+export type AgentCitation = z.infer<typeof AgentCitationSchema>;
+
+export const SpecialistAgentResponseSchema = z.object({
+  kind: AgentKindSchema,
+  answer_draft: z.string(),
+  questions_for_user: z.array(z.string().min(1).max(300)).default([]),
+  assumptions: z.array(z.string().min(1).max(300)).default([]),
+  tool_calls: z.array(AgentToolCallSchema).default([]),
+  citations: z.array(AgentCitationSchema).default([]),
+  confidence: AgentConfidenceSchema.default("medium"),
+});
+
+export type SpecialistAgentResponse = z.infer<typeof SpecialistAgentResponseSchema>;
+
+export const FrontlineDecisionSchema = z.object({
+  needs_finance: z.boolean().default(false),
+  needs_citations: z.boolean().default(false),
+  needs_project: z.boolean().default(false),
+  // If the frontline can directly answer without delegation:
+  direct_answer: z.string().optional(),
+  // If we should ask user a question before proceeding:
+  questions_for_user: z.array(z.string().min(1).max(300)).default([]),
+});
+export type FrontlineDecision = z.infer<typeof FrontlineDecisionSchema>;
+
+

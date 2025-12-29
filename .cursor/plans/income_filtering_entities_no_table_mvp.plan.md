@@ -14,13 +14,13 @@ Add a migration in [`lib/db/migrations/`](/Users/jeff/Desktop/Focus/projects/flo
 
 ## API endpoints (derived from docs)
 
-Add endpoints under `app/(chat)/api/projects/[projectId]/entities` that operate on **distinct values** in `ProjectDoc`:
+Add endpoints under `app/(chat)/api/projects/[projectId]/entities `that operate on **distinct values** in `ProjectDoc`:
 
 - `GET /api/projects/:projectId/entities`
-  - returns distinct `{ entityName, entityKind, docCount }` for the project.
+- returns distinct `{ entityName, entityKind, docCount }` for the project.
 - Optional: `POST /api/projects/:projectId/entities/rename`
-  - body: `{ fromName, fromKind, toName, toKind }`
-  - updates matching `ProjectDoc` rows.
+- body: `{ fromName, fromKind, toName, toKind }`
+- updates matching `ProjectDoc` rows.
 
 No entity deletion semantics needed for MVP.
 
@@ -28,7 +28,7 @@ No entity deletion semantics needed for MVP.
 
 Plumb `entityName`/`entityKind` through:
 
-- Upload: [`app/(chat)/api/files/upload/route.ts`](/Users/jeff/Desktop/Focus/projects/flowchat/app/(chat)/api/files/upload/route.ts)
+- Upload: [`app/(chat)/api/files/upload/route.ts`](/Users/jeff/Desktop/Focus/projects/flowchat/app/\(chat)/api/files/upload/route.ts)
 - Microsoft import: [`app/(chat)/api/projects/[projectId]/integrations/microsoft/import/route.ts`](/Users/jeff/Desktop/Focus/projects/flowchat/app/(chat)/api/projects/[projectId]/integrations/microsoft/import/route.ts)
 - Persist on `createProjectDoc()`.
 
@@ -40,4 +40,3 @@ Plumb `entityName`/`entityKind` through:
 ## UI
 
 - Add an **Entity** selector in the upload/import flows.
-- Add a lightweight “Manage entities” (derived list + rename) modal.

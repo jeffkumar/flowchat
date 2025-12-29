@@ -25,6 +25,10 @@ import { entitlementsByUserType } from "@/lib/ai/entitlements";
 import type { ChatModel } from "@/lib/ai/models";
 import { type RequestHints, systemPrompt } from "@/lib/ai/prompts";
 import { myProvider } from "@/lib/ai/providers";
+import { decideFrontlineRouting } from "@/lib/ai/agents/frontline-agent";
+import { runFinanceAgent } from "@/lib/ai/agents/finance-agent";
+import { runProjectAgent } from "@/lib/ai/agents/project-agent";
+import { runCitationsAgent } from "@/lib/ai/agents/citations-agent";
 import { createDocument } from "@/lib/ai/tools/create-document";
 import { financeQuery } from "@/lib/ai/tools/finance-query";
 import { getWeather } from "@/lib/ai/tools/get-weather";
@@ -39,6 +43,7 @@ import {
   getMessagesByChatId,
   getOrCreateDefaultProjectForUser,
   getProjectByIdForUser,
+  getProjectEntitySummaryForUser,
   saveChat,
   saveMessages,
   updateChatLastContextById,
@@ -73,7 +78,12 @@ const TIME_RANGE_HINT_RE =
 
 // Heuristic: aggregation questions need more coverage across many docs (e.g. "sum across 30 invoices").
 const AGGREGATION_HINT_RE =
-  /\b(sum|total|add\s+up|aggregate|roll\s*up|grand\s+total)\b|\b(invoices?|receipts?)\b|\b(by|per|each)\s+month\b|\bmonthly\b|\bacross\s+\d+\b/i;
+  /\b(sum|total|add\s+up|aggregate|roll\s*up|grand\s+total)\b|\b(invoices?|receipts?)\b|\b(by|per|each)\s+month\b|\bmonthly\b|\bacross\s+\d+\b|\b(income|deposits?|revenue|bring\s+in|made)\b/i;
+
+const INCOME_INTENT_RE =
+  /\b(how\s+much\s+did\s+i\s+make|how\s+much\s+did\s+we\s+make|how\s+much\s+did\s+we\s+bring\s+in|bring\s+in|income|deposits?|revenue|made)\b/i;
+
+const INVOICE_REVENUE_RE = /\binvoice\s+revenue\b/i;
 
 function startMsForPreset(preset: RetrievalRangePreset | undefined, nowMs: number) {
   if (!preset || preset === "all") {
@@ -1330,7 +1340,7 @@ export async function POST(request: Request) {
     let finalMergedUsage: AppUsage | undefined;
 
     const stream = createUIMessageStream({
-      execute: ({ writer: dataStream }) => {
+      execute: async ({ writer: dataStream }) => {
         let citationInstructions: string | null = null;
         if (sources.length > 0) {
           const seen = new Set<string>();
@@ -1418,7 +1428,7 @@ export async function POST(request: Request) {
         }
 
         const synergySystemPrompt =
-          "You are Synergy, a helpful assistant answering questions based on retrieved context (Slack messages and uploaded docs). Use the provided context when it is relevant. If the context does not contain the answer, say so briefly and answer from general knowledge when appropriate. When talking about people, projects, or events, only use names and details that explicitly appear in the retrieved context or the conversation so far; do not invent or guess new names.\n\nIMPORTANT: For any totals, sums, counts, group-bys (e.g. by month), or other numeric aggregations over bank statements, credit card statements, or invoices, you MUST use the financeQuery tool and use its output verbatim. Do NOT compute totals from retrieved chunks. For deposits-only, filter to positive amounts (amount_min > 0). For withdrawals-only, filter to negative amounts (amount_max < 0). When the user asks about \"this year\" or a specific month (e.g. \"in June\"), prefer financeQuery.time_window (month/year) instead of manually setting date_start/date_end. date_end is exclusive; month windows should end on the first day of the next month.";
+          "You are Synergy (FrontlineAgent). You answer questions based on retrieved context (Slack messages and uploaded docs).\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n- runCitationsAgent: validate claims against sources and add inline citations like 【N】.\n\nRules:\n- Use runFinanceAgent for any totals/sums/counts/aggregations; do not compute totals yourself.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n- If you used retrieved context, optionally call runCitationsAgent at the end to add citations.\n\nKeep clarifying questions short and actionable.";
 
         const baseMessages = convertToModelMessages(uiMessages);
         const messagesWithContext = retrievedContext
@@ -1456,6 +1466,27 @@ export async function POST(request: Request) {
           .slice(0, 4000);
         const isAggregationQuery = AGGREGATION_HINT_RE.test(lastUserText);
 
+        // Frontline router: can short-circuit with a clarifying question before any tool calls.
+        try {
+          const decision = await decideFrontlineRouting({
+            _session: session,
+            input: { question: lastUserText, retrieved_context: retrievedContext },
+          });
+          if (decision.questions_for_user.length > 0) {
+            const msgId = generateUUID();
+            dataStream.write({ type: "text-start", id: msgId });
+            dataStream.write({
+              type: "text-delta",
+              id: msgId,
+              delta: decision.questions_for_user.join(" "),
+            });
+            dataStream.write({ type: "text-end", id: msgId });
+            return;
+          }
+        } catch {
+          // Fall through if router fails.
+        }
+
         const result = streamText({
           model: myProvider.languageModel(selectedChatModel),
           system: synergySystemPrompt,
@@ -1478,17 +1509,18 @@ export async function POST(request: Request) {
             }
           },
           experimental_activeTools:
-            selectedChatModel === "chat-model-reasoning"
-              ? []
-              : isAggregationQuery
-                ? ["financeQuery"]
-                : [
-                    "getWeather",
-                    "createDocument",
-                    "updateDocument",
-                    "requestSuggestions",
-                    "financeQuery",
-                  ],
+            isAggregationQuery
+              ? ["financeQuery", "runFinanceAgent", "runProjectAgent", "runCitationsAgent"]
+              : [
+                  "getWeather",
+                  "createDocument",
+                  "updateDocument",
+                  "requestSuggestions",
+                  "financeQuery",
+                  "runFinanceAgent",
+                  "runProjectAgent",
+                  "runCitationsAgent",
+                ],
           experimental_transform: smoothStream({ chunking: "word" }),
           tools: {
             getWeather,
@@ -1499,6 +1531,62 @@ export async function POST(request: Request) {
               dataStream,
             }),
             financeQuery: financeQuery({ session, projectId: activeProjectId }),
+            runFinanceAgent: tool({
+              description:
+                "Delegate to FinanceAgent for deterministic finance analysis. Returns structured JSON including questions_for_user when clarification is needed.",
+              inputSchema: z.object({
+                question: z.string().min(1).max(4000),
+              }),
+              execute: async ({ question }) => {
+                return await runFinanceAgent({
+                  session,
+                  projectId: activeProjectId,
+                  input: { question },
+                });
+              },
+            }),
+            runProjectAgent: tool({
+              description:
+                "Delegate to ProjectAgent for project/entity state and diagnostics. Returns structured JSON.",
+              inputSchema: z.object({
+                question: z.string().min(1).max(4000),
+              }),
+              execute: async ({ question }) => {
+                return await runProjectAgent({
+                  session,
+                  input: { question, projectId: activeProjectId },
+                });
+              },
+            }),
+            runCitationsAgent: tool({
+              description:
+                "Delegate to CitationsAgent to validate claims against sources and add inline citations like 【N】. Returns structured JSON.",
+              inputSchema: z.object({
+                question: z.string().min(1).max(4000),
+                draft_answer: z.string().min(1).max(20000),
+              }),
+              execute: async ({ question, draft_answer }) => {
+                const sourceItems = sources
+                  .slice(0, 20)
+                  .map((s, idx) => ({
+                    index: idx + 1,
+                    label:
+                      (typeof (s as any).filename === "string" && (s as any).filename.length > 0
+                        ? (s as any).filename
+                        : typeof (s as any).channel_name === "string" && (s as any).channel_name.length > 0
+                          ? `#${String((s as any).channel_name)}`
+                          : "Source") as string,
+                    content:
+                      typeof (s as any).content === "string"
+                        ? String((s as any).content).slice(0, 5000)
+                        : undefined,
+                  }));
+                return await runCitationsAgent({
+                  _session: session,
+                  input: { question, draft_answer, sources: sourceItems },
+                });
+              },
+            }),
           },
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,

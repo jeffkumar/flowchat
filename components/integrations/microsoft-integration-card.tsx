@@ -62,6 +62,11 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+} from "@/components/ui/popover";
 
 type MicrosoftStatus =
   | { connected: false }
@@ -203,6 +208,8 @@ function getDisplayStatus({
 
 type InvoiceParties = { senders: string[]; recipients: string[] };
 
+import { BusinessNameTypeahead } from "@/components/business-name-typeahead";
+
 export function MicrosoftIntegrationCard() {
   const { selectedProjectId } = useProjectSelector();
 
@@ -215,8 +222,6 @@ export function MicrosoftIntegrationCard() {
   const [docTypeByKey, setDocTypeByKey] = useState<Record<string, IngestDocumentType>>(
     () => ({})
   );
-  const [entityKind, setEntityKind] = useState<"personal" | "business">("personal");
-  const [entityName, setEntityName] = useState<string>("Personal");
 
   const [folderStack, setFolderStack] = useState<Array<{ id: string; name: string }>>([]);
   
@@ -248,6 +253,16 @@ export function MicrosoftIntegrationCard() {
     driveId: string;
     items: Array<{ itemId: string; filename: string }>;
   } | null>(null);
+
+  const [importDialog, setImportDialog] = useState<{
+    driveId: string;
+    items: Array<{ itemId: string; filename: string }>;
+    documentType: IngestDocumentType;
+  } | null>(null);
+  const [importEntityKind, setImportEntityKind] = useState<"personal" | "business">(
+    "personal"
+  );
+  const [importBusinessName, setImportBusinessName] = useState("");
 
   useEffect(() => {
     // Project-scoped UI state: reset on project switch to avoid showing stale results.
@@ -292,6 +307,12 @@ export function MicrosoftIntegrationCard() {
   const { data: invoiceParties } = useSWR<InvoiceParties>(
     selectedProjectId ? `/api/projects/${selectedProjectId}/invoices/parties` : null,
     fetcher
+  );
+
+  const { data: businessNamesData } = useSWR<{ names: string[] }>(
+    "/api/entities/business-names",
+    fetcher,
+    { shouldRetryOnError: false }
   );
 
   const syncedDocByKey = (syncedDocsData?.docs ?? []).reduce<Record<string, SyncedDoc>>(
@@ -371,16 +392,20 @@ export function MicrosoftIntegrationCard() {
     }
   };
 
-  const syncItems = async ({
+  const importItems = async ({
     driveId,
     items,
     documentType,
+    entityKind,
+    entityName,
     invoiceSender,
     invoiceRecipient,
   }: {
     driveId: string;
     items: Array<{ itemId: string; filename: string }>;
     documentType: IngestDocumentType;
+    entityKind: "personal" | "business";
+    entityName: string;
     invoiceSender?: string;
     invoiceRecipient?: string;
   }) => {
@@ -453,8 +478,8 @@ export function MicrosoftIntegrationCard() {
             driveId,
             items,
             documentType,
-            entityName: trimmedEntityName.length > 0 ? trimmedEntityName : undefined,
-            entityKind: trimmedEntityName.length > 0 ? entityKind : undefined,
+            entityName: trimmedEntityName,
+            entityKind,
             invoiceSender: sender.length > 0 ? sender : undefined,
             invoiceRecipient: recipient.length > 0 ? recipient : undefined,
           }),
@@ -463,7 +488,7 @@ export function MicrosoftIntegrationCard() {
 
       if (!res.ok) {
         const text = await res.text().catch(() => "");
-        throw new Error(text || "Sync failed");
+        throw new Error(text || "Import failed");
       }
 
       const json = (await res.json()) as {
@@ -491,25 +516,25 @@ export function MicrosoftIntegrationCard() {
 
       if (syncedCount > 0) {
         toast.success(
-          `Sync completed for ${syncedCount} file(s)${
+          `Import completed for ${syncedCount} file(s)${
             skippedCount > 0 || failedCount > 0
               ? ` (${skippedCount} skipped, ${failedCount} failed)`
               : ""
           }`
         );
       } else if (skippedCount > 0) {
-        toast.message(`Nothing to sync (${skippedCount} skipped)`);
+        toast.message(`Nothing to import (${skippedCount} skipped)`);
       } else {
         toast.error(
           firstFailedMessage
-            ? `Sync failed: ${firstFailedMessage}`
-            : "Sync failed"
+            ? `Import failed: ${firstFailedMessage}`
+            : "Import failed"
         );
       }
 
       await mutateSyncedDocs();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Sync failed");
+      toast.error(error instanceof Error ? error.message : "Import failed");
       await mutateSyncedDocs();
     } finally {
       setInFlightSyncKeys((prev) => {
@@ -520,7 +545,7 @@ export function MicrosoftIntegrationCard() {
     }
   };
 
-  const requestSync = ({
+  const requestImport = ({
     driveId,
     items,
     documentType,
@@ -529,11 +554,13 @@ export function MicrosoftIntegrationCard() {
     items: Array<{ itemId: string; filename: string }>;
     documentType: IngestDocumentType;
   }) => {
+    setImportEntityKind("personal");
+    setImportBusinessName("");
     if (documentType === "invoice") {
       setInvoiceSyncDialog({ driveId, items });
       return;
     }
-    void syncItems({ driveId, items, documentType });
+    setImportDialog({ driveId, items, documentType });
   };
 
   const removeSyncedDoc = async (doc: SyncedDoc) => {
@@ -764,7 +791,7 @@ export function MicrosoftIntegrationCard() {
 
             {!selectedProjectId && (
               <div className="text-xs text-muted-foreground">
-                Select a project to enable Sync.
+                Select a project to enable Import.
               </div>
             )}
           </div>
@@ -897,14 +924,14 @@ export function MicrosoftIntegrationCard() {
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   if (!item.driveId) return;
-                                  requestSync({
+                                  requestImport({
                                     driveId: item.driveId,
                                     items: [{ itemId: item.id, filename: label }],
                                     documentType: selectedType,
                                   });
                                 }}
-                                aria-label="Sync file"
-                                title={isSyncing ? "Processing" : "Sync"}
+                                aria-label="Import file"
+                                title={isSyncing ? "Processing" : "Import"}
                                 size="sm"
                                 type="button"
                                 variant="outline"
@@ -918,7 +945,7 @@ export function MicrosoftIntegrationCard() {
                                 ) : (
                                   <>
                                     <RefreshCw className="h-4 w-4" />
-                                    Sync
+                                    Import
                                   </>
                                 )}
                               </Button>
@@ -930,7 +957,7 @@ export function MicrosoftIntegrationCard() {
                               type="button"
                               className="shrink-0 whitespace-nowrap"
                             >
-                              Sync
+                              Import
                             </Button>
                           )}
                         </div>
@@ -1058,14 +1085,14 @@ export function MicrosoftIntegrationCard() {
                           <Button
                             disabled={isSyncing || !selectedProjectId}
                             onClick={() => {
-                              requestSync({
+                              requestImport({
                                 driveId: doc.driveId,
                                 items: [{ itemId: doc.itemId, filename: doc.filename }],
                                 documentType: selectedType,
                               });
                             }}
-                            aria-label="Sync file"
-                            title={isSyncing ? "Processing" : "Sync"}
+                            aria-label="Import file"
+                            title={isSyncing ? "Processing" : "Import"}
                             size="icon"
                             type="button"
                             variant="outline"
@@ -1128,38 +1155,6 @@ export function MicrosoftIntegrationCard() {
             <div className="rounded-md border p-4 space-y-4 bg-muted/10">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-sm font-medium">Browsing: {folderStack.at(-1)?.name ?? "Root"}</div>
-              </div>
-
-              <div className="grid gap-2 sm:grid-cols-2">
-                <div className="grid gap-1">
-                  <label className="text-xs text-muted-foreground" htmlFor="ms-entity-kind">
-                    Entity type
-                  </label>
-                  <Select
-                    onValueChange={(value) => setEntityKind(value as "personal" | "business")}
-                    value={entityKind}
-                  >
-                    <SelectTrigger className="h-8 text-xs" id="ms-entity-kind">
-                      <SelectValue placeholder="Select entity type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="personal">Personal</SelectItem>
-                      <SelectItem value="business">Business</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid gap-1">
-                  <label className="text-xs text-muted-foreground" htmlFor="ms-entity-name">
-                    Entity name
-                  </label>
-                  <Input
-                    autoComplete="off"
-                    id="ms-entity-name"
-                    onChange={(e) => setEntityName(e.target.value)}
-                    placeholder={entityKind === "personal" ? "Personal" : "Company name"}
-                    value={entityName}
-                  />
-                </div>
               </div>
 
               {folderStack.length > 0 && (
@@ -1249,14 +1244,14 @@ export function MicrosoftIntegrationCard() {
                               <Button
                                 disabled={isSyncing || !selectedProjectId}
                                 onClick={() => {
-                                  requestSync({
+                                  requestImport({
                                     driveId: selectedDriveId,
                                     items: [{ itemId: item.id, filename: label }],
                                     documentType: selectedType,
                                   });
                                 }}
-                                aria-label="Refresh file"
-                                title="Refresh file"
+                                aria-label="Import file"
+                                title="Import file"
                                 size="icon"
                                 type="button"
                                 variant="outline"
@@ -1320,13 +1315,52 @@ export function MicrosoftIntegrationCard() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Invoice metadata (optional)</DialogTitle>
+            <DialogTitle>Import invoice</DialogTitle>
             <DialogDescription>
-              Add sender/recipient to improve invoice search and reporting. You can leave these blank.
+              Choose whether this is Personal or Business. If Business, select or type a business name. Sender/recipient are optional.
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-3">
+            <div className="grid gap-1">
+              <label className="text-xs text-muted-foreground" htmlFor="ms-import-entity-kind-invoice">
+                Entity type
+              </label>
+              <Select
+                onValueChange={(value) => setImportEntityKind(value as "personal" | "business")}
+                value={importEntityKind}
+              >
+                <SelectTrigger className="h-9" id="ms-import-entity-kind-invoice">
+                  <SelectValue placeholder="Select entity type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="personal">Personal</SelectItem>
+                  <SelectItem value="business">Business</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {importEntityKind === "business" ? (
+              <div className="grid gap-1">
+                <label className="text-xs text-muted-foreground" htmlFor="ms-import-business-name-invoice">
+                  Business name
+                </label>
+                <BusinessNameTypeahead
+                  inputId="ms-import-business-name-invoice"
+                  onChange={setImportBusinessName}
+                  options={businessNamesData?.names ?? []}
+                  placeholder="Start typing a business name"
+                  value={importBusinessName}
+                />
+              </div>
+            ) : null}
+
+            {importEntityKind === "business" ? (
+              <div className="text-[11px] text-muted-foreground">
+                Start typing to reuse an existing business name, or type a new one.
+              </div>
+            ) : null}
+
             <div className="grid gap-1">
               <label
                 className="text-xs text-muted-foreground"
@@ -1383,10 +1417,20 @@ export function MicrosoftIntegrationCard() {
             <Button
               onClick={() => {
                 if (!invoiceSyncDialog) return;
-                void syncItems({
+                const entityName =
+                  importEntityKind === "personal"
+                    ? "Personal"
+                    : importBusinessName.trim();
+                if (importEntityKind === "business" && entityName.length === 0) {
+                  toast.error("Business name is required");
+                  return;
+                }
+                void importItems({
                   driveId: invoiceSyncDialog.driveId,
                   items: invoiceSyncDialog.items,
                   documentType: "invoice",
+                  entityKind: importEntityKind,
+                  entityName,
                   invoiceSender,
                   invoiceRecipient,
                 });
@@ -1394,7 +1438,97 @@ export function MicrosoftIntegrationCard() {
               }}
               type="button"
             >
-              Sync
+              Import
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open) setImportDialog(null);
+        }}
+        open={importDialog !== null}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Import file</DialogTitle>
+            <DialogDescription>
+              Choose whether this is Personal or Business. If Business, select or type a business name.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-3">
+            <div className="grid gap-1">
+              <label className="text-xs text-muted-foreground" htmlFor="ms-import-entity-kind">
+                Entity type
+              </label>
+              <Select
+                onValueChange={(value) => setImportEntityKind(value as "personal" | "business")}
+                value={importEntityKind}
+              >
+                <SelectTrigger className="h-9" id="ms-import-entity-kind">
+                  <SelectValue placeholder="Select entity type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="personal">Personal</SelectItem>
+                  <SelectItem value="business">Business</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {importEntityKind === "business" ? (
+              <div className="grid gap-1">
+                <label className="text-xs text-muted-foreground" htmlFor="ms-import-business-name">
+                  Business name
+                </label>
+                <BusinessNameTypeahead
+                  inputId="ms-import-business-name"
+                  onChange={setImportBusinessName}
+                  options={businessNamesData?.names ?? []}
+                  placeholder="Start typing a business name"
+                  value={importBusinessName}
+                />
+              </div>
+            ) : null}
+          </div>
+          {importEntityKind === "business" ? (
+            <div className="text-[11px] text-muted-foreground">
+              Start typing to reuse an existing business name, or type a new one.
+            </div>
+          ) : null}
+
+          <DialogFooter>
+            <Button
+              onClick={() => setImportDialog(null)}
+              type="button"
+              variant="outline"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (!importDialog) return;
+                const entityName =
+                  importEntityKind === "personal"
+                    ? "Personal"
+                    : importBusinessName.trim();
+                if (importEntityKind === "business" && entityName.length === 0) {
+                  toast.error("Business name is required");
+                  return;
+                }
+                void importItems({
+                  driveId: importDialog.driveId,
+                  items: importDialog.items,
+                  documentType: importDialog.documentType,
+                  entityKind: importEntityKind,
+                  entityName,
+                });
+                setImportDialog(null);
+              }}
+              type="button"
+            >
+              Import
             </Button>
           </DialogFooter>
         </DialogContent>

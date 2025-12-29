@@ -57,6 +57,14 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   ImageIcon,
   SearchIcon,
   ShoppingBagIcon,
@@ -70,6 +78,97 @@ type UploadDocumentType =
   | "bank_statement"
   | "cc_statement"
   | "invoice";
+
+function normalizeBusinessName(value: string): string {
+  return value.trim();
+}
+
+function includesCaseInsensitive(haystack: string, needle: string): boolean {
+  return haystack.toLowerCase().includes(needle.toLowerCase());
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const v = value.trim();
+    if (v.length === 0) continue;
+    const key = v.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
+  return out;
+}
+
+function BusinessNameTypeahead({
+  value,
+  onChange,
+  options,
+  inputId,
+  placeholder,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  options: string[];
+  inputId: string;
+  placeholder: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const query = normalizeBusinessName(value);
+  const normalizedOptions = uniqueStrings(options);
+  const filtered =
+    query.length === 0
+      ? normalizedOptions.slice(0, 8)
+      : normalizedOptions
+          .filter((name) => includesCaseInsensitive(name, query))
+          .slice(0, 8);
+  const shouldShow = open && filtered.length > 0;
+
+  return (
+    <Popover open={shouldShow} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Input
+          autoComplete="off"
+          id={inputId}
+          onBlur={() => {
+            window.setTimeout(() => setOpen(false), 120);
+          }}
+          onChange={(e) => {
+            onChange(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          placeholder={placeholder}
+          value={value}
+        />
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-[--radix-popover-trigger-width] p-1"
+        sideOffset={4}
+      >
+        <div className="max-h-48 overflow-auto">
+          {filtered.map((name) => (
+            <Button
+              key={name}
+              className="h-8 w-full justify-start px-2 text-sm"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                onChange(name);
+                setOpen(false);
+              }}
+              type="button"
+              variant="ghost"
+            >
+              {name}
+            </Button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 function PureMultimodalInput({
   chatId,
@@ -160,6 +259,17 @@ function PureMultimodalInput({
     "invoice_recipient_last",
     ""
   );
+  const [entityDialogOpen, setEntityDialogOpen] = useState(false);
+  const [uploadEntityKind, setUploadEntityKind] = useState<"personal" | "business">(
+    "personal"
+  );
+  const [uploadBusinessName, setUploadBusinessName] = useState("");
+
+  const { data: businessNamesData } = useSWR<{ names: string[] }>(
+    "/api/entities/business-names",
+    fetcher,
+    { shouldRetryOnError: false }
+  );
 
   const { data: invoiceParties } = useSWR<{
     senders: string[];
@@ -213,6 +323,11 @@ function PureMultimodalInput({
     const formData = new FormData();
     formData.append("file", file);
     formData.append("documentType", uploadDocumentType);
+    formData.append("entityKind", uploadEntityKind);
+    if (uploadEntityKind === "business") {
+      const bn = uploadBusinessName.trim();
+      if (bn.length > 0) formData.append("entityName", bn);
+    }
     if (uploadDocumentType === "invoice") {
       const sender = invoiceSender.trim();
       const recipient = invoiceRecipient.trim();
@@ -249,7 +364,15 @@ function PureMultimodalInput({
       toast.error("Failed to upload file, please try again!");
     }
     },
-    [invoiceRecipient, invoiceSender, selectedProjectId, mutate, uploadDocumentType]
+    [
+      invoiceRecipient,
+      invoiceSender,
+      selectedProjectId,
+      mutate,
+      uploadDocumentType,
+      uploadBusinessName,
+      uploadEntityKind,
+    ]
   );
 
   const handleFileChange = useCallback(
@@ -411,7 +534,6 @@ function PureMultimodalInput({
         <PromptInputToolbar className="!border-top-0 border-t-0! p-0 shadow-none dark:border-0 dark:border-transparent!">
           <PromptInputTools className="gap-0 sm:gap-0.5">
             <AttachmentsButton
-              fileInputRef={fileInputRef}
               invoiceParties={invoiceParties}
               invoiceRecipient={invoiceRecipient}
               invoiceSender={invoiceSender}
@@ -421,6 +543,7 @@ function PureMultimodalInput({
               setInvoiceSender={setInvoiceSender}
               setUploadDocumentType={setUploadDocumentType}
               uploadDocumentType={uploadDocumentType}
+              onRequestFiles={() => setEntityDialogOpen(true)}
             />
           </PromptInputTools>
 
@@ -438,6 +561,93 @@ function PureMultimodalInput({
           )}
         </PromptInputToolbar>
       </PromptInput>
+
+      <Dialog
+        open={entityDialogOpen}
+        onOpenChange={(open) => {
+          setEntityDialogOpen(open);
+          if (!open) {
+            setUploadEntityKind("personal");
+            setUploadBusinessName("");
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Upload files</DialogTitle>
+            <DialogDescription>
+              Choose whether these files are Personal or Business. If Business, select or type a business name.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-3">
+            <div className="grid gap-1">
+              <label className="text-xs text-muted-foreground" htmlFor="chat-upload-entity-kind">
+                Entity type
+              </label>
+              <Select
+                onValueChange={(value) =>
+                  setUploadEntityKind(value as "personal" | "business")
+                }
+                value={uploadEntityKind}
+              >
+                <SelectTrigger className="h-9" id="chat-upload-entity-kind">
+                  <SelectValue placeholder="Select entity type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="personal">Personal</SelectItem>
+                  <SelectItem value="business">Business</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {uploadEntityKind === "business" ? (
+              <div className="grid gap-1">
+                <label className="text-xs text-muted-foreground" htmlFor="chat-upload-business-name">
+                  Business name
+                </label>
+                <BusinessNameTypeahead
+                  inputId="chat-upload-business-name"
+                  onChange={setUploadBusinessName}
+                  options={businessNamesData?.names ?? []}
+                  placeholder="Start typing a business name"
+                  value={uploadBusinessName}
+                />
+                <div className="text-[11px] text-muted-foreground">
+                  Start typing to reuse an existing business name, or type a new one.
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <DialogFooter>
+            <Button
+              onClick={() => setEntityDialogOpen(false)}
+              type="button"
+              variant="outline"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                const name =
+                  uploadEntityKind === "personal"
+                    ? "Personal"
+                    : uploadBusinessName.trim();
+                if (uploadEntityKind === "business" && name.length === 0) {
+                  toast.error("Business name is required");
+                  return;
+                }
+                setEntityDialogOpen(false);
+                fileInputRef.current?.click();
+              }}
+              type="button"
+            >
+              Continue
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -469,7 +679,6 @@ export const MultimodalInput = memo(
 );
 
 function PureAttachmentsButton({
-  fileInputRef,
   invoiceParties,
   invoiceRecipient,
   invoiceSender,
@@ -479,8 +688,8 @@ function PureAttachmentsButton({
   setInvoiceSender,
   uploadDocumentType,
   setUploadDocumentType,
+  onRequestFiles,
 }: {
-  fileInputRef: React.MutableRefObject<HTMLInputElement | null>;
   invoiceParties?: { senders: string[]; recipients: string[] };
   invoiceRecipient: string;
   invoiceSender: string;
@@ -490,6 +699,7 @@ function PureAttachmentsButton({
   setInvoiceSender: Dispatch<SetStateAction<string>>;
   uploadDocumentType: UploadDocumentType;
   setUploadDocumentType: Dispatch<SetStateAction<UploadDocumentType>>;
+  onRequestFiles: () => void;
 }) {
   const isReasoningModel = selectedModelId === "chat-model-reasoning";
   const [isOpen, setIsOpen] = useState(false);
@@ -581,7 +791,7 @@ function PureAttachmentsButton({
             className="h-9 justify-start gap-2 px-2 text-sm font-normal"
             onClick={() => {
               setIsOpen(false);
-              fileInputRef.current?.click();
+              onRequestFiles();
             }}
             variant="ghost"
           >

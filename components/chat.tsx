@@ -61,12 +61,108 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
 type UploadDocumentType =
   | "general_doc"
   | "bank_statement"
   | "cc_statement"
   | "invoice";
+
+function normalizeBusinessName(value: string): string {
+  return value.trim();
+}
+
+function includesCaseInsensitive(haystack: string, needle: string): boolean {
+  return haystack.toLowerCase().includes(needle.toLowerCase());
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const v = value.trim();
+    if (v.length === 0) continue;
+    const key = v.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
+  return out;
+}
+
+function BusinessNameTypeahead({
+  value,
+  onChange,
+  options,
+  inputId,
+  placeholder,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  options: string[];
+  inputId: string;
+  placeholder: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const query = normalizeBusinessName(value);
+  const normalizedOptions = uniqueStrings(options);
+  const filtered =
+    query.length === 0
+      ? normalizedOptions.slice(0, 8)
+      : normalizedOptions
+          .filter((name) => includesCaseInsensitive(name, query))
+          .slice(0, 8);
+  const shouldShow = open && filtered.length > 0;
+
+  return (
+    <Popover open={shouldShow} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Input
+          autoComplete="off"
+          id={inputId}
+          onBlur={() => {
+            window.setTimeout(() => setOpen(false), 120);
+          }}
+          onChange={(e) => {
+            onChange(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          placeholder={placeholder}
+          value={value}
+        />
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-[--radix-popover-trigger-width] p-1"
+        sideOffset={4}
+      >
+        <div className="max-h-48 overflow-auto">
+          {filtered.map((name) => (
+            <Button
+              key={name}
+              className="h-8 w-full justify-start px-2 text-sm"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                onChange(name);
+                setOpen(false);
+              }}
+              type="button"
+              variant="ghost"
+            >
+              {name}
+            </Button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 function getSourceTypes(includeSlack: boolean): Array<"slack" | "docs"> {
   return includeSlack ? ["slack", "docs"] : ["docs"];
@@ -350,10 +446,20 @@ export function Chat({
     fetcher
   );
 
+  const { data: businessNamesData } = useSWR<{ names: string[] }>(
+    "/api/entities/business-names",
+    fetcher,
+    { shouldRetryOnError: false }
+  );
+
   const [isDragging, setIsDragging] = useState(false);
   const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
   const [selectedFileType, setSelectedFileType] =
     useState<UploadDocumentType>("general_doc");
+  const [dropEntityKind, setDropEntityKind] = useState<"personal" | "business">(
+    "personal"
+  );
+  const [dropBusinessName, setDropBusinessName] = useState("");
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -386,6 +492,11 @@ export function Chat({
     const formData = new FormData();
     formData.append("file", file);
     formData.append("documentType", type);
+    formData.append("entityKind", dropEntityKind);
+    if (dropEntityKind === "business") {
+      const bn = dropBusinessName.trim();
+      if (bn.length > 0) formData.append("entityName", bn);
+    }
     if (type === "invoice") {
       const sender = invoiceSender.trim();
       const recipient = invoiceRecipient.trim();
@@ -620,7 +731,11 @@ export function Chat({
       <Dialog
         open={droppedFiles.length > 0}
         onOpenChange={(open) => {
-          if (!open) setDroppedFiles([]);
+          if (!open) {
+            setDroppedFiles([]);
+            setDropEntityKind("personal");
+            setDropBusinessName("");
+          }
         }}
       >
         <DialogContent>
@@ -652,6 +767,52 @@ export function Chat({
                 <SelectItem value="invoice">Invoice</SelectItem>
               </SelectContent>
             </Select>
+
+            <div className="mt-4 grid gap-3">
+              <div className="grid gap-1">
+                <label
+                  className="text-xs text-muted-foreground"
+                  htmlFor="chat-drop-entity-kind"
+                >
+                  Entity type
+                </label>
+                <Select
+                  value={dropEntityKind}
+                  onValueChange={(value) =>
+                    setDropEntityKind(value as "personal" | "business")
+                  }
+                >
+                  <SelectTrigger id="chat-drop-entity-kind">
+                    <SelectValue placeholder="Select entity type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="personal">Personal</SelectItem>
+                    <SelectItem value="business">Business</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {dropEntityKind === "business" ? (
+                <div className="grid gap-1">
+                  <label
+                    className="text-xs text-muted-foreground"
+                    htmlFor="chat-drop-business-name"
+                  >
+                    Business name
+                  </label>
+                  <BusinessNameTypeahead
+                    inputId="chat-drop-business-name"
+                    onChange={setDropBusinessName}
+                    options={businessNamesData?.names ?? []}
+                    placeholder="Start typing a business name"
+                    value={dropBusinessName}
+                  />
+                  <div className="text-[11px] text-muted-foreground">
+                    Start typing to reuse an existing business name, or type a new one.
+                  </div>
+                </div>
+              ) : null}
+            </div>
 
             {selectedFileType === "invoice" && (
               <div className="mt-4 grid gap-3">
@@ -713,7 +874,17 @@ export function Chat({
             <Button variant="outline" onClick={() => setDroppedFiles([])}>
               Cancel
             </Button>
-            <Button onClick={handleUploadDroppedFiles}>Upload</Button>
+            <Button
+              onClick={() => {
+                if (dropEntityKind === "business" && dropBusinessName.trim().length === 0) {
+                  toast({ type: "error", description: "Business name is required" });
+                  return;
+                }
+                void handleUploadDroppedFiles();
+              }}
+            >
+              Upload
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
