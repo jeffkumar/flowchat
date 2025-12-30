@@ -194,6 +194,21 @@ export async function runFinanceAgent({
     return out;
   };
 
+  const escapeMarkdownTableCell = (value: string): string =>
+    value.replaceAll("|", "\\|").replaceAll("\n", " ").replaceAll("\r", " ").trim();
+
+  const toGfmTable = (headers: readonly string[], rows: readonly (readonly string[])[]): string => {
+    const headerLine = `| ${headers.map(escapeMarkdownTableCell).join(" | ")} |`;
+    const sepLine = `| ${headers.map(() => "---").join(" | ")} |`;
+    const rowLines = rows.map((r) => `| ${r.map((c) => escapeMarkdownTableCell(c)).join(" | ")} |`);
+    return [headerLine, sepLine, ...rowLines].join("\n");
+  };
+
+  const clipText = (value: string, maxLen: number): string => {
+    if (value.length <= maxLen) return value;
+    return `${value.slice(0, Math.max(0, maxLen - 1))}…`;
+  };
+
   const system = `You are FinanceAgent.
 
 You MUST return ONLY valid JSON that matches this schema:
@@ -203,6 +218,7 @@ Rules:
 - Use financeQuery for any totals/sums/aggregations. Never compute math yourself.
 - Prefer bank_statement deposits for income-like questions (made/brought in/income/deposits/revenue), with filters.amount_min > 0.
 - CRITICAL: For "income" or "revenue" questions, you MUST set filters.exclude_categories=['transfer', 'credit card payment'] unless the user asks for transfers.
+- When presenting structured results (breakdowns, lists, comparisons), prefer GitHub-flavored markdown tables in answer_draft.
 - For "spend"/"spent"/"expenses"/"charges" questions:
   - You MUST run financeQuery (do not say you can't retrieve data unless financeQuery returns an error).
   - If the user asks for a breakdown "by category", use query_type='group_by_category' (categories may be NULL; include an "Uncategorized" bucket).
@@ -341,6 +357,121 @@ Return JSON only.`;
       return { year, month, date_start, date_end, label: `${year}-${mm}` };
     };
 
+    const inferDateRangeUtc = (
+      textLower: string
+    ):
+      | { kind: "month"; date_start: string; date_end: string; label: string }
+      | { kind: "range"; date_start: string; date_end: string; label: string }
+      | { kind: "half"; date_start: string; date_end: string; label: string }
+      | null => {
+      // Multi-month range (e.g. "September, October, and November 2025")
+      const mentionedMonths = (() => {
+        const byName: Array<[string, number]> = [
+          ["january", 1],
+          ["jan", 1],
+          ["february", 2],
+          ["feb", 2],
+          ["march", 3],
+          ["mar", 3],
+          ["april", 4],
+          ["apr", 4],
+          ["may", 5],
+          ["june", 6],
+          ["jun", 6],
+          ["july", 7],
+          ["jul", 7],
+          ["august", 8],
+          ["aug", 8],
+          ["september", 9],
+          ["sept", 9],
+          ["sep", 9],
+          ["october", 10],
+          ["oct", 10],
+          ["november", 11],
+          ["nov", 11],
+          ["december", 12],
+          ["dec", 12],
+        ];
+        const out: number[] = [];
+        for (const [k, v] of byName) {
+          if (!textLower.includes(k)) continue;
+          if (!out.includes(v)) out.push(v);
+        }
+        return out.sort((a, b) => a - b);
+      })();
+
+      const yearDefault = new Date().getUTCFullYear();
+      const year =
+        (parsed.time_hint?.kind === "year" ? (parsed.time_hint.year ?? null) : null) ??
+        inferYearFromText(parsed.question) ??
+        yearDefault;
+
+      if (mentionedMonths.length >= 2 && typeof year === "number" && Number.isFinite(year)) {
+        const startMonth = mentionedMonths[0];
+        const endMonth = mentionedMonths[mentionedMonths.length - 1];
+        const startMm = String(startMonth).padStart(2, "0");
+        const date_start = `${year}-${startMm}-01`;
+        const endYear = endMonth === 12 ? year + 1 : year;
+        const endMm = String(endMonth === 12 ? 1 : endMonth + 1).padStart(2, "0");
+        const date_end = `${endYear}-${endMm}-01`;
+        return {
+          kind: "range",
+          date_start,
+          date_end,
+          label: `${year}-${String(startMonth).padStart(2, "0")}..${year}-${String(endMonth).padStart(2, "0")}`,
+        };
+      }
+
+      // Single month (including "this month")
+      const month = inferMonthWindowUtc(textLower);
+      if (month) {
+        return { kind: "month", date_start: month.date_start, date_end: month.date_end, label: month.label };
+      }
+
+      // Half-year / last 6 months of a year
+      const mentionsHalf =
+        textLower.includes("half") ||
+        textLower.includes("h1") ||
+        textLower.includes("h2") ||
+        textLower.includes("first half") ||
+        textLower.includes("second half") ||
+        textLower.includes("last 6 months of the year") ||
+        textLower.includes("last six months of the year");
+      if (!mentionsHalf) return null;
+
+      if (!(typeof year === "number" && Number.isFinite(year) && year >= 1900 && year <= 2200)) return null;
+
+      const isH1 =
+        textLower.includes("h1") ||
+        textLower.includes("first half") ||
+        textLower.includes("1st half") ||
+        textLower.includes("first-half");
+      const isH2 =
+        textLower.includes("h2") ||
+        textLower.includes("second half") ||
+        textLower.includes("2nd half") ||
+        textLower.includes("second-half") ||
+        textLower.includes("last half") ||
+        textLower.includes("last 6 months of the year") ||
+        textLower.includes("last six months of the year");
+
+      const half: 1 | 2 = isH2 ? 2 : isH1 ? 1 : 2;
+      if (half === 1) {
+        return {
+          kind: "half",
+          date_start: `${year}-01-01`,
+          date_end: `${year}-07-01`,
+          label: `H1 ${year} (Jan–Jun)`,
+        };
+      }
+      return {
+        kind: "half",
+        date_start: `${year}-07-01`,
+        date_end: `${year + 1}-01-01`,
+        label: `H2 ${year} (Jul–Dec)`,
+      };
+    };
+
     // Personal income for a specific month (e.g. "December 2025", "this month"): sum bank_statement deposits.
     if (parsed.projectId && wantsPersonal && isIncomeLike) {
       const window = inferMonthWindowUtc(q);
@@ -386,6 +517,259 @@ Return JSON only.`;
           ],
           citations: [],
           confidence: sum.count === 0 ? "low" : "medium",
+        });
+      }
+    }
+
+    // Personal credit-card spend by category for an inferred range (e.g. "last half of 2025 by category").
+    if (parsed.projectId && wantsPersonal && wantsCc && isSpendLike && wantsCategoryBreakdown) {
+      const range = inferDateRangeUtc(q);
+      if (range?.kind === "half") {
+        const sumPos = await financeSum({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "cc_statement",
+          filters: {
+            entity_kind: "personal",
+            date_start: range.date_start,
+            date_end: range.date_end,
+            amount_min: 0.01,
+          },
+        });
+
+        const useNeg = sumPos.count === 0;
+        const sum = useNeg
+          ? await financeSum({
+              userId: session.user.id,
+              projectId: parsed.projectId,
+              documentType: "cc_statement",
+              filters: {
+                entity_kind: "personal",
+                date_start: range.date_start,
+                date_end: range.date_end,
+                amount_max: -0.01,
+              },
+            })
+          : sumPos;
+
+        const grouped = await financeGroupByCategory({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "cc_statement",
+          filters: {
+            entity_kind: "personal",
+            date_start: range.date_start,
+            date_end: range.date_end,
+            ...(useNeg ? { amount_max: -0.01 } : { amount_min: 0.01 }),
+          },
+        });
+
+        const absDecimalString = (s: string): string => (s.startsWith("-") ? s.slice(1) : s);
+        const rows = Array.isArray(grouped.rows) ? grouped.rows : [];
+        const tableRows = rows.slice(0, 15).map((r) => {
+          const cat =
+            typeof r.category === "string" && r.category.trim().length > 0
+              ? r.category.trim()
+              : "Uncategorized";
+          const amt = typeof r.total === "string" ? absDecimalString(r.total) : String(r.total);
+          return [cat, `$${amt}`, `${r.count}`];
+        });
+        const byCategoryTable =
+          tableRows.length > 0 ? toGfmTable(["Category", "Total", "Txns"], tableRows) : "";
+
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: [
+            `Personal credit-card spend by category for ${range.label}:`,
+            `- Total: $${typeof sum.total === "string" ? absDecimalString(sum.total) : String(sum.total)}${
+              useNeg ? " (note: amounts were stored as negatives; totals shown as absolute)" : ""
+            }`,
+            `- Transactions: ${sum.count}`,
+            "",
+            "By category:",
+            byCategoryTable,
+            rows.length > 15 ? "\n(Showing top 15 categories.)" : "",
+          ].join("\n"),
+          questions_for_user: [],
+          assumptions: [
+            "Spend is computed from cc_statement transactions for the specified window.",
+            "Categories come from the parsed transaction category field; missing categories are grouped as Uncategorized.",
+          ],
+          tool_calls: [
+            {
+              toolName: "financeSum",
+              input: {
+                document_type: "cc_statement",
+                entity_kind: "personal",
+                date_start: range.date_start,
+                date_end: range.date_end,
+                ...(useNeg ? { amount_max: -0.01 } : { amount_min: 0.01 }),
+              },
+              output: sum,
+            },
+            {
+              toolName: "financeGroupByCategory",
+              input: {
+                document_type: "cc_statement",
+                entity_kind: "personal",
+                date_start: range.date_start,
+                date_end: range.date_end,
+                ...(useNeg ? { amount_max: -0.01 } : { amount_min: 0.01 }),
+              },
+              output: grouped,
+            },
+          ],
+          citations: [],
+          confidence: sum.count === 0 ? "low" : "medium",
+        });
+      }
+    }
+
+    // List charges for a specific month with date/description/amount (avoid one-off statement picking).
+    if (parsed.projectId && isSpendLike && monthFromText && (q.includes("list") || q.includes("show"))) {
+      const range = inferDateRangeUtc(q);
+      if (range?.kind === "month") {
+        // If entity isn't explicit, ask rather than guessing.
+        if (!wantsPersonal && !wantsBusiness) {
+          const businessNames = await listBusinessEntityNames();
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: "",
+            questions_for_user: [
+              businessNames.length > 0
+                ? `Is this Personal, or which business? (${["Personal", ...businessNames].join(", ")})`
+                : "Is this Personal or Business?",
+            ],
+            assumptions: [],
+            tool_calls: [],
+            citations: [],
+            confidence: "low",
+          });
+        }
+
+        const businessNames = wantsBusiness ? await listBusinessEntityNames() : [];
+        const hintedName = parsed.entity_hint?.entity_name?.trim();
+        const inferredName = wantsBusiness ? inferBusinessNameFromText(parsed.question, businessNames) : null;
+        const entityName =
+          wantsBusiness
+            ? hintedName && hintedName.length > 0
+              ? hintedName
+              : inferredName
+                ? inferredName
+                : businessNames.length === 1
+                  ? businessNames[0]
+                  : null
+            : null;
+
+        if (wantsBusiness && !entityName) {
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: "",
+            questions_for_user: [
+              businessNames.length > 0
+                ? `Which business should I use? (${businessNames.join(", ")})`
+                : "Which business should I use?",
+            ],
+            assumptions: [],
+            tool_calls: [],
+            citations: [],
+            confidence: "low",
+          });
+        }
+
+        const listPos = await financeList({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "cc_statement",
+          filters: {
+            ...(wantsPersonal ? { entity_kind: "personal" } : { entity_kind: "business", entity_name: entityName ?? "" }),
+            date_start: range.date_start,
+            date_end: range.date_end,
+            amount_min: 0.01,
+          },
+        });
+        const rowsPosAny: unknown[] = listPos.query_type === "list" ? (listPos.rows as unknown[]) : [];
+        const listNeg =
+          rowsPosAny.length === 0
+            ? await financeList({
+                userId: session.user.id,
+                projectId: parsed.projectId,
+                documentType: "cc_statement",
+                filters: {
+                  ...(wantsPersonal ? { entity_kind: "personal" } : { entity_kind: "business", entity_name: entityName ?? "" }),
+                  date_start: range.date_start,
+                  date_end: range.date_end,
+                  amount_max: -0.01,
+                },
+              })
+            : null;
+        const rowsNegAny: unknown[] =
+          listNeg && listNeg.query_type === "list" ? (listNeg.rows as unknown[]) : [];
+        const usedRowsAny = rowsNegAny.length > 0 ? rowsNegAny : rowsPosAny;
+        const negAmounts = rowsNegAny.length > 0;
+
+        const absDecimalString = (s: string): string => (s.startsWith("-") ? s.slice(1) : s);
+        const isTxnRow = (row: unknown): row is { txnDate: string; description: string | null; amount: string } => {
+          if (!row || typeof row !== "object") return false;
+          const r = row as Record<string, unknown>;
+          return (
+            typeof r.txnDate === "string" &&
+            typeof r.amount === "string" &&
+            (typeof r.description === "string" || r.description === null)
+          );
+        };
+        const txnRows = usedRowsAny.filter(isTxnRow);
+        const tableRows = txnRows.slice(0, 200).map((r) => {
+          const desc = typeof r.description === "string" ? r.description.trim() : "";
+          const amt = negAmounts ? absDecimalString(r.amount) : r.amount;
+          return [r.txnDate, clipText(desc || "(no description)", 120), `$${amt}`];
+        });
+        const chargesTable =
+          tableRows.length > 0 ? toGfmTable(["Date", "Description", "Amount"], tableRows) : "";
+
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: [
+            `Charges in ${range.label}${negAmounts ? " (note: amounts were stored as negatives; shown as absolute)" : ""}:`,
+            `Transactions: ${txnRows.length}`,
+            "",
+            chargesTable,
+            txnRows.length > 200 ? "\n(Showing first 200 transactions.)" : "",
+          ]
+            .filter((s) => s.length > 0)
+            .join("\n"),
+          questions_for_user: txnRows.length === 0 ? ["I found 0 matching charges for that month. Is the year correct?"] : [],
+          assumptions: ["For credit cards, charges may be stored as positive or negative amounts depending on export; this tries both conventions."],
+          tool_calls: [
+            {
+              toolName: "financeList",
+              input: {
+                document_type: "cc_statement",
+                ...(wantsPersonal ? { entity_kind: "personal" } : { entity_kind: "business", entity_name: entityName }),
+                date_start: range.date_start,
+                date_end: range.date_end,
+                amount_min: 0.01,
+              },
+              output: listPos,
+            },
+            ...(listNeg
+              ? [
+                  {
+                    toolName: "financeList",
+                    input: {
+                      document_type: "cc_statement",
+                      ...(wantsPersonal ? { entity_kind: "personal" } : { entity_kind: "business", entity_name: entityName }),
+                      date_start: range.date_start,
+                      date_end: range.date_end,
+                      amount_max: -0.01,
+                    },
+                    output: listNeg,
+                  },
+                ]
+              : []),
+          ],
+          citations: [],
+          confidence: txnRows.length === 0 ? "low" : "medium",
         });
       }
     }
@@ -491,20 +875,18 @@ Return JSON only.`;
           );
         };
 
-        const summarizeRows = (rows: unknown[], negAmounts: boolean): string[] => {
-          const out: string[] = [];
+        const summarizeRows = (rows: unknown[], negAmounts: boolean): string => {
+          const out: Array<[string, string, string]> = [];
           for (const row of rows) {
             if (!isTxnRow(row)) continue;
             const desc = typeof row.description === "string" ? row.description.trim() : "";
             const amount = negAmounts ? absDecimalString(row.amount) : row.amount;
-            out.push(`${row.txnDate} • ${desc || "(no description)"} • $${amount}`);
+            out.push([row.txnDate, clipText(desc || "(no description)", 120), `$${amount}`]);
             if (out.length >= 20) break;
           }
-          return out;
+          return out.length > 0 ? toGfmTable(["Date", "Description", "Amount"], out) : "";
         };
 
-        const found =
-          ccPosRows.length > 0 || ccNegRows.length > 0 || bankRows.length > 0;
         const sourceLabel =
           ccPosRows.length > 0
             ? "business credit card (positive amounts)"
@@ -514,14 +896,15 @@ Return JSON only.`;
                 ? "business bank statement"
                 : null;
 
-        const lines =
+        const matchesTable =
           ccPosRows.length > 0
             ? summarizeRows(ccPosRows, false)
             : ccNegRows.length > 0
               ? summarizeRows(ccNegRows, true)
               : bankRows.length > 0
                 ? summarizeRows(bankRows, false)
-                : [];
+                : "";
+        const found = matchesTable.length > 0;
 
         return SpecialistAgentResponseSchema.parse({
           kind: "finance",
@@ -530,9 +913,9 @@ Return JSON only.`;
                 `Yes — I found matching transactions for "${term}" in ${entityName} (${year}).`,
                 sourceLabel ? `Source: ${sourceLabel}` : "",
                 "",
-                "Matches (date • description • amount):",
-                ...lines,
-                lines.length >= 20 ? "\n(Showing first 20 matches.)" : "",
+                "Matches:",
+                matchesTable,
+                "\n(Showing first 20 matches.)",
               ]
                 .filter((s) => s.length > 0)
                 .join("\n")
@@ -706,16 +1089,12 @@ Return JSON only.`;
       const maxRowsToShow = 60;
       const allTxnRows = list.query_type === "list" ? list.rows.filter(isTxnRow) : [];
       const shown = allTxnRows.slice(0, maxRowsToShow);
-      const breakdownLines =
-        shown.length > 0
-          ? shown
-              .map((r) => {
-                const desc = typeof r.description === "string" ? r.description.trim() : "";
-                const clipped = desc.length > 140 ? `${desc.slice(0, 140)}…` : desc;
-                return `${r.txnDate} • ${clipped || "(no description)"} • $${r.amount}`;
-              })
-              .join("\n")
-          : "";
+      const tableRows = shown.map((r) => {
+        const desc = typeof r.description === "string" ? r.description.trim() : "";
+        return [r.txnDate, clipText(desc || "(no description)", 140), `$${r.amount}`];
+      });
+      const breakdownTable =
+        tableRows.length > 0 ? toGfmTable(["Date", "Description", "Amount"], tableRows) : "";
 
       return SpecialistAgentResponseSchema.parse({
         kind: "finance",
@@ -726,8 +1105,8 @@ Return JSON only.`;
                 `Personal deposits in the last ${rollingDays} days (${date_start} to ${date_end}): $${sum.total}`,
                 `Number of deposits: ${sum.count}`,
                 "",
-                "By transaction (date • description • amount):",
-                breakdownLines,
+                "By transaction:",
+                breakdownTable,
                 allTxnRows.length > maxRowsToShow
                   ? `\n(Showing ${maxRowsToShow} of ${allTxnRows.length} matching deposits.)`
                   : "",
@@ -898,16 +1277,12 @@ Return JSON only.`;
       const maxRowsToShow = 60;
       const allTxnRows = list.query_type === "list" ? list.rows.filter(isTxnRow) : [];
       const shown = allTxnRows.slice(0, maxRowsToShow);
-      const breakdownLines =
-        shown.length > 0
-          ? shown
-              .map((r) => {
-                const desc = typeof r.description === "string" ? r.description.trim() : "";
-                const clipped = desc.length > 140 ? `${desc.slice(0, 140)}…` : desc;
-                return `${r.txnDate} • ${clipped || "(no description)"} • $${r.amount}`;
-              })
-              .join("\n")
-          : "";
+      const tableRows = shown.map((r) => {
+        const desc = typeof r.description === "string" ? r.description.trim() : "";
+        return [r.txnDate, clipText(desc || "(no description)", 140), `$${r.amount}`];
+      });
+      const breakdownTable =
+        tableRows.length > 0 ? toGfmTable(["Date", "Description", "Amount"], tableRows) : "";
 
       logAlwaysInDev("deterministic_business_rolling_income_result", {
         entityName,
@@ -928,8 +1303,8 @@ Return JSON only.`;
                 `Business deposits for ${entityName} in the last ${rollingDays} days (${date_start} to ${date_end}): $${sum.total}`,
                 `Number of deposits: ${sum.count}`,
                 "",
-                "By transaction (date • description • amount):",
-                breakdownLines,
+                "By transaction:",
+                breakdownTable,
                 allTxnRows.length > maxRowsToShow
                   ? `\n(Showing ${maxRowsToShow} of ${allTxnRows.length} matching deposits.)`
                   : "",
@@ -1116,10 +1491,12 @@ Return JSON only.`;
 
         const rows = Array.isArray(top.rows) ? top.rows : [];
         const topRows = rows.slice(0, 12);
-        const lines = topRows.map((r) => {
+        const tableRows = topRows.map((r) => {
           const merchant = typeof r.merchant === "string" && r.merchant.trim().length > 0 ? r.merchant.trim() : "(unknown)";
-          return `- ${merchant}: ${r.total} (${r.count} txns)`;
+          return [clipText(merchant, 80), `$${String(r.total)}`, `${r.count}`];
         });
+        const topTable =
+          tableRows.length > 0 ? toGfmTable(["Description", "Total", "Txns"], tableRows) : "";
 
         return SpecialistAgentResponseSchema.parse({
           kind: "finance",
@@ -1129,7 +1506,7 @@ Return JSON only.`;
             `- Transactions: ${total.count}`,
             "",
             "Top descriptions by spend:",
-            ...lines,
+            topTable,
           ].join("\n"),
           questions_for_user: [],
           assumptions: [
@@ -1215,14 +1592,15 @@ Return JSON only.`;
           }
         }
 
-        const lines = wantMonths.map((m) => `${m}: $${totalsByMonth.get(m) ?? "0"}`);
+        const tableRows = wantMonths.map((m) => [m, `$${totalsByMonth.get(m) ?? "0"}`]);
+        const byMonthTable = toGfmTable(["Month", "Total"], tableRows);
 
         return SpecialistAgentResponseSchema.parse({
           kind: "finance",
           answer_draft: [
             `Monthly spend on your personal Amex for the last ${safeMonths} full calendar months (${date_start} to ${date_end}):`,
             "",
-            ...lines,
+            byMonthTable,
           ].join("\n"),
           questions_for_user: [],
           assumptions: ["Spend is computed as positive cc_statement amounts (amount > 0)."],
@@ -1245,7 +1623,7 @@ Return JSON only.`;
       }
     }
 
-    // Credit-card spend for a specific month (e.g. "October 2025"): pick the most relevant statement(s) and sum charges for that month.
+    // Credit-card spend for a specific month or a multi-month span (e.g. "October 2025", or "September, October, and November 2025").
     if (
       isSpendLike &&
       wantsCc &&
@@ -1259,12 +1637,21 @@ Return JSON only.`;
           : inferYearFromText(parsed.question) ?? new Date().getUTCFullYear();
 
       if (typeof year === "number" && Number.isFinite(year)) {
+        const inferredRange = inferDateRangeUtc(q);
         const mm = String(monthFromText).padStart(2, "0");
-        const date_start = `${year}-${mm}-01`;
-        const endYear = monthFromText === 12 ? year + 1 : year;
-        const endMonth = monthFromText === 12 ? 1 : monthFromText + 1;
-        const endMm = String(endMonth).padStart(2, "0");
-        const date_end = `${endYear}-${endMm}-01`;
+        const date_start =
+          inferredRange?.kind === "range" ? inferredRange.date_start : `${year}-${mm}-01`;
+        const date_end =
+          inferredRange?.kind === "range"
+            ? inferredRange.date_end
+            : (() => {
+                const endYear = monthFromText === 12 ? year + 1 : year;
+                const endMonth = monthFromText === 12 ? 1 : monthFromText + 1;
+                const endMm = String(endMonth).padStart(2, "0");
+                return `${endYear}-${endMm}-01`;
+              })();
+        const label =
+          inferredRange?.kind === "range" ? inferredRange.label : `${year}-${mm}`;
 
         const docs = await getProjectDocsByProjectId({ projectId: parsed.projectId });
         const ccDocs = docs.filter((d) => d.documentType === "cc_statement");
@@ -1374,24 +1761,7 @@ Return JSON only.`;
           });
         }
 
-        if (candidates.length > 1) {
-          const options = candidates.slice(0, 10).map((d) => d.filename);
-          return SpecialistAgentResponseSchema.parse({
-            kind: "finance",
-            answer_draft: "",
-            questions_for_user: [
-              wantsBusiness && entityName
-                ? `Which ${entityName} credit-card statement should I use for ${year}-${mm} spend? (${options.join(", ")})`
-                : `Which personal credit-card statement should I use for ${year}-${mm} spend? (${options.join(", ")})`,
-            ],
-            assumptions: [],
-            tool_calls: [],
-            citations: [],
-            confidence: "low",
-          });
-        }
-
-        const doc = candidates[0];
+        const docIds = candidates.map((d) => d.id);
         const absDecimalString = (s: string): string => (s.startsWith("-") ? s.slice(1) : s);
 
         // Prefer positive-charge convention. If 0 rows, fall back to negative-charge convention and present absolute.
@@ -1400,7 +1770,7 @@ Return JSON only.`;
           projectId: parsed.projectId,
           documentType: "cc_statement",
           filters: {
-            doc_ids: [doc.id],
+            doc_ids: docIds,
             date_start,
             date_end,
             amount_min: 0.01,
@@ -1414,7 +1784,7 @@ Return JSON only.`;
                 projectId: parsed.projectId,
                 documentType: "cc_statement",
                 filters: {
-                  doc_ids: [doc.id],
+                  doc_ids: docIds,
                   date_start,
                   date_end,
                   amount_max: -0.01,
@@ -1422,10 +1792,11 @@ Return JSON only.`;
               })) as { total: string; count: number })
             : null;
 
-        const used = sumNeg && sumNeg.count > 0 ? sumNeg : sumPos;
+        const usedIsNeg = Boolean(sumNeg && sumNeg.count > 0);
+        const used = usedIsNeg ? (sumNeg as { total: string; count: number }) : sumPos;
         const total = typeof used.total === "string" ? absDecimalString(used.total) : String(used.total);
         const signNote =
-          sumNeg && sumNeg.count > 0
+          usedIsNeg
             ? " (note: amounts were stored as negatives; total shown as absolute)"
             : "";
 
@@ -1437,23 +1808,24 @@ Return JSON only.`;
                 projectId: parsed.projectId,
                 documentType: "cc_statement",
                 filters: {
-                  doc_ids: [doc.id],
+                  doc_ids: docIds,
                   date_start,
                   date_end,
-                  ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }),
+                  ...(usedIsNeg ? { amount_max: -0.01 } : { amount_min: 0.01 }),
                 },
               });
               const rows = Array.isArray(grouped.rows) ? grouped.rows : [];
               if (rows.length === 0) return "";
-              const lines = rows.slice(0, 12).map((r) => {
+              const tableRows = rows.slice(0, 12).map((r) => {
                 const category =
                   typeof r.category === "string" && r.category.trim().length > 0
                     ? r.category.trim()
                     : "Uncategorized";
                 const amt = typeof r.total === "string" ? absDecimalString(r.total) : String(r.total);
-                return `- ${category}: $${amt} (${r.count} txns)`;
+                return [category, `$${amt}`, `${r.count}`];
               });
-              return `\n\nSpending by category:\n${lines.join("\n")}`;
+              const table = toGfmTable(["Category", "Total", "Txns"], tableRows);
+              return `\n\nSpending by category:\n${table}${rows.length > 12 ? "\n\n(Showing top 12 categories.)" : ""}`;
             }
 
             const top = await financeGroupByMerchant({
@@ -1461,23 +1833,24 @@ Return JSON only.`;
               projectId: parsed.projectId,
               documentType: "cc_statement",
               filters: {
-                doc_ids: [doc.id],
+                doc_ids: docIds,
                 date_start,
                 date_end,
-                ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }),
+                ...(usedIsNeg ? { amount_max: -0.01 } : { amount_min: 0.01 }),
               },
             });
             const rows = Array.isArray(top.rows) ? top.rows : [];
             if (rows.length === 0) return "";
-            const lines = rows.slice(0, 8).map((r) => {
+            const tableRows = rows.slice(0, 8).map((r) => {
               const description =
                 typeof r.merchant === "string" && r.merchant.trim().length > 0
                   ? r.merchant.trim()
                   : "(no description)";
               const amt = typeof r.total === "string" ? absDecimalString(r.total) : String(r.total);
-              return `- ${description}: $${amt}`;
+              return [clipText(description, 80), `$${amt}`];
             });
-            return `\n\nTop spending by description:\n${lines.join("\n")}`;
+            const table = toGfmTable(["Description", "Total"], tableRows);
+            return `\n\nTop spending by description:\n${table}${rows.length > 8 ? "\n\n(Showing top 8 descriptions.)" : ""}`;
           } catch (err) {
             console.warn("FinanceAgent: breakdown shortcut failed", err);
             return "";
@@ -1487,8 +1860,8 @@ Return JSON only.`;
         return SpecialistAgentResponseSchema.parse({
           kind: "finance",
           answer_draft: wantsBusiness && entityName
-            ? `You spent $${total} on ${entityName}${mentionsAmex ? " Amex" : ""} in ${year}-${mm}${signNote}.${breakdownLines}`
-            : `You spent $${total} on your personal credit card${mentionsAmex ? " (Amex)" : ""} in ${year}-${mm}${signNote}.${breakdownLines}`,
+            ? `You spent $${total} on ${entityName}${mentionsAmex ? " Amex" : ""} in ${label}${signNote}.${breakdownLines}`
+            : `You spent $${total} on your personal credit card${mentionsAmex ? " (Amex)" : ""} in ${label}${signNote}.${breakdownLines}`,
           questions_for_user: [],
           assumptions: ["Spend is computed from cc_statement transactions for the specified month; transfers/payments are not included unless present as transactions."],
           tool_calls: [
@@ -1496,10 +1869,10 @@ Return JSON only.`;
               toolName: "financeSum",
               input: {
                 document_type: "cc_statement",
-                doc_ids: [doc.id],
+                doc_ids: docIds,
                 date_start,
                 date_end,
-                ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }),
+                ...(usedIsNeg ? { amount_max: -0.01 } : { amount_min: 0.01 }),
               },
               output: used,
             },
@@ -1507,10 +1880,10 @@ Return JSON only.`;
               toolName: wantsCategoryBreakdown ? "financeGroupByCategory" : "financeGroupByMerchant",
               input: {
                 document_type: "cc_statement",
-                doc_ids: [doc.id],
+                doc_ids: docIds,
                 date_start,
                 date_end,
-                ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }),
+                ...(usedIsNeg ? { amount_max: -0.01 } : { amount_min: 0.01 }),
               },
               output: { note: "See answer text for summary" },
             },
@@ -1966,21 +2339,26 @@ Return JSON only.`;
           );
         };
 
-        const lines = rowsAny
+        const tableRows = rowsAny
           .filter(isTxnRow)
           .slice(0, 20)
-          .map((r) => `${r.txnDate} • ${(r.description ?? "").trim() || "(no description)"} • $${r.amount}`);
+          .map((r) => {
+            const desc = typeof r.description === "string" ? r.description.trim() : "";
+            return [r.txnDate, clipText(desc || "(no description)", 120), `$${r.amount}`];
+          });
+        const matchesTable =
+          tableRows.length > 0 ? toGfmTable(["Date", "Description", "Amount"], tableRows) : "";
 
-        const found = lines.length > 0;
+        const found = matchesTable.length > 0;
         return SpecialistAgentResponseSchema.parse({
           kind: "finance",
           answer_draft: found
             ? [
                 `Yes — I found matching transactions for "${term}" in ${entityName} (${year}).`,
                 "",
-                "Matches (date • description • amount):",
-                ...lines,
-                rowsAny.length > 20 ? "\n(Showing first 20 matches.)" : "",
+                "Matches:",
+                matchesTable,
+                "\n(Showing first 20 matches.)",
               ]
                 .filter((s) => s.length > 0)
                 .join("\n")
