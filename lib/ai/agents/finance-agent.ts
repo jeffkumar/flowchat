@@ -112,11 +112,13 @@ export async function runFinanceAgent({
     const trimmed = text.trim();
     if (!trimmed) return null;
 
+    const isIsoDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
+
     // Prefer quoted phrases: "RENEWAL MEMBERSHIP FEE"
     const quoted = trimmed.match(/"([^"]{2,200})"/);
     if (quoted && typeof quoted[1] === "string") {
       const q = quoted[1].trim();
-      if (q.length > 1) return q;
+      if (q.length > 1 && !isIsoDate(q)) return q;
     }
 
     // Heuristic: "was there a/an <thing> in/on/for ..."
@@ -139,7 +141,7 @@ export async function runFinanceAgent({
     const upperish = trimmed.match(/\b([A-Z0-9][A-Z0-9 &'\-]{5,120})\b/);
     if (upperish && typeof upperish[1] === "string") {
       const t = upperish[1].trim();
-      if (t.length > 1) return t;
+      if (t.length > 1 && !isIsoDate(t)) return t;
     }
 
     return null;
@@ -2307,6 +2309,18 @@ Return JSON only.`;
       const ccDocs = docs.filter((d) => d.documentType === "cc_statement");
 
       const mentionsAmex = q.includes("amex") || q.includes("american express");
+      const wantsGroupByMerchant =
+        q.includes("group by merchant") ||
+        q.includes("grouped by merchant") ||
+        q.includes("group by description") ||
+        q.includes("grouped by description") ||
+        q.includes("by merchant") ||
+        q.includes("by description");
+      const wantsShowDescriptions =
+        q.includes("show descriptions") ||
+        q.includes("show description") ||
+        q.includes("show the description") ||
+        q.includes("show the descriptions");
       const baseCandidates = (() => {
         if (mentionsAmex) {
           const amex = ccDocs.filter((d) => d.filename.toLowerCase().includes("amex"));
@@ -2328,12 +2342,25 @@ Return JSON only.`;
         return baseCandidates;
       })();
 
+      const candidatesForEntity = (() => {
+        if (!wantsBusiness) return candidates;
+        const match = candidates.filter(
+          (d) =>
+            d.entityKind === "business" &&
+            typeof d.entityName === "string" &&
+            d.entityName.trim().length > 0 &&
+            d.entityName.trim().toLowerCase() === entityName.toLowerCase()
+        );
+        if (match.length > 0) return match;
+        return candidates;
+      })();
+
       logAlwaysInDev("deterministic_spend_shortcut_candidates", {
         wantsPersonal,
         wantsBusiness,
         mentionsAmex,
         year: typeof year === "number" ? year : null,
-        candidates: candidates.slice(0, 10).map((d) => ({
+        candidates: candidatesForEntity.slice(0, 10).map((d) => ({
           id: d.id,
           filename: d.filename,
           entityKind: d.entityKind,
@@ -2341,7 +2368,7 @@ Return JSON only.`;
         })),
       });
 
-      if (wantsPersonal && candidates.length > 1) {
+      if (wantsPersonal && candidatesForEntity.length > 1) {
         const options = candidates.slice(0, 10).map((d) => d.filename);
         return SpecialistAgentResponseSchema.parse({
           kind: "finance",
@@ -2356,27 +2383,15 @@ Return JSON only.`;
         });
       }
 
-      if (wantsBusiness && candidates.length > 1) {
-        const options = candidates.slice(0, 10).map((d) => d.filename);
-        return SpecialistAgentResponseSchema.parse({
-          kind: "finance",
-          answer_draft: "",
-          questions_for_user: [
-            `Which business Amex statement should I use for ${typeof year === "number" ? year : "YTD"} spend? (${options.join(", ")})`,
-          ],
-          assumptions: [],
-          tool_calls: [],
-          citations: [],
-          confidence: "low",
-        });
-      }
+      // For business spend, prefer using all matching statements rather than forcing the user to pick one.
+      // (Picking one statement is what caused "only March" / partial-year results in production.)
 
       // If user asked for business spend but we only have personal-tagged Amex statements,
       // compute anyway (since the DB has the transactions) and ask whether to re-tag.
       if (
         wantsBusiness &&
         mentionsAmex &&
-        candidates.length === 0 &&
+        candidatesForEntity.length === 0 &&
         baseCandidates.length === 1 &&
         typeof year === "number" &&
         Number.isFinite(year)
@@ -2418,46 +2433,148 @@ Return JSON only.`;
         });
       }
 
-      if (candidates.length === 1 && typeof year === "number" && Number.isFinite(year)) {
-        const doc = candidates[0];
+      const docIds = candidatesForEntity.map((d) => d.id);
+      if (docIds.length > 0 && typeof year === "number" && Number.isFinite(year)) {
+        const rangeOverride = inferDateRangeUtc(q);
+        const date_start = rangeOverride?.date_start ?? `${year}-01-01`;
+        const date_end = rangeOverride?.date_end ?? `${year + 1}-01-01`;
+        const label = rangeOverride?.label ?? `${year} YTD`;
+
         const sum = await financeSum({
           userId: session.user.id,
           projectId: parsed.projectId,
           documentType: "cc_statement",
           filters: {
-            doc_ids: [doc.id],
-            date_start: `${year}-01-01`,
-            date_end: `${year + 1}-01-01`,
+            doc_ids: docIds,
+            date_start,
+            date_end,
             amount_min: 0.01,
           },
         });
 
         logAlwaysInDev("deterministic_spend_shortcut_picked", {
-          docId: doc.id,
-          filename: doc.filename,
+          docIdsCount: docIds.length,
           year,
           count: sum.count,
           total: sum.total,
         });
 
+        const top = wantsGroupByMerchant
+          ? await financeGroupByMerchant({
+              userId: session.user.id,
+              projectId: parsed.projectId,
+              documentType: "cc_statement",
+              filters: {
+                doc_ids: docIds,
+                date_start,
+                date_end,
+                amount_min: 0.01,
+              },
+            })
+          : null;
+
+        const list = wantsShowDescriptions
+          ? await financeList({
+              userId: session.user.id,
+              projectId: parsed.projectId,
+              documentType: "cc_statement",
+              filters: {
+                doc_ids: docIds,
+                date_start,
+                date_end,
+                amount_min: 0.01,
+              },
+            })
+          : null;
+
+        const topTable = (() => {
+          if (!top || !Array.isArray(top.rows)) return "";
+          const rows = top.rows.slice(0, 30);
+          const tableRows = rows.map((r) => {
+            const merchant =
+              typeof r.merchant === "string" && r.merchant.trim().length > 0 ? r.merchant.trim() : "(unknown)";
+            return [clipText(merchant, 80), `$${String(r.total)}`, `${r.count}`];
+          });
+          return tableRows.length > 0 ? toGfmTable(["Description", "Total", "Txns"], tableRows) : "";
+        })();
+
+        const listTable = (() => {
+          if (!list || list.query_type !== "list" || !Array.isArray(list.rows)) return "";
+          const rows = list.rows.slice(0, 120);
+          const tableRows = rows.map((r) => {
+            const date = typeof (r as any).txnDate === "string" ? String((r as any).txnDate) : "";
+            const desc =
+              typeof (r as any).description === "string" ? String((r as any).description).trim() : "";
+            const amount = typeof (r as any).amount === "string" ? String((r as any).amount) : "";
+            return [date, clipText(desc || "(no description)", 120), `$${amount}`];
+          });
+          return tableRows.length > 0 ? toGfmTable(["Date", "Description", "Amount"], tableRows) : "";
+        })();
+
         return SpecialistAgentResponseSchema.parse({
           kind: "finance",
-          answer_draft: wantsPersonal
-            ? `${year} personal Amex spend (from ${doc.filename}): ${sum.total} (rows: ${sum.count}).`
-            : `${year} YTD credit-card spend for ${entityName} (from ${doc.filename}): ${sum.total} (rows: ${sum.count}).`,
+          answer_draft: [
+            wantsPersonal
+              ? `Personal spend in ${label} (charges only): $${sum.total} (${sum.count} txns).`
+              : `Credit-card spend for ${entityName} in ${label} (charges only): $${sum.total} (${sum.count} txns).`,
+            topTable
+              ? ["", "Top descriptions by spend:", topTable].join("\n")
+              : "",
+            listTable
+              ? ["", "Sample transactions:", listTable].join("\n")
+              : "",
+          ]
+            .filter((s) => s.length > 0)
+            .join("\n"),
           questions_for_user: [],
-          assumptions: ["Spend is computed as positive cc_statement amounts (amount > 0)."],
+          assumptions: [
+            "Spend is computed as positive cc_statement amounts (amount > 0).",
+            wantsBusiness
+              ? "Used all available business/unassigned credit-card statements that match the request (rather than a single statement)."
+              : "Used all available personal credit-card statements that match the request.",
+          ],
           tool_calls: [
             {
               toolName: "financeSum",
               input: {
                 document_type: "cc_statement",
-                doc_ids: [doc.id],
-                year,
+                doc_ids: docIds,
+                date_start,
+                date_end,
                 amount_min: 0.01,
               },
               output: sum,
             },
+            ...(top
+              ? [
+                  {
+                    toolName: "financeGroupByMerchant",
+                    input: {
+                      document_type: "cc_statement",
+                      doc_ids: docIds,
+                      date_start,
+                      date_end,
+                      amount_min: 0.01,
+                    },
+                    output: top,
+                  },
+                ]
+              : []),
+            ...(list
+              ? [
+                  {
+                    toolName: "financeList",
+                    input: {
+                      document_type: "cc_statement",
+                      doc_ids: docIds,
+                      date_start,
+                      date_end,
+                      amount_min: 0.01,
+                    },
+                    output: list,
+                  },
+                ]
+              : []),
           ],
           citations: [],
           confidence: sum.count === 0 ? "low" : "medium",
@@ -2846,7 +2963,7 @@ Return JSON only.`;
       }
 
       // Spend fallback: business credit-card spend, when the model output is empty/invalid.
-      if (isSpendLike && wantsCcOnly && (wantsBusinessOnly || q.includes("adventure flow"))) {
+      if (isSpendLike && wantsCcOnly && (wantsBusinessOnly )) {
         const businessNames = await listBusinessEntityNames();
         const year =
           parsed.time_hint?.kind === "year"

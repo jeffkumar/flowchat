@@ -71,6 +71,16 @@ function PureMessages({
       if (part.type === "file") {
         return true;
       }
+      if (
+        part.type === "reasoning" &&
+        typeof part.text === "string" &&
+        part.text.trim().length > 0
+      ) {
+        return true;
+      }
+      if (typeof part.type === "string" && part.type.startsWith("tool-")) {
+        return true;
+      }
     }
     return false;
   })();
