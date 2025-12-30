@@ -503,18 +503,21 @@ export const ThinkingMessage = ({
       data-role="assistant"
       data-testid="message-assistant-loading"
     >
-      <div className="flex items-start justify-start gap-3">
-        {showIcon && (
-          <div className="-mt-1 flex size-8 shrink-0 items-center justify-center rounded-full bg-background ring-1 ring-border">
-            <div className="animate-pulse">
-              <SparklesIcon size={14} />
-            </div>
+      <div className="flex items-center justify-start gap-3">
+        <div
+          className={cn(
+            "flex size-8 shrink-0 items-center justify-center rounded-full bg-background ring-1 ring-border",
+            showIcon ? "opacity-100" : "opacity-0"
+          )}
+        >
+          <div className="animate-pulse">
+            <SparklesIcon size={14} />
           </div>
-        )}
+        </div>
 
-        <div className="flex w-full flex-col gap-2 md:gap-4">
-          <div className="flex items-center gap-1 p-0 text-muted-foreground text-sm">
-            <span className="animate-pulse">{displayText}</span>
+        <div className="flex w-full min-w-0 flex-col gap-2 md:gap-4">
+          <div className="flex min-w-0 items-center gap-1 p-0 text-muted-foreground text-sm leading-none">
+            <span className="animate-pulse truncate">{displayText}</span>
             {!agentStatus && (
               <span className="inline-flex">
                 <span className="animate-bounce [animation-delay:0ms]">.</span>

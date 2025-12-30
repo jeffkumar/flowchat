@@ -429,10 +429,12 @@ export async function parseStructuredProjectDoc({
           const description = normalizeDescription(t.description);
           const currency = typeof t.currency === "string" ? t.currency.trim().slice(0, 16) : null;
           const balance = t.balance === null || t.balance === undefined ? null : parseDecimalString(t.balance);
+          const rawCategory =
+            typeof t.category === "string" ? t.category.trim().slice(0, 64) : "";
           const category =
             doc.documentType === "bank_statement"
-              ? classifyBankTxnCategory(description)
-              : null;
+              ? rawCategory || classifyBankTxnCategory(description)
+              : rawCategory || null;
           
           const txnHash = sha256Hex(
             `${txnDate}|${amount}|${description.toLowerCase()}|${balance ?? ""}`

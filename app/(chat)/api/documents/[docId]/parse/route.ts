@@ -399,6 +399,8 @@ export async function POST(
           const description = normalizeDescription(t.description);
           const currency = typeof t.currency === "string" ? t.currency.trim().slice(0, 16) : null;
           const balance = t.balance === null ? null : parseDecimalString(t.balance);
+          const rawCategory =
+            typeof t.category === "string" ? t.category.trim().slice(0, 64) : "";
           const txnHash = sha256Hex(
             `${txnDate}|${amount}|${description.toLowerCase()}|${balance ?? ""}`
           );
@@ -411,6 +413,7 @@ export async function POST(
             amount,
             currency,
             balance,
+            category: rawCategory || null,
             rowHash,
             txnHash,
           };
