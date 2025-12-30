@@ -26,11 +26,15 @@ function toSlackMarkdown(text) {
   return text.replace(/\*\*(.+?)\*\*/g, "*$1*").replace(/^\s*-\s+/gm, "• ");
 }
 
+const useOpenAIInference = process.env.USE_OPENAI_INFERENCE === "true";
+
 async function createEmbedding(input) {
   const basetenApiKey = process.env.BASETEN_API_KEY;
   const openaiApiKey = process.env.OPENAI_API_KEY;
 
-  if (basetenApiKey) {
+  const useOpenAI = useOpenAIInference && Boolean(openaiApiKey);
+
+  if (!useOpenAI && basetenApiKey) {
     const response = await fetch(
       "https://model-7wl7dm7q.api.baseten.co/environments/production/predict",
       {
@@ -344,7 +348,10 @@ function formatRetrievedContext(rows) {
 
 async function answerWithRag(question) {
   const basetenApiKey = process.env.BASETEN_API_KEY;
-  if (!basetenApiKey) {
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  const useOpenAI = useOpenAIInference && Boolean(openaiApiKey);
+
+  if (!useOpenAI && !basetenApiKey) {
     throw new Error("Missing BASETEN_API_KEY");
   }
 
@@ -354,16 +361,23 @@ async function answerWithRag(question) {
   console.log("🔎 RAG query results:", {
     question,
     rowCount: rows.length,
+    provider: useOpenAI ? "OpenAI" : "Baseten",
   });
 
-  const response = await fetch("https://inference.baseten.co/v1/chat/completions", {
+  const url = useOpenAI
+    ? "https://api.openai.com/v1/chat/completions"
+    : "https://inference.baseten.co/v1/chat/completions";
+
+  const response = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Api-Key ${basetenApiKey}`,
+      Authorization: useOpenAI
+        ? `Bearer ${openaiApiKey}`
+        : `Api-Key ${basetenApiKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "deepseek-ai/DeepSeek-V3.2",
+      model: useOpenAI ? "gpt-4o" : "deepseek-ai/DeepSeek-V3.2",
       messages: [
         {
           role: "system",

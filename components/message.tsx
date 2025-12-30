@@ -74,94 +74,9 @@ const PurePreviewMessage = ({
     return out;
   })();
 
-  const usedCitationSources = (() => {
-    if (!showCitations || uniqueSources.length === 0) return [];
-    if (message.role !== "assistant") return [];
-
-    const indices = new Set<number>();
-    for (const part of message.parts) {
-      if (part.type !== "text") continue;
-      const text = typeof part.text === "string" ? part.text : "";
-      // Use a citation marker that won't be treated as Markdown footnotes.
-      // Example: 【1】 refers to the 1st source in the provided sources list.
-      const matches = text.matchAll(/【(\d+)】/g);
-      for (const match of matches) {
-        const raw = match[1];
-        if (!raw) continue;
-        const n = Number(raw);
-        if (!Number.isFinite(n) || n < 1) continue;
-        indices.add(n);
-      }
-    }
-
-    if (indices.size === 0) return [];
-
-    const sorted = Array.from(indices).sort((a, b) => a - b);
-    const used: RetrievedSource[] = [];
-    for (const n of sorted) {
-      const source = uniqueSources[n - 1];
-      if (source) used.push(source);
-    }
-    return used;
-  })();
-
-  const shouldEnumerateCitations = usedCitationSources.length > 1;
-
-  const sanitizeCitationMarkers = (text: string): string => {
-    if (message.role !== "assistant") return text;
-    if (!showCitations) {
-      return text.replace(/【(\d+)】/g, "");
-    }
-    // During streaming, sources may not be attached yet. Strip markers to avoid
-    // showing confusing citation indices that can't be resolved.
-    if (uniqueSources.length === 0) {
-      return text.replace(/【(\d+)】/g, "");
-    }
-
-    return text.replace(/【(\d+)】/g, (full, raw: string) => {
-      const n = Number(raw);
-      if (!Number.isFinite(n) || n < 1) return "";
-      return n <= uniqueSources.length ? full : "";
-    });
-  };
-
-  // Keep 1:1 indexing with `uniqueSources` so marker 【N】 always maps to source N.
-  const citationHrefsByIndex = uniqueSources.map((s) =>
-    typeof s.blobUrl === "string" ? s.blobUrl : ""
-  );
-  const citationHrefs = citationHrefsByIndex.filter((href) => href.length > 0);
-  const citationHrefsKey = citationHrefsByIndex.join("|");
-
-  const getSourceLabel = (source: RetrievedSource | undefined): string => {
-    if (source?.sourceType === "slack") {
-      return source.channelName ? `#${source.channelName}` : "Slack";
-    }
-
-    const name = source?.filename ?? "";
-    const lastDot = name.lastIndexOf(".");
-    const ext =
-      lastDot >= 0 && lastDot < name.length - 1 ? name.slice(lastDot + 1) : "";
-    const upper = ext.trim().toUpperCase();
-    if (upper === "PDF" || upper === "DOC" || upper === "DOCX") return upper;
-
-    return "Source";
-  };
-
-  const linkifyCitationMarkers = (text: string): string => {
-    if (!showCitations) return text;
-    if (message.role !== "assistant") return text;
-    if (uniqueSources.length === 0) return text;
-
-    return text.replace(/【(\d+)】/g, (full, raw: string) => {
-      const n = Number(raw);
-      if (!Number.isFinite(n) || n < 1 || n > uniqueSources.length) return "";
-      const href = citationHrefsByIndex.at(n - 1);
-      if (!href) return full;
-      const labelPart = getSourceLabel(uniqueSources.at(n - 1));
-      const label = shouldEnumerateCitations ? `${n} ${labelPart}` : labelPart;
-      return `[${label}](${href})`;
-    });
-  };
+  const citationSources =
+    showCitations && message.role === "assistant" ? uniqueSources : [];
+  const shouldEnumerateCitations = citationSources.length > 1;
 
   const attachmentsFromMessage = message.parts.filter(
     (part) => part.type === "file"
@@ -181,11 +96,7 @@ const PurePreviewMessage = ({
           "justify-start": message.role === "assistant",
         })}
       >
-        {message.role === "assistant" && (
-          <div className="-mt-1 flex size-8 shrink-0 items-center justify-center rounded-full bg-background ring-1 ring-border">
-            <SparklesIcon size={14} />
-          </div>
-        )}
+        
 
         <div
           className={cn("flex flex-col", {
@@ -236,8 +147,11 @@ const PurePreviewMessage = ({
 
             if (type === "text") {
               if (mode === "view") {
-                const safe = sanitizeCitationMarkers(sanitizeText(part.text));
-                const text = linkifyCitationMarkers(safe);
+                const raw = sanitizeText(part.text);
+                const text =
+                  message.role === "assistant"
+                    ? raw.replace(/【(\d+)】/g, "")
+                    : raw;
                 return (
                   <div key={key}>
                     <MessageContent
@@ -250,8 +164,8 @@ const PurePreviewMessage = ({
                       data-testid="message-content"
                     >
                       <Response
-                        citationHrefs={showCitations ? citationHrefs : undefined}
-                        citationHrefsKey={showCitations ? citationHrefsKey : undefined}
+                        citationHrefs={undefined}
+                        citationHrefsKey={undefined}
                       >
                         {text}
                       </Response>
@@ -386,15 +300,14 @@ const PurePreviewMessage = ({
             return null;
           })}
 
-          {usedCitationSources.length > 0 && (
+          {citationSources.length > 0 && (
             <div className="mt-4 flex flex-col gap-2">
               <div className="text-xs font-medium text-muted-foreground">
                 Citations
               </div>
               <div className="flex flex-wrap gap-2">
-                {usedCitationSources.map((source, i) => {
-                  const indexInUnique = uniqueSources.indexOf(source);
-                  const citationNumber = indexInUnique >= 0 ? indexInUnique + 1 : i + 1;
+                {citationSources.map((source, i) => {
+                  const citationNumber = i + 1;
                   const baseTitle =
                     source.sourceType === "slack"
                       ? source.channelName
@@ -503,21 +416,15 @@ export const ThinkingMessage = ({
       data-role="assistant"
       data-testid="message-assistant-loading"
     >
-      <div className="flex items-center justify-start gap-3">
-        <div
-          className={cn(
-            "flex size-8 shrink-0 items-center justify-center rounded-full bg-background ring-1 ring-border",
-            showIcon ? "opacity-100" : "opacity-0"
-          )}
-        >
-          <div className="animate-pulse">
-            <SparklesIcon size={14} />
-          </div>
-        </div>
+      <div
+        className={cn(
+          "flex w-full min-w-0 items-center justify-start gap-0", 
+        )}
+      > 
 
-        <div className="flex w-full min-w-0 flex-col gap-2 md:gap-4">
+        <div className="flex min-w-0 flex-1 flex-col gap-2 md:gap-4">
           <div className="flex min-w-0 items-center gap-1 p-0 text-muted-foreground text-sm leading-none">
-            <span className="animate-pulse truncate">{displayText}</span>
+            <span className="block animate-pulse truncate">{displayText}</span>
             {!agentStatus && (
               <span className="inline-flex">
                 <span className="animate-bounce [animation-delay:0ms]">.</span>

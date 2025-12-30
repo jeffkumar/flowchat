@@ -6,10 +6,11 @@ import {
   wrapLanguageModel,
 } from "ai";
 import { isTestEnvironment } from "../constants";
+import { useOpenAIInference } from "../env";
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
-const useOpenAI = Boolean(openaiApiKey);
-const openai = useOpenAI
+const useOpenAI = useOpenAIInference && Boolean(openaiApiKey);
+const openai = Boolean(openaiApiKey)
   ? createOpenAI({
       apiKey: openaiApiKey,
     })

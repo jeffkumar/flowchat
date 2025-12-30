@@ -5,5 +5,6 @@ function parseEnvBoolean(value: string | undefined): boolean {
 }
 
 export const useGlobalSlack = parseEnvBoolean(process.env.USE_GLOBAL_SLACK);
+export const useOpenAIInference = parseEnvBoolean(process.env.USE_OPENAI_INFERENCE);
 
 

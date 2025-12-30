@@ -61,34 +61,7 @@ function PureMessages({
   }, [dataStream]);
 
   const lastMessage = messages.at(-1);
-  const lastAssistantHasVisibleContent = (() => {
-    if (lastMessage?.role !== "assistant") return false;
-    const parts = Array.isArray(lastMessage.parts) ? lastMessage.parts : [];
-    for (const part of parts) {
-      if (part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) {
-        return true;
-      }
-      if (part.type === "file") {
-        return true;
-      }
-      if (
-        part.type === "reasoning" &&
-        typeof part.text === "string" &&
-        part.text.trim().length > 0
-      ) {
-        return true;
-      }
-      if (typeof part.type === "string" && part.type.startsWith("tool-")) {
-        return true;
-      }
-    }
-    return false;
-  })();
-
-  const shouldShowThinkingMessage =
-    status === "submitted" ||
-    (status === "streaming" &&
-      (lastMessage?.role !== "assistant" || !lastAssistantHasVisibleContent));
+  const shouldShowThinkingMessage = status === "submitted" || status === "streaming";
   const thinkingShowIcon = status === "submitted" || lastMessage?.role !== "assistant";
 
   return (
@@ -124,7 +97,14 @@ function PureMessages({
           ))}
 
           {shouldShowThinkingMessage && (
-            <ThinkingMessage agentStatus={agentStatus} showIcon={thinkingShowIcon} />
+            <div className="sticky bottom-0 z-10">
+              <div className="bg-background/80 backdrop-blur-sm">
+                <ThinkingMessage
+                  agentStatus={agentStatus}
+                  showIcon={thinkingShowIcon}
+                />
+              </div>
+            </div>
           )}
 
           <div

@@ -35,6 +35,7 @@ import { getWeather } from "@/lib/ai/tools/get-weather";
 import { requestSuggestions } from "@/lib/ai/tools/request-suggestions";
 import { updateDocument } from "@/lib/ai/tools/update-document";
 import { isProductionEnvironment } from "@/lib/constants";
+import { useOpenAIInference } from "@/lib/env";
 import {
   createStreamId,
   deleteChatById,
@@ -1492,9 +1493,11 @@ export async function POST(request: Request) {
           ];
         })();
 
-        const basetenApiKey = process.env.BASETEN_API_KEY;
+        const isUsingBaseten =
+          (!useOpenAIInference || !process.env.OPENAI_API_KEY) &&
+          Boolean(process.env.BASETEN_API_KEY);
         const mustUseTextOnly =
-          Boolean(basetenApiKey) ||
+          isUsingBaseten ||
           hasNonImageFileParts(messagesWithContext as unknown[]);
         const textOnlyMessages = mustUseTextOnly
           ? coerceMessagesToTextOnly(messagesWithContext as unknown[])
