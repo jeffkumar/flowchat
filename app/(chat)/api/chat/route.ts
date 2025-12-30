@@ -1654,11 +1654,26 @@ export async function POST(request: Request) {
                 question: z.string().min(1).max(4000),
               }),
               execute: async ({ question }) => {
-                return await runFinanceAgent({
+                dataStream.write({
+                  type: "data-agentStatus",
+                  data: {
+                    agent: "Finance Agent",
+                    message: "Consulting Finance Agent...",
+                  },
+                });
+                const result = await runFinanceAgent({
                   session,
                   projectId: activeProjectId,
                   input: { question },
                 });
+                dataStream.write({
+                  type: "data-agentStatus",
+                  data: {
+                    agent: "Finance Agent",
+                    message: "Received response from Finance Agent, processing...",
+                  },
+                });
+                return result;
               },
             }),
             runProjectAgent: tool({
@@ -1668,10 +1683,25 @@ export async function POST(request: Request) {
                 question: z.string().min(1).max(4000),
               }),
               execute: async ({ question }) => {
-                return await runProjectAgent({
+                dataStream.write({
+                  type: "data-agentStatus",
+                  data: {
+                    agent: "Project Agent",
+                    message: "Consulting Project Agent...",
+                  },
+                });
+                const result = await runProjectAgent({
                   session,
                   input: { question, projectId: activeProjectId },
                 });
+                dataStream.write({
+                  type: "data-agentStatus",
+                  data: {
+                    agent: "Project Agent",
+                    message: "Received response from Project Agent, processing...",
+                  },
+                });
+                return result;
               },
             }),
             runCitationsAgent: tool({
@@ -1682,6 +1712,13 @@ export async function POST(request: Request) {
                 draft_answer: z.string().min(1).max(20000),
               }),
               execute: async ({ question, draft_answer }) => {
+                dataStream.write({
+                  type: "data-agentStatus",
+                  data: {
+                    agent: "Citations Agent",
+                    message: "Consulting Citations Agent...",
+                  },
+                });
                 const sourceItems = sources
                   .slice(0, 20)
                   .map((s, idx) => ({
@@ -1697,10 +1734,18 @@ export async function POST(request: Request) {
                         ? String((s as any).content).slice(0, 5000)
                         : undefined,
                   }));
-                return await runCitationsAgent({
+                const result = await runCitationsAgent({
                   _session: session,
                   input: { question, draft_answer, sources: sourceItems },
                 });
+                dataStream.write({
+                  type: "data-agentStatus",
+                  data: {
+                    agent: "Citations Agent",
+                    message: "Received response from Citations Agent, processing...",
+                  },
+                });
+                return result;
               },
             }),
           },
@@ -1709,6 +1754,14 @@ export async function POST(request: Request) {
             functionId: "stream-text",
           },
           onFinish: async ({ usage }) => {
+            // Clear agent status when stream finishes
+            dataStream.write({
+              type: "data-agentStatus",
+              data: {
+                agent: "",
+                message: "",
+              },
+            });
             try {
               const providers = await getTokenlensCatalog();
               const modelId =

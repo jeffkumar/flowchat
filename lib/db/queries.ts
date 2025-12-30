@@ -2288,6 +2288,7 @@ type FinanceQueryFilters = {
   entity_kind?: "personal" | "business";
   entity_name?: string;
   exclude_categories?: string[];
+  categories_in?: string[];
 };
 
 function buildProjectAccessClause(userId: string): SQL {
@@ -2342,6 +2343,21 @@ function buildExcludeCategoriesFilter(excludeCategories: string[] | undefined) {
 
   // Keep NULL categories (unknown) in results; exclude only explicit matches.
   return sql`(${financialTransaction.category} IS NULL OR ${financialTransaction.category} NOT IN (${valuesSql}))`;
+}
+
+function buildCategoriesInFilter(categoriesIn: string[] | undefined) {
+  if (!Array.isArray(categoriesIn) || categoriesIn.length === 0) return null;
+  const normalized = categoriesIn
+    .map((c) => (typeof c === "string" ? c.trim().slice(0, 64) : ""))
+    .filter((c) => c.length > 0)
+    .slice(0, 10);
+  if (normalized.length === 0) return null;
+
+  const valuesSql = sql.join(
+    normalized.map((c) => sql`${c}`),
+    sql`, `
+  );
+  return sql`${financialTransaction.category} IN (${valuesSql})`;
 }
 
 function buildDateRangeFilter({
@@ -2457,6 +2473,7 @@ export async function financeSum({
     const projectScope = typeof projectId === "string" ? eq(project.id, projectId) : null;
     const accessClause = buildProjectAccessClause(userId);
     const excludeCategories = buildExcludeCategoriesFilter(filters?.exclude_categories);
+    const categoriesIn = buildCategoriesInFilter(filters?.categories_in);
 
     if (documentType === "invoice") {
       const whereClauses: SQL[] = [
@@ -2507,6 +2524,7 @@ export async function financeSum({
     if (vendorFilter) whereClauses.push(vendorFilter);
     whereClauses.push(...dateClauses);
     if (excludeCategories) whereClauses.push(excludeCategories);
+    if (categoriesIn) whereClauses.push(categoriesIn);
     whereClauses.push(
       ...buildAmountRangeFilter({
         amountMin: filters?.amount_min,
@@ -2887,6 +2905,7 @@ export async function financeGroupByMerchant({
     const projectScope = typeof projectId === "string" ? eq(project.id, projectId) : null;
     const accessClause = buildProjectAccessClause(userId);
     const excludeCategories = buildExcludeCategoriesFilter(filters?.exclude_categories);
+    const categoriesIn = buildCategoriesInFilter(filters?.categories_in);
 
     if (documentType === "invoice") {
       const whereClauses: SQL[] = [
@@ -2937,6 +2956,7 @@ export async function financeGroupByMerchant({
     if (vendorFilter) whereClauses.push(vendorFilter);
     whereClauses.push(...dateClauses);
     if (excludeCategories) whereClauses.push(excludeCategories);
+    if (categoriesIn) whereClauses.push(categoriesIn);
     whereClauses.push(
       ...buildAmountRangeFilter({
         amountMin: filters?.amount_min,

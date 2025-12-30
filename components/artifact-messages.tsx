@@ -1,11 +1,12 @@
 import type { UseChatHelpers } from "@ai-sdk/react";
 import equal from "fast-deep-equal";
 import { AnimatePresence, motion } from "framer-motion";
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 import { useMessages } from "@/hooks/use-messages";
 import type { Vote } from "@/lib/db/schema";
 import type { ChatMessage } from "@/lib/types";
 import type { UIArtifact } from "./artifact";
+import { useDataStream } from "./data-stream-provider";
 import { PreviewMessage, ThinkingMessage } from "./message";
 
 type ArtifactMessagesProps = {
@@ -38,6 +39,44 @@ function PureArtifactMessages({
     status,
   });
 
+  const { dataStream } = useDataStream();
+  const [agentStatus, setAgentStatus] = useState<
+    { agent: string; message: string } | undefined
+  >();
+
+  useEffect(() => {
+    if (!dataStream?.length) return;
+
+    for (let i = dataStream.length - 1; i >= 0; i -= 1) {
+      const part = dataStream[i];
+      if (part.type === "data-agentStatus") {
+        setAgentStatus(part.data);
+        return;
+      }
+    }
+  }, [dataStream]);
+
+  const lastMessage = messages.at(-1);
+  const lastAssistantHasVisibleContent = (() => {
+    if (lastMessage?.role !== "assistant") return false;
+    const parts = Array.isArray(lastMessage.parts) ? lastMessage.parts : [];
+    for (const part of parts) {
+      if (part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) {
+        return true;
+      }
+      if (part.type === "file") {
+        return true;
+      }
+    }
+    return false;
+  })();
+
+  const shouldShowThinkingMessage =
+    status === "submitted" ||
+    (status === "streaming" &&
+      (lastMessage?.role !== "assistant" || !lastAssistantHasVisibleContent));
+  const thinkingShowIcon = status === "submitted" || lastMessage?.role !== "assistant";
+
   return (
     <div
       className="flex h-full flex-col items-center gap-4 overflow-y-scroll px-4 pt-20"
@@ -65,7 +104,13 @@ function PureArtifactMessages({
       ))}
 
       <AnimatePresence mode="wait">
-        {status === "submitted" && <ThinkingMessage key="thinking" />}
+        {shouldShowThinkingMessage && (
+          <ThinkingMessage
+            key="thinking"
+            agentStatus={agentStatus}
+            showIcon={thinkingShowIcon}
+          />
+        )}
       </AnimatePresence>
 
       <motion.div

@@ -1,7 +1,7 @@
 import type { UseChatHelpers } from "@ai-sdk/react";
 import equal from "fast-deep-equal";
 import { ArrowDownIcon } from "lucide-react";
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 import { useMessages } from "@/hooks/use-messages";
 import type { Vote } from "@/lib/db/schema";
 import type { ChatMessage } from "@/lib/types";
@@ -43,7 +43,43 @@ function PureMessages({
     status,
   });
 
-  useDataStream();
+  const { dataStream } = useDataStream();
+  const [agentStatus, setAgentStatus] = useState<
+    { agent: string; message: string } | undefined
+  >();
+
+  useEffect(() => {
+    if (!dataStream?.length) return;
+
+    for (let i = dataStream.length - 1; i >= 0; i -= 1) {
+      const part = dataStream[i];
+      if (part.type === "data-agentStatus") {
+        setAgentStatus(part.data);
+        return;
+      }
+    }
+  }, [dataStream]);
+
+  const lastMessage = messages.at(-1);
+  const lastAssistantHasVisibleContent = (() => {
+    if (lastMessage?.role !== "assistant") return false;
+    const parts = Array.isArray(lastMessage.parts) ? lastMessage.parts : [];
+    for (const part of parts) {
+      if (part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) {
+        return true;
+      }
+      if (part.type === "file") {
+        return true;
+      }
+    }
+    return false;
+  })();
+
+  const shouldShowThinkingMessage =
+    status === "submitted" ||
+    (status === "streaming" &&
+      (lastMessage?.role !== "assistant" || !lastAssistantHasVisibleContent));
+  const thinkingShowIcon = status === "submitted" || lastMessage?.role !== "assistant";
 
   return (
     <div className="relative flex-1">
@@ -77,7 +113,9 @@ function PureMessages({
             />
           ))}
 
-          {status === "submitted" && <ThinkingMessage />}
+          {shouldShowThinkingMessage && (
+            <ThinkingMessage agentStatus={agentStatus} showIcon={thinkingShowIcon} />
+          )}
 
           <div
             className="min-h-[24px] min-w-[24px] shrink-0"

@@ -62,6 +62,7 @@ export type CustomUIDataTypes = {
   finish: null;
   usage: AppUsage;
   sources: RetrievedSource[];
+  agentStatus: { agent: string; message: string };
 };
 
 export type ChatMessage = UIMessage<MessageMetadata, CustomUIDataTypes, ChatTools> & {

@@ -68,6 +68,34 @@ export async function runFinanceAgent({
     return year;
   };
 
+  const parseIsoYmd = (ymd: string): { y: number; m: number; d: number } | null => {
+    const match = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return null;
+    const y = Number(match[1]);
+    const m = Number(match[2]);
+    const d = Number(match[3]);
+    if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null;
+    if (y < 1900 || y > 2200) return null;
+    if (m < 1 || m > 12) return null;
+    if (d < 1 || d > 31) return null;
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() + 1 !== m || dt.getUTCDate() !== d) {
+      return null;
+    }
+    return { y, m, d };
+  };
+
+  const addDaysIso = (ymd: string, days: number): string | null => {
+    const parsed = parseIsoYmd(ymd);
+    if (!parsed) return null;
+    const dt = new Date(Date.UTC(parsed.y, parsed.m - 1, parsed.d));
+    dt.setUTCDate(dt.getUTCDate() + days);
+    const y = dt.getUTCFullYear();
+    const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(dt.getUTCDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
+
   const inferBusinessNameFromText = (text: string, businessNames: string[]): string | null => {
     const q = text.toLowerCase();
     let best: string | null = null;
@@ -366,6 +394,27 @@ Return JSON only.`;
       | { kind: "range"; date_start: string; date_end: string; label: string }
       | { kind: "half"; date_start: string; date_end: string; label: string }
       | null => {
+      // Explicit ISO date range: "from 2025-01-01 to 2025-12-30"
+      // date_end is exclusive, so we add 1 day to the end date.
+      const isoDates = Array.from(textLower.matchAll(/\b(19\d{2}|20\d{2})-\d{2}-\d{2}\b/g)).map(
+        (m) => m[0]
+      );
+      if (isoDates.length >= 2) {
+        const start = isoDates[0];
+        const endInclusive = isoDates[1];
+        const startOk = parseIsoYmd(start);
+        const endOk = parseIsoYmd(endInclusive);
+        const endExclusive = addDaysIso(endInclusive, 1);
+        if (startOk && endOk && typeof endExclusive === "string") {
+          return {
+            kind: "range",
+            date_start: start,
+            date_end: endExclusive,
+            label: `${start}..${endInclusive}`,
+          };
+        }
+      }
+
       // Multi-month range (e.g. "September, October, and November 2025")
       const mentionedMonths = (() => {
         const byName: Array<[string, number]> = [
@@ -1985,6 +2034,112 @@ Return JSON only.`;
           ],
           citations: [],
           confidence: used.count === 0 ? "low" : "medium",
+        });
+      }
+    }
+
+    // Explicit-range spend breakdown by merchant (e.g. "from 2025-01-01 to 2025-12-30 ... by merchant")
+    if (parsed.projectId && wantsPersonal && isSpendLike && q.includes("merchant")) {
+      const range = inferDateRangeUtc(q);
+      if (range?.kind === "range" || range?.kind === "half") {
+        const docs = await getProjectDocsByProjectId({ projectId: parsed.projectId });
+        const personalCcDocs = docs
+          .filter((d) => d.documentType === "cc_statement")
+          .filter((d) => d.entityKind === "personal");
+        const docIds = personalCcDocs.map((d) => d.id);
+        if (docIds.length === 0) {
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: "",
+            questions_for_user: [
+              "I don’t see any personal credit-card statements tagged Personal yet. Which statement(s) should I use for this spend query?",
+            ],
+            assumptions: [],
+            tool_calls: [],
+            citations: [],
+            confidence: "low",
+          });
+        }
+
+        const wantsGroceries = q.includes("grocery") || q.includes("groceries");
+        const filters = {
+          doc_ids: docIds,
+          date_start: range.date_start,
+          date_end: range.date_end,
+          amount_min: 0.01,
+          ...(wantsGroceries ? { categories_in: ["groceries"] } : {}),
+        };
+
+        const total = await financeSum({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "cc_statement",
+          filters,
+        });
+        const grouped = await financeGroupByMerchant({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "cc_statement",
+          filters,
+        });
+
+        const rows = Array.isArray(grouped.rows) ? grouped.rows : [];
+        const topRows = rows.slice(0, 30);
+        const tableRows = topRows.map((r) => {
+          const merchant =
+            typeof r.merchant === "string" && r.merchant.trim().length > 0
+              ? r.merchant.trim()
+              : "(unknown)";
+          return [clipText(merchant, 80), `$${String(r.total)}`, `${r.count}`];
+        });
+        const topTable =
+          tableRows.length > 0 ? toGfmTable(["Merchant", "Total", "Txns"], tableRows) : "";
+
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: [
+            `Personal card spend${wantsGroceries ? " on groceries" : ""} in ${range.label} (charges only):`,
+            `- Total: $${total.total}`,
+            `- Transactions: ${total.count}`,
+            "",
+            "Top merchants by spend:",
+            topTable,
+          ].join("\n"),
+          questions_for_user: [],
+          assumptions: [
+            "Spend is computed as positive cc_statement amounts (amount > 0).",
+            ...(wantsGroceries
+              ? ['Filtered to transactions categorized as "groceries".']
+              : []),
+          ],
+          tool_calls: [
+            {
+              toolName: "financeSum",
+              input: {
+                document_type: "cc_statement",
+                doc_ids: docIds,
+                date_start: range.date_start,
+                date_end: range.date_end,
+                amount_min: 0.01,
+                ...(wantsGroceries ? { categories_in: ["groceries"] } : {}),
+              },
+              output: total,
+            },
+            {
+              toolName: "financeGroupByMerchant",
+              input: {
+                document_type: "cc_statement",
+                doc_ids: docIds,
+                date_start: range.date_start,
+                date_end: range.date_end,
+                amount_min: 0.01,
+                ...(wantsGroceries ? { categories_in: ["groceries"] } : {}),
+              },
+              output: grouped,
+            },
+          ],
+          citations: [],
+          confidence: total.count === 0 ? "low" : "medium",
         });
       }
     }

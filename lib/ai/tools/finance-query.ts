@@ -42,6 +42,7 @@ export const financeQuery = ({ session, projectId }: FinanceQueryProps) =>
           entity_kind: z.enum(["personal", "business"]).optional(),
           entity_name: z.string().min(1).max(200).optional(),
           exclude_categories: z.array(z.string().min(1).max(64)).max(10).optional(),
+          categories_in: z.array(z.string().min(1).max(64)).max(10).optional(),
         })
         .optional(),
     }),
