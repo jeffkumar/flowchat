@@ -2619,6 +2619,7 @@ export async function financeList({
     const projectScope = typeof projectId === "string" ? eq(project.id, projectId) : null;
     const accessClause = buildProjectAccessClause(userId);
     const excludeCategories = buildExcludeCategoriesFilter(filters?.exclude_categories);
+    const categoriesIn = buildCategoriesInFilter(filters?.categories_in);
 
     if (documentType === "invoice") {
       const whereClauses: SQL[] = [
@@ -2687,6 +2688,7 @@ export async function financeList({
     if (vendorFilter) whereClauses.push(vendorFilter);
     whereClauses.push(...dateClauses);
     if (excludeCategories) whereClauses.push(excludeCategories);
+    if (categoriesIn) whereClauses.push(categoriesIn);
     whereClauses.push(
       ...buildAmountRangeFilter({
         amountMin: filters?.amount_min,
@@ -2703,6 +2705,8 @@ export async function financeList({
         t.document_id AS "documentId",
         t.txn_date AS "txnDate",
         t.description,
+        t.merchant,
+        t.category,
         t.amount,
         t.currency,
         t.balance
@@ -2712,6 +2716,8 @@ export async function financeList({
           ${financialTransaction.documentId} AS document_id,
           ${financialTransaction.txnDate} AS txn_date,
           ${financialTransaction.description} AS description,
+          ${financialTransaction.merchant} AS merchant,
+          ${financialTransaction.category} AS category,
           ${financialTransaction.amount} AS amount,
           ${financialTransaction.currency} AS currency,
           ${financialTransaction.balance} AS balance
@@ -2734,6 +2740,8 @@ export async function financeList({
         documentId: string;
         txnDate: string;
         description: string | null;
+        merchant: string | null;
+        category: string | null;
         amount: string;
         currency: string | null;
         balance: string | null;

@@ -344,6 +344,13 @@ Return JSON only.`;
     const wantsPersonal =
       q.includes("personal") || parsed.entity_hint?.entity_kind === "personal";
     const wantsBusiness = q.includes("business") || parsed.entity_hint?.entity_kind === "business";
+    const wantsDepositDetails =
+      q.includes("who deposited") ||
+      q.includes("who is depositing") ||
+      q.includes("each deposit") ||
+      q.includes("details for each deposit") ||
+      (q.includes("deposits") && q.includes("details")) ||
+      q.includes("sender");
 
     const inferMonthWindowUtc = (
       textLower: string
@@ -522,6 +529,124 @@ Return JSON only.`;
         label: `H2 ${year} (Jul–Dec)`,
       };
     };
+
+    // Personal deposit details for a month-range (e.g. "June - August"): list bank_statement deposits.
+    if (parsed.projectId && wantsPersonal && isIncomeLike && wantsDepositDetails) {
+      const range = inferDateRangeUtc(q);
+      if (range) {
+        const docs = await getProjectDocsByProjectId({ projectId: parsed.projectId });
+        const personalBankDocs = docs
+          .filter((d) => d.documentType === "bank_statement")
+          .filter((d) => d.entityKind === "personal");
+
+        const docIds = personalBankDocs.map((d) => d.id);
+        if (docIds.length === 0) {
+          const anyBank = docs.filter((d) => d.documentType === "bank_statement");
+          const labels = anyBank.slice(0, 8).map((d) => {
+            const entityLabel =
+              d.entityKind === "personal"
+                ? "Personal"
+                : d.entityKind === "business"
+                  ? d.entityName || "Business"
+                  : "Unassigned";
+            return `${d.filename} (${entityLabel})`;
+          });
+          return SpecialistAgentResponseSchema.parse({
+            kind: "finance",
+            answer_draft: "",
+            questions_for_user: [
+              labels.length > 0
+                ? `I didn’t find any bank statements tagged Personal. Which statement should I use for personal deposits in ${range.label}? (${labels.join("; ")})`
+                : "I don’t see any bank statements in this project yet.",
+            ],
+            assumptions: [],
+            tool_calls: [],
+            citations: [],
+            confidence: "low",
+          });
+        }
+
+        const list = await financeList({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "bank_statement",
+          filters: {
+            doc_ids: docIds,
+            date_start: range.date_start,
+            date_end: range.date_end,
+            amount_min: 0.01,
+            exclude_categories: ["transfer", "credit card payment"],
+          },
+        });
+
+        const isTxnRow = (
+          row: (typeof list.rows)[number]
+        ): row is (typeof list.rows)[number] & {
+          txnDate: string;
+          description: string | null;
+          amount: string;
+          balance: string | null;
+        } => {
+          if (typeof row !== "object" || row === null) return false;
+          const r = row as Record<string, unknown>;
+          return (
+            typeof r.txnDate === "string" &&
+            typeof r.amount === "string" &&
+            (typeof r.description === "string" || r.description === null)
+          );
+        };
+
+        const maxRowsToShow = 120;
+        const allTxnRows = list.query_type === "list" ? list.rows.filter(isTxnRow) : [];
+        const shown = allTxnRows.slice(0, maxRowsToShow);
+        const tableRows = shown.map((r) => {
+          const desc = typeof r.description === "string" ? r.description.trim() : "";
+          // In most bank exports, the counterparty/sender is embedded in the description.
+          return [r.txnDate, clipText(desc || "(no description)", 160), `$${r.amount}`];
+        });
+        const table =
+          tableRows.length > 0 ? toGfmTable(["Date", "From / Description", "Amount"], tableRows) : "";
+
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft:
+            allTxnRows.length === 0
+              ? `I found 0 matching personal deposits in ${range.label}.`
+              : [
+                  `Personal deposits in ${range.label}:`,
+                  "",
+                  table,
+                  allTxnRows.length > maxRowsToShow
+                    ? `\n(Showing ${maxRowsToShow} of ${allTxnRows.length} matching deposits.)`
+                    : "",
+                ]
+                  .filter((s) => s.length > 0)
+                  .join("\n"),
+          questions_for_user: [],
+          assumptions: [
+            "Deposit counterparty is taken from the transaction description field (bank exports typically embed sender/payor there).",
+            "Deposits are bank_statement transactions with amount > 0, excluding transfers and payments made to credit card accounts.",
+            "date_end is exclusive.",
+          ],
+          tool_calls: [
+            {
+              toolName: "financeList",
+              input: {
+                document_type: "bank_statement",
+                doc_ids: docIds,
+                date_start: range.date_start,
+                date_end: range.date_end,
+                amount_min: 0.01,
+                exclude_categories: ["transfer", "credit card payment"],
+              },
+              output: list,
+            },
+          ],
+          citations: [],
+          confidence: allTxnRows.length === 0 ? "low" : "medium",
+        });
+      }
+    }
 
     // Personal income for a specific range (month, half-year, or custom): sum bank_statement deposits.
     const personalIncomeRange = inferDateRangeUtc(q);
