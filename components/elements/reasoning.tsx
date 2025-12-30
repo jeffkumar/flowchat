@@ -3,13 +3,14 @@
 import { useControllableState } from "@radix-ui/react-use-controllable-state";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
 import type { ComponentProps } from "react";
-import { createContext, memo, useContext, useEffect, useState } from "react";
+import { createContext, memo, useContext, useEffect, useState, useMemo } from "react";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { getRandomThinkingMessage } from "@/lib/ai/messages";
 import { Response } from "./response";
 
 type ReasoningContextValue = {
@@ -115,6 +116,7 @@ export type ReasoningTriggerProps = ComponentProps<typeof CollapsibleTrigger>;
 export const ReasoningTrigger = memo(
   ({ className, children, ...props }: ReasoningTriggerProps) => {
     const { isStreaming, isOpen, duration } = useReasoning();
+    const randomMessage = useMemo(() => getRandomThinkingMessage(), []);
 
     return (
       <CollapsibleTrigger
@@ -128,7 +130,7 @@ export const ReasoningTrigger = memo(
           <>
             <BrainIcon className="size-4" />
             {isStreaming || duration === 0 ? (
-              <p>Thinking...</p>
+              <p>{randomMessage}...</p>
             ) : (
               <p>Thought for {duration}s</p>
             )}

@@ -1,10 +1,11 @@
 "use client";
 import type { UseChatHelpers } from "@ai-sdk/react";
 import equal from "fast-deep-equal";
-import { memo, useState } from "react";
+import { memo, useState, useEffect } from "react";
 import type { Vote } from "@/lib/db/schema";
 import type { ChatMessage, RetrievedSource } from "@/lib/types";
 import { cn, sanitizeText } from "@/lib/utils";
+import { getRandomThinkingMessage } from "@/lib/ai/messages";
 import { useDataStream } from "./data-stream-provider";
 import { DocumentToolResult } from "./document";
 import { DocumentPreview } from "./document-preview";
@@ -405,10 +406,16 @@ export const ThinkingMessage = ({
   agentStatus?: { agent: string; message: string };
   showIcon?: boolean;
 }) => {
+  const [randomMessage, setRandomMessage] = useState("");
+
+  useEffect(() => {
+    setRandomMessage(getRandomThinkingMessage());
+  }, []);
+
   const displayText =
     agentStatus && agentStatus.message.trim().length > 0
       ? agentStatus.message
-      : "Thinking";
+      : randomMessage || "Thinking";
 
   return (
     <div
