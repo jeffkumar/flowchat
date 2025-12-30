@@ -216,8 +216,10 @@ ${SpecialistAgentResponseSchema.toString()}
 
 Rules:
 - Use financeQuery for any totals/sums/aggregations. Never compute math yourself.
+- If you request a breakdown (e.g. group_by_month), also call query_type='sum' for the same range so you can provide an exact total in answer_draft.
 - Prefer bank_statement deposits for income-like questions (made/brought in/income/deposits/revenue), with filters.amount_min > 0.
 - CRITICAL: For "income" or "revenue" questions, you MUST set filters.exclude_categories=['transfer', 'credit card payment'] unless the user asks for transfers.
+- When explaining exclusions, refer to 'credit card payment' as 'payments to credit card accounts' to avoid confusion with credit card sales.
 - When presenting structured results (breakdowns, lists, comparisons), prefer GitHub-flavored markdown tables in answer_draft.
 - For "spend"/"spent"/"expenses"/"charges" questions:
   - You MUST run financeQuery (do not say you can't retrieve data unless financeQuery returns an error).
@@ -472,11 +474,27 @@ Return JSON only.`;
       };
     };
 
-    // Personal income for a specific month (e.g. "December 2025", "this month"): sum bank_statement deposits.
-    if (parsed.projectId && wantsPersonal && isIncomeLike) {
-      const window = inferMonthWindowUtc(q);
-      if (window) {
-        const sum = await financeSum({
+    // Personal income for a specific range (month, half-year, or custom): sum bank_statement deposits.
+    const personalIncomeRange = inferDateRangeUtc(q);
+    if (parsed.projectId && wantsPersonal && isIncomeLike && personalIncomeRange && !q.includes("last") && !q.includes("past")) {
+      const { date_start, date_end, label } = personalIncomeRange;
+      const sum = await financeSum({
+        userId: session.user.id,
+        projectId: parsed.projectId,
+        documentType: "bank_statement",
+        filters: {
+          entity_kind: "personal",
+          amount_min: 0.01,
+          exclude_categories: ["transfer", "credit card payment"],
+          date_start,
+          date_end,
+        },
+      });
+
+      let breakdownTable = "";
+      let grouped = null;
+      if (personalIncomeRange.kind !== "month") {
+        grouped = await financeGroupByMonth({
           userId: session.user.id,
           projectId: parsed.projectId,
           documentType: "bank_statement",
@@ -484,41 +502,75 @@ Return JSON only.`;
             entity_kind: "personal",
             amount_min: 0.01,
             exclude_categories: ["transfer", "credit card payment"],
-            date_start: window.date_start,
-            date_end: window.date_end,
+            date_start,
+            date_end,
           },
         });
 
-        return SpecialistAgentResponseSchema.parse({
-          kind: "finance",
-          answer_draft: `Personal deposit income in ${window.label}: $${sum.total} (rows: ${sum.count}).`,
-          questions_for_user:
-            sum.count === 0
-              ? [
-                  `I found 0 matching personal bank-statement deposits in ${window.label}. Are your personal bank statements tagged Personal?`,
-                ]
-              : [],
-          assumptions: [
-            "Income is computed as bank-statement deposits (amount > 0) to Personal accounts, excluding transfers and credit-card payments.",
-          ],
-          tool_calls: [
-            {
-              toolName: "financeSum",
-              input: {
-                document_type: "bank_statement",
-                entity_kind: "personal",
-                date_start: window.date_start,
-                date_end: window.date_end,
-                amount_min: 0.01,
-                exclude_categories: ["transfer", "credit card payment"],
-              },
-              output: sum,
-            },
-          ],
-          citations: [],
-          confidence: sum.count === 0 ? "low" : "medium",
+        const wantMonths = enumerateMonths(date_start, date_end);
+        const totalsByMonth = new Map<string, { total: string; count: number }>();
+        if (Array.isArray(grouped.rows)) {
+          for (const r of grouped.rows) {
+            if (!r || typeof r !== "object") continue;
+            const row = r as { month?: string; total?: string; count?: number };
+            if (typeof row.month === "string" && typeof row.total === "string") {
+              totalsByMonth.set(row.month, { total: row.total, count: row.count ?? 0 });
+            }
+          }
+        }
+
+        const tableRows = wantMonths.map((m) => {
+          const entry = totalsByMonth.get(m);
+          return [m, `$${entry?.total ?? "0"}`, `${entry?.count ?? 0}`];
         });
+        breakdownTable = `\n\nMonth-by-month breakdown:\n${toGfmTable(["Month", "Deposits", "#"], tableRows)}`;
       }
+
+      return SpecialistAgentResponseSchema.parse({
+        kind: "finance",
+        answer_draft: `Personal deposit income in ${label}: $${sum.total} (${sum.count} rows).${breakdownTable}`,
+        questions_for_user:
+          sum.count === 0
+            ? [
+                `I found 0 matching personal bank-statement deposits in ${label}. Are your personal bank statements tagged Personal?`,
+              ]
+            : [],
+        assumptions: [
+          "Income is computed as bank-statement deposits (amount > 0) to Personal accounts, excluding transfers and payments made to credit card accounts.",
+        ],
+        tool_calls: [
+          {
+            toolName: "financeSum",
+            input: {
+              document_type: "bank_statement",
+              entity_kind: "personal",
+              date_start,
+              date_end,
+              amount_min: 0.01,
+              exclude_categories: ["transfer", "credit card payment"],
+            },
+            output: sum,
+          },
+          ...(grouped
+            ? [
+                {
+                  toolName: "financeGroupByMonth",
+                  input: {
+                    document_type: "bank_statement",
+                    entity_kind: "personal",
+                    date_start,
+                    date_end,
+                    amount_min: 0.01,
+                    exclude_categories: ["transfer", "credit card payment"],
+                  },
+                  output: grouped,
+                },
+              ]
+            : []),
+        ],
+        citations: [],
+        confidence: sum.count === 0 ? "low" : "medium",
+      });
     }
 
     // Personal credit-card spend by category for an inferred range (e.g. "last half of 2025 by category").
@@ -1120,7 +1172,7 @@ Return JSON only.`;
               ]
             : [],
         assumptions: [
-          "Income is computed as bank-statement deposits (amount > 0), excluding transfers and credit-card payments.",
+          "Income is computed as bank-statement deposits (amount > 0) to Personal accounts, excluding transfers and payments made to credit card accounts.",
           "The date range is computed in UTC; date_end is exclusive.",
         ],
         tool_calls: [
@@ -1316,7 +1368,7 @@ Return JSON only.`;
             ? ["I found 0 matching deposits in that window. Is the business bank statement tagged correctly?"]
             : [],
         assumptions: [
-          "Income is computed as bank-statement deposits (amount > 0), excluding transfers and credit-card payments.",
+          "Income is computed as bank-statement deposits (amount > 0) to Personal accounts, excluding transfers and payments made to credit card accounts.",
           "The date range is computed in UTC; date_end is exclusive.",
         ],
         tool_calls: [
@@ -1350,13 +1402,10 @@ Return JSON only.`;
       });
     }
 
-    // Business income for a specific month: sum bank_statement deposits for that calendar month.
-    if (isIncomeLike && wantsBusiness && monthFromText && parsed.projectId) {
+    // Business income for a specific range (month, half-year, or custom): sum bank_statement deposits.
+    const bizIncomeRange = inferDateRangeUtc(q);
+    if (isIncomeLike && wantsBusiness && bizIncomeRange && parsed.projectId && !q.includes("last") && !q.includes("past")) {
       const businessNames = await listBusinessEntityNames();
-      const year =
-        parsed.time_hint?.kind === "year"
-          ? parsed.time_hint.year ?? null
-          : inferYearFromText(parsed.question) ?? new Date().getUTCFullYear();
       const hintedName = parsed.entity_hint?.entity_name?.trim();
       const inferredName = inferBusinessNameFromText(parsed.question, businessNames);
       const entityName =
@@ -1384,15 +1433,26 @@ Return JSON only.`;
         });
       }
 
-      if (typeof year === "number" && Number.isFinite(year)) {
-        const mm = String(monthFromText).padStart(2, "0");
-        const start = `${year}-${mm}-01`;
-        const endYear = monthFromText === 12 ? year + 1 : year;
-        const endMonth = monthFromText === 12 ? 1 : monthFromText + 1;
-        const endMm = String(endMonth).padStart(2, "0");
-        const end = `${endYear}-${endMm}-01`;
+      const { date_start, date_end, label } = bizIncomeRange;
 
-        const sum = await financeSum({
+      const sum = await financeSum({
+        userId: session.user.id,
+        projectId: parsed.projectId,
+        documentType: "bank_statement",
+        filters: {
+          entity_kind: "business",
+          entity_name: entityName,
+          amount_min: 0.01,
+          exclude_categories: ["transfer", "credit card payment"],
+          date_start,
+          date_end,
+        },
+      });
+
+      let breakdownTable = "";
+      let grouped = null;
+      if (bizIncomeRange.kind !== "month") {
+        grouped = await financeGroupByMonth({
           userId: session.user.id,
           projectId: parsed.projectId,
           documentType: "bank_statement",
@@ -1401,40 +1461,75 @@ Return JSON only.`;
             entity_name: entityName,
             amount_min: 0.01,
             exclude_categories: ["transfer", "credit card payment"],
-            date_start: start,
-            date_end: end,
+            date_start,
+            date_end,
           },
         });
 
-        return SpecialistAgentResponseSchema.parse({
-          kind: "finance",
-          answer_draft: `Business income deposits for ${entityName} in ${year}-${mm}: ${sum.total} (rows: ${sum.count}).`,
-          questions_for_user:
-            sum.count === 0
-              ? [`I found 0 business deposits for ${entityName} in ${year}-${mm}. Is your business bank statement tagged to "${entityName}"?`]
-              : [],
-          assumptions: [
-            "Income is computed as bank-statement deposits (amount > 0), excluding transfers and credit-card payments.",
-          ],
-          tool_calls: [
-            {
-              toolName: "financeSum",
-              input: {
-                document_type: "bank_statement",
-                entity_kind: "business",
-                entity_name: entityName,
-                date_start: start,
-                date_end: end,
-                amount_min: 0.01,
-                exclude_categories: ["transfer", "credit card payment"],
-              },
-              output: sum,
-            },
-          ],
-          citations: [],
-          confidence: sum.count === 0 ? "low" : "medium",
+        const wantMonths = enumerateMonths(date_start, date_end);
+        const totalsByMonth = new Map<string, { total: string; count: number }>();
+        if (Array.isArray(grouped.rows)) {
+          for (const r of grouped.rows) {
+            if (!r || typeof r !== "object") continue;
+            const row = r as { month?: string; total?: string; count?: number };
+            if (typeof row.month === "string" && typeof row.total === "string") {
+              totalsByMonth.set(row.month, { total: row.total, count: row.count ?? 0 });
+            }
+          }
+        }
+
+        const tableRows = wantMonths.map((m) => {
+          const entry = totalsByMonth.get(m);
+          return [m, `$${entry?.total ?? "0"}`, `${entry?.count ?? 0}`];
         });
+        breakdownTable = `\n\nMonth-by-month breakdown:\n${toGfmTable(["Month", "Deposits", "#"], tableRows)}`;
       }
+
+      return SpecialistAgentResponseSchema.parse({
+        kind: "finance",
+        answer_draft: `Total business income deposits for ${entityName} in ${label}: $${sum.total} (${sum.count} rows).${breakdownTable}`,
+        questions_for_user:
+          sum.count === 0
+            ? [`I found 0 business deposits for ${entityName} in ${label}. Is your business bank statement tagged to "${entityName}"?`]
+            : [],
+        assumptions: [
+          "Income is computed as bank-statement deposits (amount > 0), excluding transfers and payments made to credit card accounts.",
+        ],
+        tool_calls: [
+          {
+            toolName: "financeSum",
+            input: {
+              document_type: "bank_statement",
+              entity_kind: "business",
+              entity_name: entityName,
+              date_start,
+              date_end,
+              amount_min: 0.01,
+              exclude_categories: ["transfer", "credit card payment"],
+            },
+            output: sum,
+          },
+          ...(grouped
+            ? [
+                {
+                  toolName: "financeGroupByMonth",
+                  input: {
+                    document_type: "bank_statement",
+                    entity_kind: "business",
+                    entity_name: entityName,
+                    date_start,
+                    date_end,
+                    amount_min: 0.01,
+                    exclude_categories: ["transfer", "credit card payment"],
+                  },
+                  output: grouped,
+                },
+              ]
+            : []),
+        ],
+        citations: [],
+        confidence: sum.count === 0 ? "low" : "medium",
+      });
     }
 
     // Personal spend summary: use transaction description via group_by_merchant (merchant=description for statements).
@@ -2242,7 +2337,7 @@ Return JSON only.`;
                   ]
                 : [],
             assumptions: [
-              "Income is computed as bank-statement deposits (amount > 0) to Personal accounts, excluding transfers and credit-card payments.",
+              "Income is computed as bank-statement deposits (amount > 0) to Personal accounts, excluding transfers and payments made to credit card accounts.",
             ],
             tool_calls: [
               {
@@ -2450,7 +2545,7 @@ Return JSON only.`;
                   ]
                 : [],
             assumptions: [
-              "Income is computed as bank-statement deposits (amount > 0), excluding transfers and credit-card payments.",
+              "Income is computed as bank-statement deposits (amount > 0), excluding transfers and payments made to credit card accounts.",
             ],
             tool_calls: [
               {
