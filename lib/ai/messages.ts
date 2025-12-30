@@ -1,13 +1,7 @@
 export const THINKING_MESSAGES = [
   "Synergy is going to work",
-  "Putting on my thinking cap",
-  "don't be upset if i make mistakes i'm learning",
-  "Searching for the right answer",
-  "Connecting the dots",
-  "Consulting the archives",
-  "Crunching the numbers",
-  "Analyzing the situation",
-  "Synthesizing information",
+  "Putting on my thinking cap", 
+  "Thinking if I should consult another agent", 
   "Formulating a response",
 ] as const;
 
