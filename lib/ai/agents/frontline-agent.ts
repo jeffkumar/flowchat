@@ -1,7 +1,5 @@
-import { generateText } from "ai";
 import type { Session } from "next-auth";
 import { z } from "zod";
-import { myProvider } from "@/lib/ai/providers";
 import {
   FrontlineDecisionSchema,
   type FrontlineDecision,
@@ -21,22 +19,31 @@ export async function decideFrontlineRouting({
   input: FrontlineInput;
 }): Promise<FrontlineDecision> {
   const parsed = FrontlineInputSchema.parse(input);
-  const model = myProvider.languageModel("chat-model-reasoning");
-  const nowYear = new Date().getUTCFullYear();
+  const q = parsed.question.toLowerCase();
+  const hasRetrievedContext =
+    typeof parsed.retrieved_context === "string" && parsed.retrieved_context.trim().length > 0;
 
-  const system = `You are FrontlineAgent.\n\nYou MUST return ONLY valid JSON that matches this schema:\n${FrontlineDecisionSchema.toString()}\n\nRouting rules:\n- Use FinanceAgent if the user asks any totals/sums/counts or finance questions.\n- Use ProjectAgent if entity ambiguity is likely (personal vs business).\n- Use CitationsAgent when retrieved_context is present and the response should cite sources.\n- If a clarifying question is required, set questions_for_user and do not set direct_answer.\n- Keep direct_answer short when used.\n Now is ${nowYear}.`;
+  const needs_finance =
+    /\b(sum|total|add\s+up|aggregate|spent|spend|spending|expense|expenses|income|revenue|deposits?|charges?|transactions?|invoice)\b/i.test(
+      q
+    ) ||
+    /\b(amex|american\s+express|credit\s+card|card)\b/i.test(q) ||
+    /\b(merchant|merchants|where\s+did\s+i\s+buy|where\s+am\s+i\s+spending|buy)\b/i.test(q) ||
+    /\b(coffee|grocer|restaurant|dining|travel|gas|fuel|subscriptions?)\b/i.test(q);
 
-  const prompt = `User question:\n${parsed.question}\n\nRetrieved context (may be empty):\n${parsed.retrieved_context ?? ""}\n\nReturn JSON only.`;
+  // If finance is requested but entity isn't explicit, ProjectAgent can clarify.
+  const mentionsEntity = /\b(personal|business)\b/i.test(q);
+  const needs_project = needs_finance && !mentionsEntity;
 
-  const result = await generateText({
-    model,
-    system,
-    prompt,
-    maxRetries: 1,
+  // Only request citations when we're not doing finance math and we have retrieved context.
+  const needs_citations = hasRetrievedContext && !needs_finance;
+
+  return FrontlineDecisionSchema.parse({
+    needs_finance,
+    needs_project,
+    needs_citations,
+    questions_for_user: [],
   });
-
-  const json = JSON.parse(result.text) as unknown;
-  return FrontlineDecisionSchema.parse(json);
 }
 
 

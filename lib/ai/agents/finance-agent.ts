@@ -175,8 +175,45 @@ function inferCategory(textLower: string): string | null {
   return null;
 }
 
+function inferCategoryFromContext(context: string): string | null {
+  const lower = context.toLowerCase();
+  // Prefer explicit markers we generate.
+  const m = lower.match(/category_contains["']?\s*[:=]\s*["']([a-z]{3,20})["']/);
+  if (m?.[1]) return m[1];
+  const paren = lower.match(/\((coffee|groc|travel|fuel|subscription|restaurant)\)/);
+  if (paren?.[1]) return paren[1];
+  // Or a category table row like "| coffee |"
+  const table = lower.match(/\|\s*(coffee|groceries|travel|gas|subscriptions?|restaurant)\s*\|/);
+  if (table?.[1]) {
+    const v = table[1];
+    if (v.startsWith("groc")) return "groc";
+    if (v.startsWith("sub")) return "subscription";
+    if (v.startsWith("rest")) return "restaurant";
+    if (v === "gas") return "fuel";
+    return v;
+  }
+  return null;
+}
+
 function wantsList(textLower: string) {
-  return textLower.includes("list") || textLower.includes("show") || textLower.includes("individual");
+  return (
+    textLower.includes("list") ||
+    textLower.includes("show") ||
+    textLower.includes("individual") ||
+    textLower.includes("transactions") ||
+    textLower.includes("transaction") ||
+    textLower.includes("descriptions") ||
+    textLower.includes("description") ||
+    textLower.includes("details")
+  );
+}
+
+function inferTopN(textLower: string): number | null {
+  const m = textLower.match(/\btop\s+(\d{1,2})\b/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(50, n);
 }
 
 function toGfmTable(headers: readonly string[], rows: readonly (readonly string[])[]) {
@@ -198,6 +235,10 @@ export async function runFinanceAgent({
 }): Promise<SpecialistAgentResponse> {
   const parsed = FinanceAgentInputSchema.parse({ ...input, projectId: projectId ?? input.projectId });
   const q = parsed.question.trim();
+  const parts = q.split("\n\nContext (recent turns):");
+  const mainQuestion = (parts.at(0) ?? "").trim();
+  const contextText = (parts.length > 1 ? parts.slice(1).join("\n\n") : "").trim();
+  const mainLower = mainQuestion.toLowerCase();
   const qLower = q.toLowerCase();
 
   if (!session.user?.id) {
@@ -224,11 +265,15 @@ export async function runFinanceAgent({
     });
   }
 
+  // Use full text (including context) to recover missing time/entity.
   const range = inferDateRange(qLower, parsed.time_hint);
   const docType = inferDocType(qLower);
   const entity = inferEntity(qLower, parsed.entity_hint);
-  const category = inferCategory(qLower);
-  const list = wantsList(qLower);
+
+  // Only infer category + presentation intent from the user's actual message,
+  // not from appended context (which may contain misleading tokens like "gas"/"fuel").
+  const category = inferCategory(mainLower);
+  const list = wantsList(mainLower);
 
   // If entity is missing, use project entity summary to decide whether we need clarification.
   if (!entity.kind) {
@@ -303,18 +348,31 @@ export async function runFinanceAgent({
     });
   }
 
+  const wantsMerchant = mainLower.includes("merchant") || mainLower.includes("merchants");
+  const categoryForFilters =
+    category ?? (wantsMerchant && contextText ? inferCategoryFromContext(contextText) : null);
+
   const baseFilters = {
     ...(entity.kind === "personal"
       ? { entity_kind: "personal" as const }
       : { entity_kind: "business" as const, entity_name: entity.name ?? "" }),
     date_start: range.date_start,
     date_end: range.date_end,
-    ...(category ? { category_contains: category } : {}),
+    ...(categoryForFilters ? { category_contains: categoryForFilters } : {}),
   };
+
+  // If the question looks like "did I spend on <category>" but doesn't mention card/bank,
+  // bank-vs-cc inference can be wrong. When a category is present, prefer cc spend if bank would return 0.
+  const shouldPreferCcOnCategory =
+    docType === "bank_statement" &&
+    Boolean(category) &&
+    (mainLower.includes("spent") || mainLower.includes("spend")) &&
+    !mainLower.includes("deposit") &&
+    !mainLower.includes("income");
 
   // For cc statements we treat "spend" as charges; try positive first, then negatives.
   if (docType === "cc_statement") {
-    const wantsMerchant = qLower.includes("merchant") || qLower.includes("merchants");
+    const topN = wantsMerchant ? inferTopN(mainLower) : null;
     if (list) {
       const pos = await financeList({
         userId: session.user.id,
@@ -342,12 +400,12 @@ export async function runFinanceAgent({
       const negAmounts = Boolean(neg && neg.query_type === "list" && neg.rows.length > 0);
 
       const tableRows = rows.slice(0, 200).map((r) => {
-        const label = (r.merchant?.trim() || r.description?.trim() || "(no description)").slice(0, 80);
+        const label = (r.description?.trim() || r.merchant?.trim() || "(no description)").slice(0, 80);
         const amt = negAmounts && r.amount.startsWith("-") ? r.amount.slice(1) : r.amount;
         const cat = r.category?.trim() || "Uncategorized";
         return [r.txnDate, label, `$${amt}`, cat];
       });
-      const table = tableRows.length > 0 ? toGfmTable(["Date", "Merchant/Description", "Amount", "Category"], tableRows) : "";
+      const table = tableRows.length > 0 ? toGfmTable(["Date", "Description", "Amount", "Category"], tableRows) : "";
 
       return SpecialistAgentResponseSchema.parse({
         kind: "finance",
@@ -387,6 +445,39 @@ export async function runFinanceAgent({
     const used = sumNeg && sumNeg.count > 0 ? sumNeg : sumPos;
     const total = used.total.startsWith("-") ? used.total.slice(1) : used.total;
     const signNote = sumNeg && sumNeg.count > 0 ? " (note: amounts were stored as negatives; shown as absolute)" : "";
+
+    // If a category filter was specified and cc_statement returned 0 rows, fall back to
+    // bank_statement withdrawals. Some datasets store rich categories on bank exports instead.
+    if (used.count === 0 && category) {
+      const bankSum = await financeSum({
+        userId: session.user.id,
+        projectId: parsed.projectId,
+        documentType: "bank_statement",
+        filters: { ...baseFilters, amount_max: -0.01 },
+      });
+      const count = typeof bankSum.count === "number" ? bankSum.count : 0;
+      if (count > 0) {
+        return SpecialistAgentResponseSchema.parse({
+          kind: "finance",
+          answer_draft: `Spend on ${entity.kind === "personal" ? "Personal" : entity.name} (${category}) in ${range.label}: $${bankSum.total} (${count} txns).`,
+          questions_for_user: [],
+          assumptions: ["Matched category against bank_statement withdrawals (amount < 0)."],
+          tool_calls: [
+            {
+              toolName: "financeSum",
+              input: {
+                document_type: "bank_statement",
+                ...baseFilters,
+                amount_max: -0.01,
+              },
+              output: bankSum,
+            },
+          ],
+          citations: [],
+          confidence: "medium",
+        });
+      }
+    }
 
     const grouped = qLower.includes("by month")
       ? await financeGroupByMonth({
@@ -431,6 +522,16 @@ export async function runFinanceAgent({
           rows.slice(0, 24).map((r) => [String(r.category ?? "Uncategorized"), `$${String(r.total).replace(/^-/, "")}`, String(r.count)])
         );
       }
+      if (wantsMerchant && typeof topN === "number") {
+        return toGfmTable(
+          ["Merchant", "Total", "Txns"],
+          rows.slice(0, topN).map((r) => [
+            String(r.merchant ?? "(unknown)"),
+            `$${String(r.total).replace(/^-/, "")}`,
+            String(r.count),
+          ])
+        );
+      }
       return toGfmTable(
         ["Merchant", "Total", "Txns"],
         rows.slice(0, 24).map((r) => [String(r.merchant ?? "(unknown)"), `$${String(r.total).replace(/^-/, "")}`, String(r.count)])
@@ -448,7 +549,30 @@ export async function runFinanceAgent({
         .join(""),
       questions_for_user: [],
       assumptions: ["Spend is computed from cc_statement transactions for the requested time window."],
-      tool_calls: [],
+      tool_calls: [
+        {
+          toolName: "financeSum",
+          input: {
+            document_type: "cc_statement",
+            ...baseFilters,
+            amount_min: 0.01,
+          },
+          output: sumPos,
+        },
+        ...(sumNeg
+          ? [
+              {
+                toolName: "financeSum",
+                input: {
+                  document_type: "cc_statement",
+                  ...baseFilters,
+                  amount_max: -0.01,
+                },
+                output: sumNeg,
+              },
+            ]
+          : []),
+      ],
       citations: [],
       confidence: used.count === 0 ? "low" : "medium",
     });
@@ -457,6 +581,26 @@ export async function runFinanceAgent({
   // Bank statement: treat spend as withdrawals (amount < 0) unless user is asking income/deposits.
   const isIncomeLike = qLower.includes("income") || qLower.includes("deposit") || qLower.includes("deposits") || qLower.includes("revenue");
   const amountFilter = isIncomeLike ? { amount_min: 0.01 } : { amount_max: -0.01 };
+
+  if (shouldPreferCcOnCategory) {
+    const ccSum = (await financeSum({
+      userId: session.user.id,
+      projectId: parsed.projectId,
+      documentType: "cc_statement",
+      filters: { ...baseFilters, amount_min: 0.01 },
+    })) as { total: string; count: number };
+    if (ccSum.count > 0) {
+      return SpecialistAgentResponseSchema.parse({
+        kind: "finance",
+        answer_draft: `Spend on ${entity.kind === "personal" ? "Personal" : entity.name} (${category}) in ${range.label}: $${ccSum.total} (${ccSum.count} txns).`,
+        questions_for_user: [],
+        assumptions: ["Matched category against cc_statement transactions (charges only)."],
+        tool_calls: [],
+        citations: [],
+        confidence: "medium",
+      });
+    }
+  }
 
   if (list) {
     const out = await financeList({

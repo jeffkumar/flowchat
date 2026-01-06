@@ -2989,6 +2989,7 @@ export async function financeGroupByMerchant({
     if (docIdFilter) whereClauses.push(docIdFilter);
     if (entityFilter) whereClauses.push(entityFilter);
     if (vendorFilter) whereClauses.push(vendorFilter);
+    if (categoryContains) whereClauses.push(categoryContains);
     whereClauses.push(...dateClauses);
     if (excludeCategories) whereClauses.push(excludeCategories);
     if (categoriesIn) whereClauses.push(categoriesIn);
@@ -3002,6 +3003,25 @@ export async function financeGroupByMerchant({
     const whereSql = and(...whereClauses);
     const dedupeKey = sql<string>`COALESCE(${financialTransaction.txnHash}, (${financialTransaction.documentId}::text || '|' || ${financialTransaction.rowHash}))`;
 
+    // Normalize merchant for grouping so we don't end up with buckets like "-", "&", "4BOZEMAN".
+    // Prefer stored merchant, fall back to description, then clean it.
+    const merchantKey = sql<string>`
+      NULLIF(
+        regexp_replace(
+          regexp_replace(
+            trim(COALESCE(${financialTransaction.merchant}, ${financialTransaction.description})),
+            '\\s+',
+            ' ',
+            'g'
+          ),
+          '^[^A-Za-z0-9]+|[^A-Za-z0-9]+$',
+          '',
+          'g'
+        ),
+        ''
+      )
+    `;
+
     const rows = await db.execute(sql`
       SELECT
         t.merchant,
@@ -3009,7 +3029,7 @@ export async function financeGroupByMerchant({
         COUNT(*)::int AS count
       FROM (
         SELECT DISTINCT ON (${dedupeKey})
-          ${financialTransaction.description} AS merchant,
+          ${merchantKey} AS merchant,
           ${financialTransaction.amount} AS amount
         FROM ${financialTransaction}
         INNER JOIN ${projectDoc} ON ${eq(financialTransaction.documentId, projectDoc.id)}

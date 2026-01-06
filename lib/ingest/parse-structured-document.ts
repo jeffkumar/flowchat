@@ -40,6 +40,26 @@ function normalizeDescription(value: unknown): string {
     .slice(0, 2000);
 }
 
+function normalizeMerchantLike(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  // Remove leading/trailing noise that often appears in CC exports/OCR.
+  const cleaned = trimmed
+    .replace(/^[^A-Za-z0-9]+/g, "")
+    .replace(/[^A-Za-z0-9]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned) return null;
+
+  // Reject values that are basically punctuation, or mostly digits.
+  const letters = cleaned.replace(/[^A-Za-z]/g, "");
+  if (letters.length < 3) return null;
+
+  return cleaned.slice(0, 200);
+}
+
 function classifyBankTxnCategory(description: string): string | null {
   const d = description.toLowerCase();
   // Conservative transfer signals; can be expanded later.
@@ -219,6 +239,7 @@ type ParsedCsvTxn = {
   amount: string; // decimal string
   currency?: string | null;
   balance?: string | null;
+  category?: string | null;
 };
 
 function normalizeHeaderKey(value: string) {
@@ -246,6 +267,13 @@ function parseCsvTransactions({ csvText }: { csvText: string }): ParsedCsvTxn[] 
   const dateField =
     pickField(["date", "txn_date", "transaction_date", "posted_date", "post_date"]) ?? null;
   const descField = pickField(["description", "desc", "memo", "details", "merchant", "name"]) ?? null;
+  const categoryField = pickField([
+    "category",
+    "transaction_category",
+    "merchant_category",
+    "mcc_category",
+    "type",
+  ]);
 
   // Amount handling: either a single amount column OR debit/credit split
   const amountField = pickField(["amount", "signed_amount", "value", "net_amount", "total"]) ?? null;
@@ -274,6 +302,10 @@ function parseCsvTransactions({ csvText }: { csvText: string }): ParsedCsvTxn[] 
     if (!txnDate) continue;
 
     const desc = descField ? normalizeDescription(row[descField]) : "";
+    const category =
+      categoryField && typeof row[categoryField] === "string"
+        ? row[categoryField].trim().slice(0, 64)
+        : null;
     const currency =
       currencyField && typeof row[currencyField] === "string"
         ? row[currencyField].trim().slice(0, 16)
@@ -298,6 +330,7 @@ function parseCsvTransactions({ csvText }: { csvText: string }): ParsedCsvTxn[] 
       amount,
       currency,
       balance,
+      category,
     });
   }
 
@@ -516,14 +549,10 @@ export async function parseStructuredProjectDoc({
           const description = normalizeDescription(t.description);
           const merchantRaw =
             typeof t.merchant === "string" ? t.merchant.trim().slice(0, 200) : "";
-          // Some sources/schemas (including CSV fallbacks) only have description; use that as a
-          // stable merchant-ish grouping key instead of leaving it null.
+          // Prefer explicit merchant; otherwise derive a merchant-like value from description.
           const merchant =
-            merchantRaw.length > 0
-              ? merchantRaw
-              : description
-                ? description.slice(0, 200)
-                : null;
+            normalizeMerchantLike(merchantRaw) ??
+            (description ? normalizeMerchantLike(description) : null);
           const currency = typeof t.currency === "string" ? t.currency.trim().slice(0, 16) : null;
           const balance = t.balance === null || t.balance === undefined ? null : parseDecimalString(t.balance);
           const rawCategory =

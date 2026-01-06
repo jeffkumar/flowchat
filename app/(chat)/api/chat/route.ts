@@ -1470,31 +1470,92 @@ export async function POST(request: Request) {
           .map((part) => part.text)
           .join("\n")
           .slice(0, 4000);
-        const isAggregationQuery = AGGREGATION_HINT_RE.test(lastUserText);
+
+        // If the user replies with only an entity (e.g. "personal") after we asked
+        // "Personal or which business?", treat it as answering the prior clarification and
+        // re-run the prior finance question with that entity included.
+        const entityOnlyReply = (() => {
+          const t = lastUserText.trim().toLowerCase();
+          if (t === "personal" || t === "personal.") return "personal";
+          if (t === "business" || t === "business.") return "business";
+          return null;
+        })();
+
+        const expandEntityOnlyReply = (() => {
+          if (!entityOnlyReply) return null;
+          // Look for the immediately preceding assistant prompt asking for entity.
+          const lastAssistant = uiMessages
+            .slice(0, -1)
+            .slice()
+            .reverse()
+            .find((m) => m.role === "assistant");
+          const lastAssistantText = lastAssistant
+            ? lastAssistant.parts
+                .filter(
+                  (p): p is Extract<(typeof lastAssistant.parts)[number], { type: "text" }> =>
+                    p.type === "text"
+                )
+                .map((p) => p.text)
+                .join(" ")
+                .toLowerCase()
+            : "";
+          const askedEntity =
+            lastAssistantText.includes("personal") && lastAssistantText.includes("business");
+          if (!askedEntity) return null;
+
+          // Find the previous non-trivial user question.
+          const priorUser = uiMessages
+            .slice(0, -1)
+            .slice()
+            .reverse()
+            .find((m) => {
+              if (m.role !== "user") return false;
+              const txt = m.parts
+                .filter((p): p is Extract<(typeof m.parts)[number], { type: "text" }> => p.type === "text")
+                .map((p) => p.text)
+                .join(" ")
+                .trim();
+              if (!txt) return false;
+              const lower = txt.toLowerCase();
+              return lower !== "personal" && lower !== "business";
+            });
+          if (!priorUser) return null;
+          const priorText = priorUser.parts
+            .filter((p): p is Extract<(typeof priorUser.parts)[number], { type: "text" }> => p.type === "text")
+            .map((p) => p.text)
+            .join("\n")
+            .slice(0, 3500);
+          return `${priorText}\n\nEntity: ${entityOnlyReply === "personal" ? "Personal" : "Business"}`;
+        })();
+
+        const normalizedLastUserText = expandEntityOnlyReply ?? lastUserText;
+        const isAggregationQuery = AGGREGATION_HINT_RE.test(normalizedLastUserText);
         const isFinanceQuery =
           isAggregationQuery ||
-          SPEND_INTENT_RE.test(lastUserText) ||
-          INCOME_INTENT_RE.test(lastUserText) ||
-          INVOICE_REVENUE_RE.test(lastUserText) ||
-          FINANCE_FOLLOWUP_RE.test(lastUserText);
+          SPEND_INTENT_RE.test(normalizedLastUserText) ||
+          INCOME_INTENT_RE.test(normalizedLastUserText) ||
+          INVOICE_REVENUE_RE.test(normalizedLastUserText) ||
+          FINANCE_FOLLOWUP_RE.test(normalizedLastUserText) ||
+          Boolean(expandEntityOnlyReply);
 
         const financeQuestionForAgent = (() => {
-          if (!FINANCE_FOLLOWUP_RE.test(lastUserText)) return lastUserText;
+          if (expandEntityOnlyReply) return expandEntityOnlyReply;
+          if (!FINANCE_FOLLOWUP_RE.test(normalizedLastUserText)) return normalizedLastUserText;
 
           const hasTime =
-            /\b(19\d{2}|20\d{2})\b/.test(lastUserText) ||
+            /\b(19\d{2}|20\d{2})\b/.test(normalizedLastUserText) ||
             /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i.test(
-              lastUserText
+              normalizedLastUserText
             );
           const hasCategory = /\b(grocer|coffee|travel|dining|restaurant|gas|subscription)\b/i.test(
-            lastUserText
+            normalizedLastUserText
           );
           const hasEntity = /\b(personal|business|amex|american express|credit card|card)\b/i.test(
-            lastUserText
+            normalizedLastUserText
           );
 
           // If it already includes key filters, don't expand.
-          if (hasTime && (hasCategory || hasEntity)) return lastUserText;
+          if (hasTime && (hasCategory || hasEntity)) return normalizedLastUserText;
 
           // Add a small slice of recent turns so FinanceAgent can resolve "those merchants".
           const recent = uiMessages.slice(-8).map((m) => {
@@ -1508,7 +1569,7 @@ export async function POST(request: Request) {
           });
           const ctx = recent.filter((s) => s.length > 0).join("\n");
           const capped = ctx.length > 1600 ? `${ctx.slice(-1600)}\n` : `${ctx}\n`;
-          return `${lastUserText}\n\nContext (recent turns):\n${capped}`;
+          return `${normalizedLastUserText}\n\nContext (recent turns):\n${capped}`;
         })();
 
         // Hard guarantee: for finance questions, directly call FinanceAgent instead of relying on the
