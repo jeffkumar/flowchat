@@ -323,6 +323,8 @@ export function MicrosoftIntegrationCard() {
     {}
   );
 
+  const isTypeLocked = (syncKey: string) => Boolean(syncedDocByKey[syncKey]);
+
   useEffect(() => {
     const docs = syncedDocsData?.docs;
     if (!Array.isArray(docs) || docs.length === 0) return;
@@ -851,6 +853,7 @@ export function MicrosoftIntegrationCard() {
                     const syncKey = driveId ? `${driveId}:${item.id}` : null;
                     const isSyncing = syncKey ? inFlightSyncKeys.has(syncKey) : false;
                     const selectedType = syncKey ? getTypeForKey(syncKey) : "general_doc";
+                    const typeLocked = syncKey ? isTypeLocked(syncKey) : false;
 
                     return (
                       <div
@@ -906,7 +909,7 @@ export function MicrosoftIntegrationCard() {
                               >
                                 <SelectTrigger
                                   className="h-8 w-[190px] text-xs [&>span]:flex-1 [&>span]:text-left"
-                                  disabled={!item.driveId || !selectedProjectId}
+                                  disabled={!item.driveId || !selectedProjectId || typeLocked}
                                 >
                                   <SelectValue placeholder="Doc type" />
                                 </SelectTrigger>
@@ -927,7 +930,9 @@ export function MicrosoftIntegrationCard() {
                                   requestImport({
                                     driveId: item.driveId,
                                     items: [{ itemId: item.id, filename: label }],
-                                    documentType: selectedType,
+                                    documentType:
+                                      (syncKey && syncedDocByKey[syncKey]?.documentType) ??
+                                      selectedType,
                                   });
                                 }}
                                 aria-label="Import file"
@@ -1044,51 +1049,32 @@ export function MicrosoftIntegrationCard() {
                           {new Date(doc.lastSyncedAt).toLocaleString()}
                         </div>
                         <div className="flex items-center justify-end gap-1 sm:justify-end">
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
                               <Button
-                                aria-label="Edit document type"
-                                disabled={isSyncing}
+                                aria-label="Document type locked"
+                                disabled={true}
                                 size="icon"
-                                title="Edit document type"
+                                title="Document type is locked"
                                 type="button"
                                 variant="ghost"
                                 className="h-8 w-8"
                               >
-                                <Pencil className="h-4 w-4 text-muted-foreground" />
+                                <Info className="h-4 w-4 text-muted-foreground" />
                               </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuLabel>Document type</DropdownMenuLabel>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuRadioGroup
-                                onValueChange={(value) => {
-                                  setTypeForKey(syncKey, value as IngestDocumentType);
-                                }}
-                                value={selectedType}
-                              >
-                                <DropdownMenuRadioItem value="general_doc">
-                                  General doc
-                                </DropdownMenuRadioItem>
-                                <DropdownMenuRadioItem value="bank_statement">
-                                  Bank statement
-                                </DropdownMenuRadioItem>
-                                <DropdownMenuRadioItem value="cc_statement">
-                                  CC statement
-                                </DropdownMenuRadioItem>
-                                <DropdownMenuRadioItem value="invoice">
-                                  Invoice
-                                </DropdownMenuRadioItem>
-                              </DropdownMenuRadioGroup>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              Document type is locked after first sync. To change it (or switch
+                              accounts), remove and re-import.
+                            </TooltipContent>
+                          </Tooltip>
                           <Button
                             disabled={isSyncing || !selectedProjectId}
                             onClick={() => {
                               requestImport({
                                 driveId: doc.driveId,
                                 items: [{ itemId: doc.itemId, filename: doc.filename }],
-                                documentType: selectedType,
+                                documentType: doc.documentType ?? selectedType,
                               });
                             }}
                             aria-label="Import file"

@@ -19,7 +19,7 @@
             },
             "merchant": {
               "type": "string",
-              "description": "Normalized merchant name (e.g., 'Starbucks', 'Amazon', 'United Airlines')."
+              "description": "Normalized merchant name (e.g., 'Starbucks', 'Amazon', 'United Airlines'). If unsure, derive a merchant-like name from the description (remove IDs, locations, and dates)."
             },
             "amount": { "type": ["number", "string"] },
             "currency": { "type": "string" },
@@ -28,7 +28,7 @@
               "description": "Optional normalized category. Prefer one of: coffee, dining, groceries, gas, travel, subscriptions, payment, refund, other."
             }
           },
-          "required": ["date", "description", "amount"]
+          "required": ["date", "description", "amount", "merchant"]
         }
       }
     },

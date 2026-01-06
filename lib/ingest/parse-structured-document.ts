@@ -516,7 +516,14 @@ export async function parseStructuredProjectDoc({
           const description = normalizeDescription(t.description);
           const merchantRaw =
             typeof t.merchant === "string" ? t.merchant.trim().slice(0, 200) : "";
-          const merchant = merchantRaw.length > 0 ? merchantRaw : null;
+          // Some sources/schemas (including CSV fallbacks) only have description; use that as a
+          // stable merchant-ish grouping key instead of leaving it null.
+          const merchant =
+            merchantRaw.length > 0
+              ? merchantRaw
+              : description
+                ? description.slice(0, 200)
+                : null;
           const currency = typeof t.currency === "string" ? t.currency.trim().slice(0, 16) : null;
           const balance = t.balance === null || t.balance === undefined ? null : parseDecimalString(t.balance);
           const rawCategory =

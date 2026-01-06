@@ -221,6 +221,8 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
       const storedBlobUrl = blobUrl ?? doc?.blobUrl ?? null;
 
       if (doc) {
+        // Lock document type after first sync/import. To change, delete the doc and re-import.
+        const lockedDocumentType = doc.documentType;
         doc = await updateProjectDoc({
           docId: doc.id,
           data: {
@@ -228,7 +230,7 @@ export async function syncMicrosoftDriveItemsToProjectDocs({
             sizeBytes,
             mimeType,
             filename,
-            documentType: effectiveDocumentType,
+            documentType: lockedDocumentType,
             ...(entityName && entityKind
               ? { entityName, entityKind }
               : {}),
