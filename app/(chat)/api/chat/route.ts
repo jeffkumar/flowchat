@@ -87,6 +87,10 @@ const SPEND_INTENT_RE = /\b(spend|spent|spending|expense|expenses|charges?|rent|
 
 const INVOICE_REVENUE_RE = /\binvoice\s+revenue\b/i;
 
+// Finance follow-ups often omit the original time/category/entity and refer to "those".
+const FINANCE_FOLLOWUP_RE =
+  /\b(those|them|that|same)\b.*\b(merchants?|transactions?|charges?)\b|\b(merchants?|transactions?)\b/i;
+
 function startMsForPreset(preset: RetrievalRangePreset | undefined, nowMs: number) {
   if (!preset || preset === "all") {
     return null;
@@ -1471,7 +1475,41 @@ export async function POST(request: Request) {
           isAggregationQuery ||
           SPEND_INTENT_RE.test(lastUserText) ||
           INCOME_INTENT_RE.test(lastUserText) ||
-          INVOICE_REVENUE_RE.test(lastUserText);
+          INVOICE_REVENUE_RE.test(lastUserText) ||
+          FINANCE_FOLLOWUP_RE.test(lastUserText);
+
+        const financeQuestionForAgent = (() => {
+          if (!FINANCE_FOLLOWUP_RE.test(lastUserText)) return lastUserText;
+
+          const hasTime =
+            /\b(19\d{2}|20\d{2})\b/.test(lastUserText) ||
+            /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i.test(
+              lastUserText
+            );
+          const hasCategory = /\b(grocer|coffee|travel|dining|restaurant|gas|subscription)\b/i.test(
+            lastUserText
+          );
+          const hasEntity = /\b(personal|business|amex|american express|credit card|card)\b/i.test(
+            lastUserText
+          );
+
+          // If it already includes key filters, don't expand.
+          if (hasTime && (hasCategory || hasEntity)) return lastUserText;
+
+          // Add a small slice of recent turns so FinanceAgent can resolve "those merchants".
+          const recent = uiMessages.slice(-8).map((m) => {
+            const role = m.role === "user" ? "User" : "Assistant";
+            const text = m.parts
+              .filter((p): p is Extract<(typeof m.parts)[number], { type: "text" }> => p.type === "text")
+              .map((p) => p.text)
+              .join(" ")
+              .trim();
+            return text ? `${role}: ${text}` : "";
+          });
+          const ctx = recent.filter((s) => s.length > 0).join("\n");
+          const capped = ctx.length > 1600 ? `${ctx.slice(-1600)}\n` : `${ctx}\n`;
+          return `${lastUserText}\n\nContext (recent turns):\n${capped}`;
+        })();
 
         // Hard guarantee: for finance questions, directly call FinanceAgent instead of relying on the
         // base model to emit a tool call (some models / generations can "say" they'll call a tool
@@ -1488,7 +1526,7 @@ export async function POST(request: Request) {
           const agentResult = await runFinanceAgent({
             session,
             projectId: activeProjectId,
-            input: { question: lastUserText },
+            input: { question: financeQuestionForAgent },
           });
 
           dataStream.write({

@@ -514,6 +514,9 @@ export async function parseStructuredProjectDoc({
           if (!txnDate || !amount) return null;
           
           const description = normalizeDescription(t.description);
+          const merchantRaw =
+            typeof t.merchant === "string" ? t.merchant.trim().slice(0, 200) : "";
+          const merchant = merchantRaw.length > 0 ? merchantRaw : null;
           const currency = typeof t.currency === "string" ? t.currency.trim().slice(0, 16) : null;
           const balance = t.balance === null || t.balance === undefined ? null : parseDecimalString(t.balance);
           const rawCategory =
@@ -534,6 +537,7 @@ export async function parseStructuredProjectDoc({
             description: description || null,
             amount,
             currency,
+            merchant,
             balance,
             category,
             rowHash,

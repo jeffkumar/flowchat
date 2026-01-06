@@ -2292,6 +2292,7 @@ type FinanceQueryFilters = {
   date_start?: string;
   date_end?: string;
   vendor_contains?: string;
+  category_contains?: string;
   sender_contains?: string;
   recipient_contains?: string;
   amount_min?: number;
@@ -2437,6 +2438,14 @@ function buildVendorContainsFilter({
   return sql`${financialTransaction.description} ILIKE ${like}`;
 }
 
+function buildCategoryContainsFilter(categoryContains: string | undefined) {
+  if (typeof categoryContains !== "string") return null;
+  const needle = categoryContains.trim();
+  if (!needle) return null;
+  const like = `%${needle}%`;
+  return sql`${financialTransaction.category} ILIKE ${like}`;
+}
+
 function buildInvoiceSenderContainsFilter(senderContains: string | undefined) {
   if (typeof senderContains !== "string") return null;
   const needle = senderContains.trim();
@@ -2474,6 +2483,7 @@ export async function financeSum({
       documentType,
       vendorContains: filters?.vendor_contains,
     });
+    const categoryContains = buildCategoryContainsFilter(filters?.category_contains);
     const senderFilter = buildInvoiceSenderContainsFilter(filters?.sender_contains);
     const recipientFilter = buildInvoiceRecipientContainsFilter(filters?.recipient_contains);
     const dateClauses = buildDateRangeFilter({
@@ -2533,6 +2543,7 @@ export async function financeSum({
     if (docIdFilter) whereClauses.push(docIdFilter);
     if (entityFilter) whereClauses.push(entityFilter);
     if (vendorFilter) whereClauses.push(vendorFilter);
+    if (categoryContains) whereClauses.push(categoryContains);
     whereClauses.push(...dateClauses);
     if (excludeCategories) whereClauses.push(excludeCategories);
     if (categoriesIn) whereClauses.push(categoriesIn);
@@ -2620,6 +2631,7 @@ export async function financeList({
       documentType,
       vendorContains: filters?.vendor_contains,
     });
+    const categoryContains = buildCategoryContainsFilter(filters?.category_contains);
     const senderFilter = buildInvoiceSenderContainsFilter(filters?.sender_contains);
     const recipientFilter = buildInvoiceRecipientContainsFilter(filters?.recipient_contains);
     const dateClauses = buildDateRangeFilter({
@@ -2697,6 +2709,7 @@ export async function financeList({
     if (docIdFilter) whereClauses.push(docIdFilter);
     if (entityFilter) whereClauses.push(entityFilter);
     if (vendorFilter) whereClauses.push(vendorFilter);
+    if (categoryContains) whereClauses.push(categoryContains);
     whereClauses.push(...dateClauses);
     if (excludeCategories) whereClauses.push(excludeCategories);
     if (categoriesIn) whereClauses.push(categoriesIn);
@@ -2788,6 +2801,7 @@ export async function financeGroupByMonth({
       documentType,
       vendorContains: filters?.vendor_contains,
     });
+    const categoryContains = buildCategoryContainsFilter(filters?.category_contains);
     const senderFilter = buildInvoiceSenderContainsFilter(filters?.sender_contains);
     const recipientFilter = buildInvoiceRecipientContainsFilter(filters?.recipient_contains);
     const dateClauses = buildDateRangeFilter({
@@ -2847,6 +2861,7 @@ export async function financeGroupByMonth({
     if (docIdFilter) whereClauses.push(docIdFilter);
     if (entityFilter) whereClauses.push(entityFilter);
     if (vendorFilter) whereClauses.push(vendorFilter);
+    if (categoryContains) whereClauses.push(categoryContains);
     whereClauses.push(...dateClauses);
     if (excludeCategories) whereClauses.push(excludeCategories);
     whereClauses.push(
@@ -2914,6 +2929,7 @@ export async function financeGroupByMerchant({
       documentType,
       vendorContains: filters?.vendor_contains,
     });
+    const categoryContains = buildCategoryContainsFilter(filters?.category_contains);
     const senderFilter = buildInvoiceSenderContainsFilter(filters?.sender_contains);
     const recipientFilter = buildInvoiceRecipientContainsFilter(filters?.recipient_contains);
     const dateClauses = buildDateRangeFilter({
@@ -3042,6 +3058,7 @@ export async function financeGroupByCategory({
       documentType,
       vendorContains: filters?.vendor_contains,
     });
+    const categoryContains = buildCategoryContainsFilter(filters?.category_contains);
     const dateClauses = buildDateRangeFilter({
       documentType,
       dateStart: filters?.date_start,
@@ -3056,6 +3073,7 @@ export async function financeGroupByCategory({
     if (docIdFilter) whereClauses.push(docIdFilter);
     if (entityFilter) whereClauses.push(entityFilter);
     if (vendorFilter) whereClauses.push(vendorFilter);
+    if (categoryContains) whereClauses.push(categoryContains);
     whereClauses.push(...dateClauses);
     if (excludeCategories) whereClauses.push(excludeCategories);
     whereClauses.push(
