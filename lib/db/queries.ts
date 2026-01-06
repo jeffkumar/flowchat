@@ -378,7 +378,18 @@ const maxConnections =
     ? parsedMax
     : defaultMaxConnections;
 
-const connectTimeoutSeconds = process.env.NODE_ENV === "production" ? 10 : 2;
+const connectTimeoutRaw = process.env.POSTGRES_CONNECT_TIMEOUT_SECONDS;
+const parsedConnectTimeout =
+  typeof connectTimeoutRaw === "string" && connectTimeoutRaw.length > 0
+    ? Number(connectTimeoutRaw)
+    : undefined;
+const defaultConnectTimeoutSeconds = process.env.NODE_ENV === "production" ? 10 : 10;
+const connectTimeoutSeconds =
+  typeof parsedConnectTimeout === "number" &&
+  Number.isFinite(parsedConnectTimeout) &&
+  parsedConnectTimeout > 0
+    ? parsedConnectTimeout
+    : defaultConnectTimeoutSeconds;
 
 // In dev (Turbopack/HMR), this module can be re-evaluated often. If we create a new
 // postgres-js client each time, we can exhaust DB connections and cause stalls/timeouts.

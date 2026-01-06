@@ -58,6 +58,93 @@ function classifyBankTxnCategory(description: string): string | null {
   return null;
 }
 
+function classifyCcTxnCategory(description: string): string | null {
+  const d = description.toLowerCase();
+
+  // Payment/transfer-like signals (keep these consistent with bank rules).
+  if (
+    d.includes("payment") ||
+    d.includes("autopay") ||
+    d.includes("transfer") ||
+    d.includes("xfer")
+  ) {
+    return "payment";
+  }
+
+  if (
+    d.includes("starbucks") ||
+    d.includes("peet") ||
+    d.includes("dunkin") ||
+    d.includes("coffee") ||
+    d.includes("cafe")
+  ) {
+    return "coffee";
+  }
+
+  if (
+    d.includes("doordash") ||
+    d.includes("uber eats") ||
+    d.includes("grubhub") ||
+    d.includes("restaurant") ||
+    d.includes("bar ") ||
+    d.includes("pizza") ||
+    d.includes("taco") ||
+    d.includes("sushi")
+  ) {
+    return "dining";
+  }
+
+  if (
+    d.includes("whole foods") ||
+    d.includes("trader joe") ||
+    d.includes("safeway") ||
+    d.includes("kroger") ||
+    d.includes("aldi") ||
+    d.includes("grocery")
+  ) {
+    return "groceries";
+  }
+
+  if (
+    d.includes("shell") ||
+    d.includes("chevron") ||
+    d.includes("exxon") ||
+    d.includes("bp ") ||
+    d.includes("fuel") ||
+    d.includes("gas")
+  ) {
+    return "gas";
+  }
+
+  if (
+    d.includes("uber") ||
+    d.includes("lyft") ||
+    d.includes("airbnb") ||
+    d.includes("hotel") ||
+    d.includes("airlines") ||
+    d.includes("delta") ||
+    d.includes("united") ||
+    d.includes("american airlines")
+  ) {
+    return "travel";
+  }
+
+  if (
+    d.includes("netflix") ||
+    d.includes("spotify") ||
+    d.includes("adobe") ||
+    d.includes("dropbox") ||
+    d.includes("google") ||
+    d.includes("apple.com") ||
+    d.includes("microsoft") ||
+    d.includes("subscription")
+  ) {
+    return "subscriptions";
+  }
+
+  return null;
+}
+
 function parseYmdDate(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -434,7 +521,7 @@ export async function parseStructuredProjectDoc({
           const category =
             doc.documentType === "bank_statement"
               ? rawCategory || classifyBankTxnCategory(description)
-              : rawCategory || null;
+              : rawCategory || classifyCcTxnCategory(description);
           
           const txnHash = sha256Hex(
             `${txnDate}|${amount}|${description.toLowerCase()}|${balance ?? ""}`

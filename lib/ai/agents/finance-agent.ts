@@ -1772,7 +1772,7 @@ Return JSON only.`;
         return SpecialistAgentResponseSchema.parse({
           kind: "finance",
           answer_draft: [
-            `Personal Amex spend summary for ${year} (charges only):`,
+            `Personal Credit Card spend summary for ${year} (charges only):`,
             `- Total: ${total.total}`,
             `- Transactions: ${total.count}`,
             "",
@@ -2651,9 +2651,40 @@ Return JSON only.`;
         : null,
     });
 
+    const normalizeSpecialistAgentResponse = (value: unknown) => {
+      if (!value || typeof value !== "object") return value;
+      const v = value as Record<string, unknown>;
+
+      const kind = v.kind === "finance" || v.kind === "citations" || v.kind === "project" ? v.kind : "finance";
+      const answer_draft = typeof v.answer_draft === "string" ? v.answer_draft : "";
+
+      const coerceStringArray = (x: unknown) => {
+        if (Array.isArray(x)) return x.filter((i): i is string => typeof i === "string" && i.trim().length > 0);
+        if (typeof x === "string" && x.trim().length > 0) return [x];
+        return [];
+      };
+
+      const questions_for_user = coerceStringArray(v.questions_for_user);
+      const assumptions = coerceStringArray(v.assumptions);
+
+      const tool_calls = Array.isArray(v.tool_calls) ? v.tool_calls : [];
+      const citations = Array.isArray(v.citations) ? v.citations : [];
+      const confidence = v.confidence === "low" || v.confidence === "medium" || v.confidence === "high" ? v.confidence : "medium";
+
+      return {
+        kind,
+        answer_draft,
+        questions_for_user,
+        assumptions,
+        tool_calls,
+        citations,
+        confidence,
+      };
+    };
+
     if (typeof result.text === "string" && result.text.trim().length > 0) {
-    const json = JSON.parse(result.text) as unknown;
-    return SpecialistAgentResponseSchema.parse(json);
+      const json = JSON.parse(result.text) as unknown;
+      return SpecialistAgentResponseSchema.parse(normalizeSpecialistAgentResponse(json));
     }
 
     // If the model returned an empty final message, fall through to deterministic fallback.

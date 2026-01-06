@@ -1467,6 +1467,50 @@ export async function POST(request: Request) {
           .join("\n")
           .slice(0, 4000);
         const isAggregationQuery = AGGREGATION_HINT_RE.test(lastUserText);
+        const isFinanceQuery =
+          isAggregationQuery ||
+          SPEND_INTENT_RE.test(lastUserText) ||
+          INCOME_INTENT_RE.test(lastUserText) ||
+          INVOICE_REVENUE_RE.test(lastUserText);
+
+        // Hard guarantee: for finance questions, directly call FinanceAgent instead of relying on the
+        // base model to emit a tool call (some models / generations can "say" they'll call a tool
+        // without actually invoking it).
+        if (isFinanceQuery) {
+          dataStream.write({
+            type: "data-agentStatus",
+            data: {
+              agent: "Finance Agent",
+              message: "Consulting Finance Agent...",
+            },
+          });
+
+          const agentResult = await runFinanceAgent({
+            session,
+            projectId: activeProjectId,
+            input: { question: lastUserText },
+          });
+
+          dataStream.write({
+            type: "data-agentStatus",
+            data: {
+              agent: "",
+              message: "",
+            },
+          });
+
+          const msgId = generateUUID();
+          const text =
+            agentResult.questions_for_user.length > 0
+              ? agentResult.questions_for_user.join(" ")
+              : agentResult.answer_draft.trim().length > 0
+                ? agentResult.answer_draft
+                : "I couldn't compute that from the available data. Can you share more details?";
+          dataStream.write({ type: "text-start", id: msgId });
+          dataStream.write({ type: "text-delta", id: msgId, delta: text });
+          dataStream.write({ type: "text-end", id: msgId });
+          return;
+        }
 
         // For aggregation/finance questions, don't inject retrieved/project context into the main prompt.
         // The frontline is required to call FinanceAgent tools instead of trusting potentially stale context.
