@@ -930,9 +930,10 @@ export function MicrosoftIntegrationCard() {
                                   requestImport({
                                     driveId: item.driveId,
                                     items: [{ itemId: item.id, filename: label }],
-                                    documentType:
-                                      (syncKey && syncedDocByKey[syncKey]?.documentType) ??
-                                      selectedType,
+                                    documentType: syncKey
+                                      ? (syncedDocByKey[syncKey]?.documentType ??
+                                        selectedType)
+                                      : selectedType,
                                   });
                                 }}
                                 aria-label="Import file"
