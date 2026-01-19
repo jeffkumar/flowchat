@@ -1,5 +1,5 @@
 export const THINKING_MESSAGES = [
-  "Synergy is going to work",
+  "Flowchat is going to work",
   "Putting on my thinking cap", 
   "Thinking if I should consult another agent for help",  
 ] as const;

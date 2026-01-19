@@ -7,8 +7,8 @@ import "./globals.css";
 import { SessionProvider } from "next-auth/react";
 
 export const metadata: Metadata = {
-  title: "Synergy",
-  description: "Next.js chatbot template using the AI SDK.",
+  title: "Flowchat",
+  description: "Build and deploy agents with the right context.",
   icons: {
     icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
   },

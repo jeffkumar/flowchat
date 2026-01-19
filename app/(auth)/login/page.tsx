@@ -53,8 +53,11 @@ export default function Page() {
     <div className="flex h-dvh w-screen items-start justify-center bg-auth-charcoal py-12 md:items-center md:py-0">
       <div className="flex w-full max-w-md flex-col gap-12 overflow-hidden rounded-2xl border border-border bg-background py-10">
         <div className="flex flex-col items-center justify-center gap-2 px-4 text-center sm:px-16">
-          <h1 className="font-semibold text-2xl text-brand">Synergy Brain</h1>
+          <h1 className="font-semibold text-2xl text-brand">Flowchat</h1>
           <p className="text-muted-foreground text-sm">
+            Build and deploy agents with the right context
+          </p>
+          <p className="text-muted-foreground text-xs mt-2">
             Use your email and password to sign in
           </p>
         </div>

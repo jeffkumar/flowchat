@@ -40,6 +40,14 @@ export const postRequestBodySchema = z.object({
   ignoredDocIds: z.array(z.string()).optional(),
   retrievalRangePreset: z.enum(["all", "1d", "7d", "30d", "90d"]).optional(),
   retrievalTimeZone: z.string().min(1).max(64).optional(),
+  selectedEntities: z
+    .array(
+      z.object({
+        kind: z.enum(["personal", "business"]),
+        name: z.string().nullable(),
+      })
+    )
+    .optional(),
 });
 
 export type PostRequestBody = z.infer<typeof postRequestBodySchema>;

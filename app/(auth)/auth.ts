@@ -3,7 +3,11 @@ import NextAuth, { type DefaultSession } from "next-auth";
 import type { DefaultJWT } from "next-auth/jwt";
 import Credentials from "next-auth/providers/credentials";
 import { DUMMY_PASSWORD } from "@/lib/constants";
-import { createGuestUser, getUser } from "@/lib/db/queries";
+import {
+  createGuestUser,
+  getUser,
+  getWaitlistRequestByEmail,
+} from "@/lib/db/queries";
 import { authConfig } from "./auth.config";
 
 export type UserType = "guest" | "regular";
@@ -59,6 +63,13 @@ export const {
         const passwordsMatch = await compare(password, user.password);
 
         if (!passwordsMatch) {
+          return null;
+        }
+
+        // Check if user has an approved waitlist request (if waitlist system is being used)
+        // If no waitlist request exists, allow login for backward compatibility
+        const waitlistRequest = await getWaitlistRequestByEmail(email);
+        if (waitlistRequest && waitlistRequest.status !== "approved") {
           return null;
         }
 

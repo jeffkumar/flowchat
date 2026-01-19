@@ -26,6 +26,33 @@ export const user = pgTable("User", {
 
 export type User = InferSelectModel<typeof user>;
 
+export const waitlistRequest = pgTable(
+  "WaitlistRequest",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    email: varchar("email", { length: 64 }).notNull(),
+    password: varchar("password", { length: 64 }),
+    businessName: varchar("businessName", { length: 255 }).notNull(),
+    phoneNumber: varchar("phoneNumber", { length: 20 }).notNull(),
+    address: text("address").notNull(),
+    country: varchar("country", { length: 100 }).notNull(),
+    state: varchar("state", { length: 100 }),
+    status: varchar("status", {
+      enum: ["pending", "approved", "rejected"],
+    })
+      .notNull()
+      .default("pending"),
+    createdAt: timestamp("createdAt").notNull(),
+    approvedAt: timestamp("approvedAt"),
+    approvedBy: uuid("approvedBy").references(() => user.id),
+  },
+  (table) => ({
+    emailIdx: uniqueIndex("waitlist_request_email_idx").on(table.email),
+  })
+);
+
+export type WaitlistRequest = InferSelectModel<typeof waitlistRequest>;
+
 export const project = pgTable(
   "Project",
   {

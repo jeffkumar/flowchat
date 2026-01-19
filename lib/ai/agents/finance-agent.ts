@@ -270,6 +270,16 @@ export async function runFinanceAgent({
   const docType = inferDocType(qLower);
   const entity = inferEntity(qLower, parsed.entity_hint);
 
+  // Allow explicit entity injection from the router (used for clarification follow-ups).
+  const explicitBusinessName = q.match(/\bBusiness\s*:\s*([^\n\r]{2,120})/i)?.[1]?.trim();
+  if (explicitBusinessName) {
+    entity.kind = "business";
+    entity.name = explicitBusinessName;
+  } else if (/\bEntity\s*:\s*Personal\b/i.test(q)) {
+    entity.kind = "personal";
+    entity.name = null;
+  }
+
   // Only infer category + presentation intent from the user's actual message,
   // not from appended context (which may contain misleading tokens like "gas"/"fuel").
   const category = inferCategory(mainLower);
@@ -285,23 +295,42 @@ export async function runFinanceAgent({
       .filter((e) => e.entityKind === "business" && typeof e.entityName === "string")
       .map((e) => (e.entityName as string).trim())
       .filter((n) => n.length > 0);
+    const matchedFromText =
+      businessNames
+        .map((n) => ({ n, lower: n.toLowerCase() }))
+        .filter(({ lower }) => lower.length >= 3 && qLower.includes(lower))
+        .sort((a, b) => b.lower.length - a.lower.length)[0]?.n ?? null;
+    if (matchedFromText) {
+      entity.kind = "business";
+      entity.name = matchedFromText;
+    }
     const hasPersonal = summary.some((e) => e.entityKind === "personal");
     const options = [
       ...(hasPersonal ? ["Personal"] : []),
       ...Array.from(new Set(businessNames)).sort((a, b) => a.localeCompare(b)),
     ];
-    if (options.length > 1) {
+    if (!entity.kind && options.length > 1) {
+      const availableEntities: Array<{ kind: "personal" | "business"; name: string | null }> = [];
+      if (hasPersonal) {
+        availableEntities.push({ kind: "personal", name: null });
+      }
+      for (const businessName of Array.from(new Set(businessNames))) {
+        availableEntities.push({ kind: "business", name: businessName });
+      }
       return SpecialistAgentResponseSchema.parse({
         kind: "finance",
         answer_draft: "",
-        questions_for_user: [`Is this Personal, or which business? (${options.join(", ")})`],
+        questions_for_user: [],
         assumptions: [],
         tool_calls: [],
         citations: [],
         confidence: "low",
+        needs_entity_selection: {
+          available_entities: availableEntities,
+        },
       });
     }
-    if (options.length === 1 && options[0] === "Personal") {
+    if (!entity.kind && options.length === 1 && options[0] === "Personal") {
       entity.kind = "personal";
     } else if (options.length === 1) {
       entity.kind = "business";
@@ -333,6 +362,17 @@ export async function runFinanceAgent({
       .filter((e) => e.entityKind === "business" && typeof e.entityName === "string")
       .map((e) => (e.entityName as string).trim())
       .filter((n) => n.length > 0);
+    const matchedFromText =
+      businessNames
+        .map((n) => ({ n, lower: n.toLowerCase() }))
+        .filter(({ lower }) => lower.length >= 3 && qLower.includes(lower))
+        .sort((a, b) => b.lower.length - a.lower.length)[0]?.n ?? null;
+    if (matchedFromText) {
+      entity.name = matchedFromText;
+    }
+    if (entity.name && entity.name.trim()) {
+      // proceed
+    } else {
     return SpecialistAgentResponseSchema.parse({
       kind: "finance",
       answer_draft: "",
@@ -346,6 +386,7 @@ export async function runFinanceAgent({
       citations: [],
       confidence: "low",
     });
+    }
   }
 
   const wantsMerchant = mainLower.includes("merchant") || mainLower.includes("merchants");

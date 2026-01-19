@@ -48,6 +48,11 @@ export type ChatTools = {
   requestSuggestions: requestSuggestionsTool;
 };
 
+export type EntityOption = {
+  kind: "personal" | "business";
+  name: string | null;
+};
+
 export type CustomUIDataTypes = {
   textDelta: string;
   imageDelta: string;
@@ -63,6 +68,10 @@ export type CustomUIDataTypes = {
   usage: AppUsage;
   sources: RetrievedSource[];
   agentStatus: { agent: string; message: string };
+  entitySelector: {
+    availableEntities: EntityOption[];
+    questionId?: string;
+  };
 };
 
 export type ChatMessage = UIMessage<MessageMetadata, CustomUIDataTypes, ChatTools> & {

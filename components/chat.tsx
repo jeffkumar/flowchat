@@ -33,11 +33,12 @@ import { useChatVisibility } from "@/hooks/use-chat-visibility";
 import { useProjectSelector } from "@/hooks/use-project-selector";
 import type { Vote } from "@/lib/db/schema";
 import { ChatSDKError } from "@/lib/errors";
-import type { Attachment, ChatMessage, RetrievedSource } from "@/lib/types";
+import type { Attachment, ChatMessage, RetrievedSource, EntityOption } from "@/lib/types";
 import type { AppUsage } from "@/lib/usage";
 import { fetcher, fetchWithErrorHandlers, generateUUID } from "@/lib/utils";
 import { useRetrievalSettings } from "@/hooks/use-retrieval-settings";
 import { Artifact } from "./artifact";
+import { EntitySelector } from "./entity-selector";
 import { useDataStream } from "./data-stream-provider";
 import { Messages } from "./messages";
 import { MultimodalInput } from "./multimodal-input";
@@ -260,6 +261,13 @@ export function Chat({
   );
   const pendingSourcesRef = useRef<RetrievedSource[] | null>(null);
 
+  const [selectedEntities, setSelectedEntities] = useState<EntityOption[]>([]);
+  const selectedEntitiesRef = useRef<EntityOption[]>([]);
+  const [entitySelectorData, setEntitySelectorData] = useState<{
+    availableEntities: EntityOption[];
+    questionId?: string;
+  } | null>(null);
+
   const {
     messages,
     setMessages,
@@ -288,6 +296,7 @@ export function Chat({
             ignoredDocIds: ignoredDocIdsRef.current,
             retrievalRangePreset: retrievalRangePresetRef.current,
             retrievalTimeZone: browserTimeZoneRef.current,
+            selectedEntities: selectedEntitiesRef.current,
             ...request.body,
           },
         };
@@ -301,6 +310,9 @@ export function Chat({
       if (dataPart.type === "data-sources") {
         pendingSourcesRef.current = dataPart.data;
         setPendingSources(dataPart.data);
+      }
+      if (dataPart.type === "data-entitySelector") {
+        setEntitySelectorData(dataPart.data);
       }
     },
     onFinish: (result) => {
@@ -394,6 +406,10 @@ export function Chat({
   useEffect(() => {
     ignoredDocIdsRef.current = ignoredDocIds;
   }, [ignoredDocIds]);
+
+  useEffect(() => {
+    selectedEntitiesRef.current = selectedEntities;
+  }, [selectedEntities]);
 
   const searchParams = useSearchParams();
   const query = searchParams.get("query");
@@ -697,6 +713,37 @@ export function Chat({
         stop={stop}
         votes={votes}
       />
+
+      {entitySelectorData && (
+        <div className="mx-auto w-full max-w-4xl px-2 md:px-4">
+          <EntitySelector
+            availableEntities={entitySelectorData.availableEntities}
+            onSelectionChange={(entities) => {
+              setSelectedEntities(entities);
+              setEntitySelectorData(null);
+              if (entities.length > 0) {
+                // Auto-submit the query with selected entities
+                const lastUserMessage = messages
+                  .slice()
+                  .reverse()
+                  .find((m) => m.role === "user");
+                if (lastUserMessage) {
+                  const questionText = lastUserMessage.parts
+                    .filter((p) => p.type === "text")
+                    .map((p) => p.text)
+                    .join("\n");
+                  sendMessage({
+                    role: "user",
+                    parts: [{ type: "text", text: questionText }],
+                  });
+                }
+              }
+            }}
+            questionId={entitySelectorData.questionId}
+            selectedEntities={selectedEntities}
+          />
+        </div>
+      )}
 
       <AlertDialog
         onOpenChange={setShowCreditCardAlert}

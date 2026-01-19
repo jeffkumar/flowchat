@@ -48,6 +48,8 @@ import {
   type User,
   user,
   vote,
+  waitlistRequest,
+  type WaitlistRequest,
 } from "./schema";
 import { generateHashedPassword } from "./utils";
 
@@ -501,6 +503,159 @@ export async function createGuestUser() {
       "bad_request:database",
       "Failed to create guest user"
     );
+  }
+}
+
+export async function createWaitlistRequest({
+  email,
+  password,
+  businessName,
+  phoneNumber,
+  address,
+  country,
+  state,
+}: {
+  email: string;
+  password: string;
+  businessName: string;
+  phoneNumber: string;
+  address: string;
+  country: string;
+  state?: string | null;
+}) {
+  const hashedPassword = generateHashedPassword(password);
+
+  try {
+    const normalizedEmail = normalizeEmail(email);
+
+    const [created] = await db
+      .insert(waitlistRequest)
+      .values({
+        email: normalizedEmail,
+        password: hashedPassword,
+        businessName,
+        phoneNumber,
+        address,
+        country,
+        state: state ?? null,
+        status: "pending",
+        createdAt: new Date(),
+      })
+      .returning();
+
+    return created;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("unique")) {
+      throw new ChatSDKError(
+        "bad_request:database",
+        "A waitlist request with this email already exists"
+      );
+    }
+    throw new ChatSDKError("bad_request:database", "Failed to create waitlist request");
+  }
+}
+
+export async function getWaitlistRequestByEmail(
+  email: string
+): Promise<WaitlistRequest | null> {
+  try {
+    const normalizedEmail = normalizeEmail(email);
+    const [request] = await db
+      .select()
+      .from(waitlistRequest)
+      .where(eq(waitlistRequest.email, normalizedEmail))
+      .limit(1);
+
+    return request ?? null;
+  } catch (_error) {
+    throw new ChatSDKError("bad_request:database", "Failed to get waitlist request");
+  }
+}
+
+export async function getWaitlistRequestById(
+  id: string
+): Promise<WaitlistRequest | null> {
+  try {
+    const [request] = await db
+      .select()
+      .from(waitlistRequest)
+      .where(eq(waitlistRequest.id, id))
+      .limit(1);
+
+    return request ?? null;
+  } catch (_error) {
+    throw new ChatSDKError("bad_request:database", "Failed to get waitlist request");
+  }
+}
+
+export async function approveWaitlistRequest({
+  id,
+  approvedBy,
+}: {
+  id: string;
+  approvedBy: string;
+}) {
+  try {
+    const [updated] = await db
+      .update(waitlistRequest)
+      .set({
+        status: "approved",
+        approvedAt: new Date(),
+        approvedBy,
+      })
+      .where(eq(waitlistRequest.id, id))
+      .returning();
+
+    return updated;
+  } catch (_error) {
+    throw new ChatSDKError("bad_request:database", "Failed to approve waitlist request");
+  }
+}
+
+export async function rejectWaitlistRequest({
+  id,
+  approvedBy,
+}: {
+  id: string;
+  approvedBy: string;
+}) {
+  try {
+    const [updated] = await db
+      .update(waitlistRequest)
+      .set({
+        status: "rejected",
+        approvedAt: new Date(),
+        approvedBy,
+      })
+      .where(eq(waitlistRequest.id, id))
+      .returning();
+
+    return updated;
+  } catch (_error) {
+    throw new ChatSDKError("bad_request:database", "Failed to reject waitlist request");
+  }
+}
+
+export async function getPendingWaitlistRequests(): Promise<WaitlistRequest[]> {
+  try {
+    return await db
+      .select()
+      .from(waitlistRequest)
+      .where(eq(waitlistRequest.status, "pending"))
+      .orderBy(asc(waitlistRequest.createdAt));
+  } catch (_error) {
+    throw new ChatSDKError("bad_request:database", "Failed to get pending waitlist requests");
+  }
+}
+
+export async function getAllWaitlistRequests(): Promise<WaitlistRequest[]> {
+  try {
+    return await db
+      .select()
+      .from(waitlistRequest)
+      .orderBy(desc(waitlistRequest.createdAt));
+  } catch (_error) {
+    throw new ChatSDKError("bad_request:database", "Failed to get waitlist requests");
   }
 }
 

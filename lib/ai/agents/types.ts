@@ -19,6 +19,12 @@ export const AgentCitationSchema = z.object({
 });
 export type AgentCitation = z.infer<typeof AgentCitationSchema>;
 
+export const EntityOptionSchema = z.object({
+  kind: z.enum(["personal", "business"]),
+  name: z.string().nullable(),
+});
+export type EntityOption = z.infer<typeof EntityOptionSchema>;
+
 export const SpecialistAgentResponseSchema = z.object({
   kind: AgentKindSchema,
   answer_draft: z.string(),
@@ -27,6 +33,11 @@ export const SpecialistAgentResponseSchema = z.object({
   tool_calls: z.array(AgentToolCallSchema).default([]),
   citations: z.array(AgentCitationSchema).default([]),
   confidence: AgentConfidenceSchema.default("medium"),
+  needs_entity_selection: z
+    .object({
+      available_entities: z.array(EntityOptionSchema),
+    })
+    .optional(),
 });
 
 export type SpecialistAgentResponse = z.infer<typeof SpecialistAgentResponseSchema>;

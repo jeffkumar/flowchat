@@ -44,6 +44,7 @@ import {
   getMessagesByChatId,
   getOrCreateDefaultProjectForUser,
   getProjectByIdForUser,
+  getProjectEntitySummaryForUser,
   saveChat,
   saveMessages,
   updateChatLastContextById,
@@ -80,10 +81,13 @@ const TIME_RANGE_HINT_RE =
 const AGGREGATION_HINT_RE =
   /\b(sum|total|add\s+up|aggregate|roll\s*up|grand\s+total)\b|\b(invoices?|receipts?)\b|\b(by|per|each)\s+month\b|\bmonthly\b|\bacross\s+\d+\b|\b(income|deposits?|revenue|bring\s+in|made|paid)\b/i;
 
-const INCOME_INTENT_RE =
-  /\b(how\s+much\s+did\s+i\s+make|how\s+much\s+did\s+we\s+make|how\s+much\s+did\s+we\s+bring\s+in|bring\s+in|income|deposits?|revenue|made|paid)\b/i;
+// "Finance data query" intent (DB-backed): totals/lists/breakdowns for a time window.
+// Avoid triggering on general financial planning (budgeting, goals, etc).
+const FINANCE_DATA_QUERY_RE =
+  /\b(how\s+much|total|sum|add\s+up|aggregate|breakdown|group|list|show|transactions?|charges?|spent|spend|by\s+(month|merchant|category)|top\s+\d+)\b/i;
 
-const SPEND_INTENT_RE = /\b(spend|spent|spending|expense|expenses|charges?|rent|mortgage|lease)\b/i;
+const INCOME_DATA_QUERY_RE =
+  /\b(how\s+much\s+did\s+i\s+make|how\s+much\s+did\s+we\s+make|how\s+much\s+did\s+we\s+bring\s+in|total\s+income|income\s+for|revenue\s+for|deposits?\s+for)\b/i;
 
 const INVOICE_REVENUE_RE = /\binvoice\s+revenue\b/i;
 
@@ -752,6 +756,7 @@ export async function POST(request: Request) {
       ignoredDocIds,
       retrievalRangePreset,
       retrievalTimeZone,
+      selectedEntities,
     }: {
       id: string;
       message: ChatMessage;
@@ -762,6 +767,7 @@ export async function POST(request: Request) {
       ignoredDocIds?: string[];
       retrievalRangePreset?: RetrievalRangePreset;
       retrievalTimeZone?: string;
+      selectedEntities?: Array<{ kind: "personal" | "business"; name: string | null }>;
     } = requestBody;
 
     const session = await auth();
@@ -872,7 +878,10 @@ export async function POST(request: Request) {
     let sources: any[] = [];
 
     // Finance questions should not depend on Turbopuffer retrieval.
-    const skipRetrievalForFinance = AGGREGATION_HINT_RE.test(userText) || SPEND_INTENT_RE.test(userText);
+    const skipRetrievalForFinance =
+      AGGREGATION_HINT_RE.test(userText) ||
+      FINANCE_DATA_QUERY_RE.test(userText) ||
+      INCOME_DATA_QUERY_RE.test(userText);
     const shouldLogRetrieval = process.env.DEBUG_TURBOPUFFER === "1";
 
     if (userText && !skipRetrievalForFinance) {
@@ -1365,7 +1374,24 @@ export async function POST(request: Request) {
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
         let citationInstructions: string | null = null;
-        if (sources.length > 0) {
+        // Early check for finance queries to skip citations - use a simple pattern match
+        // on the raw user text before we process sources
+        const userTextParts = message.parts.filter(
+          (part): part is Extract<(typeof message.parts)[number], { type: "text" }> =>
+            part.type === "text"
+        );
+        const rawUserText = userTextParts
+          .map((part) => part.text)
+          .join("\n")
+          .toLowerCase();
+        const isLikelyFinanceQuery =
+          AGGREGATION_HINT_RE.test(rawUserText) ||
+          FINANCE_DATA_QUERY_RE.test(rawUserText) ||
+          INCOME_DATA_QUERY_RE.test(rawUserText) ||
+          INVOICE_REVENUE_RE.test(rawUserText);
+        
+        // Skip citations for finance queries - they use deterministic database queries
+        if (sources.length > 0 && !isLikelyFinanceQuery) {
           const seen = new Set<string>();
           const uniqueSources = [];
           for (const s of sources) {
@@ -1450,8 +1476,11 @@ export async function POST(request: Request) {
           });
         }
 
-        const synergySystemPrompt =
-          "You are Synergy (FrontlineAgent).\n\nYou answer questions based primarily on the conversation (the user's messages and your prior replies). Retrieved context (Slack messages and uploaded docs) is OPTIONAL background and may be irrelevant; only use it when it clearly helps answer the current question.\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n- runCitationsAgent: validate claims against sources and add inline citations like 【N】.\n\nRules:\n- If you need to call a tool, call it immediately. Do not provide a conversational preamble or explain what you are about to do. Just call the tool.\n- CRITICAL: For finance, totals, or data analysis, you MUST call runFinanceAgent. Do not attempt to answer from memory or background context alone.\n- Use runFinanceAgent for any totals/sums/counts/aggregations. \n- If you need both a total and a breakdown (e.g. \"by month\"), ensure you ask the specialist for both or use the total provided by the specialist.\n- When presenting structured numeric results (breakdowns, comparisons, lists), prefer GitHub-flavored markdown tables.\n- If the user asks about a month by name (e.g. \"November\") but does not specify a year, assume the year is the current year.\n- If the user's message is a follow-up like \"break it down\" / \"by category\" / \"show me the list\" and omits time or entity, you MUST infer the missing time/entity from the immediately preceding conversation turns and include them explicitly when calling runFinanceAgent.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n- If you used retrieved context, optionally call runCitationsAgent at the end to add citations.\n\nKeep clarifying questions short and actionable.";
+        // Determine if this is a finance query (will be computed later, but we need it here for the prompt)
+        // For now, use the early check we did above
+        const systemPrompt = isLikelyFinanceQuery
+          ? "You are Flowchat (FrontlineAgent).\n\nYou answer questions based primarily on the conversation (the user's messages and your prior replies).\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n\nRules:\n- If you need to call a tool, call it immediately. Do not provide a conversational preamble or explain what you are about to do. Just call the tool.\n- CRITICAL: For finance, totals, or data analysis, you MUST call runFinanceAgent. Do not attempt to answer from memory or background context alone.\n- Use runFinanceAgent for any totals/sums/counts/aggregations. \n- If you need both a total and a breakdown (e.g. \"by month\"), ensure you ask the specialist for both or use the total provided by the specialist.\n- When presenting structured numeric results (breakdowns, comparisons, lists), prefer GitHub-flavored markdown tables.\n- If the user asks about a month by name (e.g. \"November\") but does not specify a year, assume the year is the current year.\n- If the user's message is a follow-up like \"break it down\" / \"by category\" / \"show me the list\" and omits time or entity, you MUST infer the missing time/entity from the immediately preceding conversation turns and include them explicitly when calling runFinanceAgent.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n\nKeep clarifying questions short and actionable."
+          : "You are Flowchat (FrontlineAgent).\n\nYou answer questions based primarily on the conversation (the user's messages and your prior replies). Retrieved context (Slack messages and uploaded docs) is OPTIONAL background and may be irrelevant; only use it when it clearly helps answer the current question.\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n- runCitationsAgent: validate claims against sources and add inline citations like 【N】.\n\nRules:\n- If you need to call a tool, call it immediately. Do not provide a conversational preamble or explain what you are about to do. Just call the tool.\n- CRITICAL: For finance, totals, or data analysis, you MUST call runFinanceAgent. Do not attempt to answer from memory or background context alone.\n- Use runFinanceAgent for any totals/sums/counts/aggregations. \n- If you need both a total and a breakdown (e.g. \"by month\"), ensure you ask the specialist for both or use the total provided by the specialist.\n- When presenting structured numeric results (breakdowns, comparisons, lists), prefer GitHub-flavored markdown tables.\n- If the user asks about a month by name (e.g. \"November\") but does not specify a year, assume the year is the current year.\n- If the user's message is a follow-up like \"break it down\" / \"by category\" / \"show me the list\" and omits time or entity, you MUST infer the missing time/entity from the immediately preceding conversation turns and include them explicitly when calling runFinanceAgent.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n- If you used retrieved context, optionally call runCitationsAgent at the end to add citations.\n\nKeep clarifying questions short and actionable.";
 
         const baseMessages = convertToModelMessages(uiMessages);
 
@@ -1525,21 +1554,127 @@ export async function POST(request: Request) {
             .map((p) => p.text)
             .join("\n")
             .slice(0, 3500);
+
+          // Only treat this as a clarification for FinanceAgent when the prior user message
+          // looks like a finance *data* query (totals/lists/breakdowns), not general planning.
+          const priorLower = priorText.toLowerCase();
+          const priorLooksLikeFinanceData =
+            AGGREGATION_HINT_RE.test(priorLower) ||
+            FINANCE_DATA_QUERY_RE.test(priorLower) ||
+            INCOME_DATA_QUERY_RE.test(priorLower);
+          if (!priorLooksLikeFinanceData) return null;
           return `${priorText}\n\nEntity: ${entityOnlyReply === "personal" ? "Personal" : "Business"}`;
         })();
 
-        const normalizedLastUserText = expandEntityOnlyReply ?? lastUserText;
+        const expandBusinessNameOnlyReply = await (async () => {
+          const tRaw = lastUserText.trim();
+          const tLower = tRaw.toLowerCase();
+          if (!tRaw) return null;
+          if (tLower === "personal" || tLower === "personal.") return null;
+          if (tLower === "business" || tLower === "business.") return null;
+
+          // Look for the immediately preceding assistant prompt asking for business.
+          const lastAssistant = uiMessages
+            .slice(0, -1)
+            .slice()
+            .reverse()
+            .find((m) => m.role === "assistant");
+          const lastAssistantText = lastAssistant
+            ? lastAssistant.parts
+                .filter(
+                  (p): p is Extract<(typeof lastAssistant.parts)[number], { type: "text" }> =>
+                    p.type === "text"
+                )
+                .map((p) => p.text)
+                .join(" ")
+                .toLowerCase()
+            : "";
+          const askedBusiness = lastAssistantText.includes("which business");
+          if (!askedBusiness) return null;
+          if (!activeProjectId) return null;
+
+          const summary = await getProjectEntitySummaryForUser({
+            userId: session.user.id,
+            projectId: activeProjectId,
+          });
+          const businessNames = summary
+            .filter((e) => e.entityKind === "business" && typeof e.entityName === "string")
+            .map((e) => (e.entityName as string).trim())
+            .filter((n) => n.length > 0);
+
+          // Try exact match first
+          let matchedBusiness = businessNames.find((n) => n.toLowerCase() === tLower) ?? null;
+          
+          // If no exact match, try removing "business" suffix and matching
+          if (!matchedBusiness) {
+            const withoutBusiness = tLower.replace(/\s+business\s*\.?$/i, "").trim();
+            if (withoutBusiness.length > 0) {
+              matchedBusiness = businessNames.find((n) => n.toLowerCase() === withoutBusiness) ?? null;
+            }
+          }
+          
+          // If still no match, try substring matching (business name contained in user text)
+          if (!matchedBusiness) {
+            matchedBusiness = businessNames
+              .map((n) => ({ n, lower: n.toLowerCase() }))
+              .filter(({ lower }) => lower.length >= 3 && tLower.includes(lower))
+              .sort((a, b) => b.lower.length - a.lower.length)[0]?.n ?? null;
+          }
+          
+          if (!matchedBusiness) return null;
+
+          // Find the previous non-trivial user question.
+          const priorUser = uiMessages
+            .slice(0, -1)
+            .slice()
+            .reverse()
+            .find((m) => {
+              if (m.role !== "user") return false;
+              const txt = m.parts
+                .filter((p): p is Extract<(typeof m.parts)[number], { type: "text" }> => p.type === "text")
+                .map((p) => p.text)
+                .join(" ")
+                .trim();
+              if (!txt) return false;
+              const lower = txt.toLowerCase();
+              return (
+                lower !== "personal" &&
+                lower !== "business" &&
+                lower !== matchedBusiness.toLowerCase()
+              );
+            });
+          if (!priorUser) return null;
+          const priorText = priorUser.parts
+            .filter((p): p is Extract<(typeof priorUser.parts)[number], { type: "text" }> => p.type === "text")
+            .map((p) => p.text)
+            .join("\n")
+            .slice(0, 3500);
+
+          const priorLower = priorText.toLowerCase();
+          const priorLooksLikeFinanceData =
+            AGGREGATION_HINT_RE.test(priorLower) ||
+            FINANCE_DATA_QUERY_RE.test(priorLower) ||
+            INCOME_DATA_QUERY_RE.test(priorLower);
+          if (!priorLooksLikeFinanceData) return null;
+
+          return `${priorText}\n\nBusiness: ${matchedBusiness}`;
+        })();
+
+        const normalizedLastUserText =
+          expandEntityOnlyReply ?? expandBusinessNameOnlyReply ?? lastUserText;
         const isAggregationQuery = AGGREGATION_HINT_RE.test(normalizedLastUserText);
         const isFinanceQuery =
           isAggregationQuery ||
-          SPEND_INTENT_RE.test(normalizedLastUserText) ||
-          INCOME_INTENT_RE.test(normalizedLastUserText) ||
+          FINANCE_DATA_QUERY_RE.test(normalizedLastUserText) ||
+          INCOME_DATA_QUERY_RE.test(normalizedLastUserText) ||
           INVOICE_REVENUE_RE.test(normalizedLastUserText) ||
           FINANCE_FOLLOWUP_RE.test(normalizedLastUserText) ||
-          Boolean(expandEntityOnlyReply);
+          Boolean(expandEntityOnlyReply) ||
+          Boolean(expandBusinessNameOnlyReply);
 
         const financeQuestionForAgent = (() => {
           if (expandEntityOnlyReply) return expandEntityOnlyReply;
+          if (expandBusinessNameOnlyReply) return expandBusinessNameOnlyReply;
           if (!FINANCE_FOLLOWUP_RE.test(normalizedLastUserText)) return normalizedLastUserText;
 
           const hasTime =
@@ -1584,10 +1719,25 @@ export async function POST(request: Request) {
             },
           });
 
+          // If selectedEntities are provided, use the first one (or combine them)
+          const entityHint = selectedEntities && selectedEntities.length > 0
+            ? (() => {
+                // For now, use the first selected entity. In the future, we could support multiple.
+                const first = selectedEntities[0];
+                return {
+                  entity_kind: first.kind,
+                  entity_name: first.kind === "business" ? first.name ?? undefined : undefined,
+                };
+              })()
+            : undefined;
+
           const agentResult = await runFinanceAgent({
             session,
             projectId: activeProjectId,
-            input: { question: financeQuestionForAgent },
+            input: {
+              question: financeQuestionForAgent,
+              entity_hint: entityHint,
+            },
           });
 
           dataStream.write({
@@ -1597,6 +1747,26 @@ export async function POST(request: Request) {
               message: "",
             },
           });
+
+          // Check if entity selection is needed
+          if (agentResult.needs_entity_selection) {
+            dataStream.write({
+              type: "data-entitySelector",
+              data: {
+                availableEntities: agentResult.needs_entity_selection.available_entities,
+                questionId: generateUUID(),
+              },
+            });
+            const msgId = generateUUID();
+            dataStream.write({ type: "text-start", id: msgId });
+            dataStream.write({
+              type: "text-delta",
+              id: msgId,
+              delta: "Please select the account(s) you'd like to analyze:",
+            });
+            dataStream.write({ type: "text-end", id: msgId });
+            return;
+          }
 
           const msgId = generateUUID();
           const text =
@@ -1672,7 +1842,7 @@ export async function POST(request: Request) {
 
         const result = streamText({
           model: myProvider.languageModel(selectedChatModel),
-          system: synergySystemPrompt,
+          system: systemPrompt,
           messages: textOnlyMessages as any,
           stopWhen: stepCountIs(5),
           onStepFinish: async (step) => {
@@ -1772,17 +1942,27 @@ export async function POST(request: Request) {
           },
           experimental_activeTools:
             isAggregationQuery
-              ? ["financeQuery", "runFinanceAgent", "runProjectAgent", "runCitationsAgent"]
-              : [
-                  "getWeather",
-                  "createDocument",
-                  "updateDocument",
-                  "requestSuggestions",
-                  "financeQuery",
-                  "runFinanceAgent",
-                  "runProjectAgent",
-                  "runCitationsAgent",
-                ],
+              ? ["financeQuery", "runFinanceAgent", "runProjectAgent"]
+              : isFinanceQuery
+                ? [
+                    "getWeather",
+                    "createDocument",
+                    "updateDocument",
+                    "requestSuggestions",
+                    "financeQuery",
+                    "runFinanceAgent",
+                    "runProjectAgent",
+                  ]
+                : [
+                    "getWeather",
+                    "createDocument",
+                    "updateDocument",
+                    "requestSuggestions",
+                    "financeQuery",
+                    "runFinanceAgent",
+                    "runProjectAgent",
+                    "runCitationsAgent",
+                  ],
           experimental_transform: smoothStream({ chunking: "word" }),
           tools: {
             getWeather,
@@ -1850,50 +2030,55 @@ export async function POST(request: Request) {
                 return result;
               },
             }),
-            runCitationsAgent: tool({
-              description:
-                "Delegate to CitationsAgent to validate claims against sources and add inline citations like 【N】. Returns structured JSON.",
-              inputSchema: z.object({
-                question: z.string().min(1).max(4000),
-                draft_answer: z.string().min(1).max(20000),
-              }),
-              execute: async ({ question, draft_answer }) => {
-                dataStream.write({
-                  type: "data-agentStatus",
-                  data: {
-                    agent: "Citations Agent",
-                    message: "Consulting Citations Agent...",
-                  },
-                });
-                const sourceItems = sources
-                  .slice(0, 20)
-                  .map((s, idx) => ({
-                    index: idx + 1,
-                    label:
-                      (typeof (s as any).filename === "string" && (s as any).filename.length > 0
-                        ? (s as any).filename
-                        : typeof (s as any).channel_name === "string" && (s as any).channel_name.length > 0
-                          ? `#${String((s as any).channel_name)}`
-                          : "Source") as string,
-                    content:
-                      typeof (s as any).content === "string"
-                        ? String((s as any).content).slice(0, 5000)
-                        : undefined,
-                  }));
-                const result = await runCitationsAgent({
-                  _session: session,
-                  input: { question, draft_answer, sources: sourceItems },
-                });
-                dataStream.write({
-                  type: "data-agentStatus",
-                  data: {
-                    agent: "Citations Agent",
-                    message: "Received response from Citations Agent, processing...",
-                  },
-                });
-                return result;
-              },
-            }),
+            // Only include citations agent for non-finance queries
+            ...(isLikelyFinanceQuery || isFinanceQuery
+              ? {}
+              : {
+                  runCitationsAgent: tool({
+                    description:
+                      "Delegate to CitationsAgent to validate claims against sources and add inline citations like 【N】. Returns structured JSON.",
+                    inputSchema: z.object({
+                      question: z.string().min(1).max(4000),
+                      draft_answer: z.string().min(1).max(20000),
+                    }),
+                    execute: async ({ question, draft_answer }) => {
+                      dataStream.write({
+                        type: "data-agentStatus",
+                        data: {
+                          agent: "Citations Agent",
+                          message: "Consulting Citations Agent...",
+                        },
+                      });
+                      const sourceItems = sources
+                        .slice(0, 20)
+                        .map((s, idx) => ({
+                          index: idx + 1,
+                          label:
+                            (typeof (s as any).filename === "string" && (s as any).filename.length > 0
+                              ? (s as any).filename
+                              : typeof (s as any).channel_name === "string" && (s as any).channel_name.length > 0
+                                ? `#${String((s as any).channel_name)}`
+                                : "Source") as string,
+                          content:
+                            typeof (s as any).content === "string"
+                              ? String((s as any).content).slice(0, 5000)
+                              : undefined,
+                        }));
+                      const result = await runCitationsAgent({
+                        _session: session,
+                        input: { question, draft_answer, sources: sourceItems },
+                      });
+                      dataStream.write({
+                        type: "data-agentStatus",
+                        data: {
+                          agent: "Citations Agent",
+                          message: "Received response from Citations Agent, processing...",
+                        },
+                      });
+                      return result;
+                    },
+                  }),
+                }),
           },
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,

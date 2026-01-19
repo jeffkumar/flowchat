@@ -23,13 +23,13 @@ export async function decideFrontlineRouting({
   const hasRetrievedContext =
     typeof parsed.retrieved_context === "string" && parsed.retrieved_context.trim().length > 0;
 
+  // Only route to FinanceAgent for finance *data* queries (totals/lists/breakdowns).
+  // General planning ("how do I afford X", "what should I do financially") should stay in main chat.
   const needs_finance =
-    /\b(sum|total|add\s+up|aggregate|spent|spend|spending|expense|expenses|income|revenue|deposits?|charges?|transactions?|invoice)\b/i.test(
+    /\b(how\s+much|total|sum|add\s+up|aggregate|breakdown|group|list|show|transactions?|charges?|spent|spend|by\s+(month|merchant|category)|top\s+\d+)\b/i.test(
       q
     ) ||
-    /\b(amex|american\s+express|credit\s+card|card)\b/i.test(q) ||
-    /\b(merchant|merchants|where\s+did\s+i\s+buy|where\s+am\s+i\s+spending|buy)\b/i.test(q) ||
-    /\b(coffee|grocer|restaurant|dining|travel|gas|fuel|subscriptions?)\b/i.test(q);
+    /\b(invoice\s+revenue)\b/i.test(q);
 
   // If finance is requested but entity isn't explicit, ProjectAgent can clarify.
   const mentionsEntity = /\b(personal|business)\b/i.test(q);
