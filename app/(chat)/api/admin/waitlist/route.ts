@@ -34,7 +34,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  if (!session.user?.id) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: "User ID not found" }, { status: 400 });
   }
 

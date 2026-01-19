@@ -1904,15 +1904,19 @@ export async function POST(request: Request) {
             if (step.toolCalls.length > 0 || step.toolResults.length > 0) {
               console.log("[chat] step finish", {
                 stepFinishReason: step.finishReason,
-                toolCalls: step.toolCalls.map((c) => ({
-                  toolName: c.toolName,
-                  input: c.input,
-                })),
-                toolResults: step.toolResults.map((r) => ({
-                  toolName: r.toolName,
-                  output: r.output,
-                  preliminary: r.preliminary ?? false,
-                })),
+                toolCalls: step.toolCalls
+                  .filter((c): c is NonNullable<typeof c> => c != null)
+                  .map((c) => ({
+                    toolName: c.toolName,
+                    input: c.input,
+                  })),
+                toolResults: step.toolResults
+                  .filter((r): r is NonNullable<typeof r> => r != null)
+                  .map((r) => ({
+                    toolName: r.toolName,
+                    output: r.output,
+                    preliminary: r.preliminary ?? false,
+                  })),
               });
             }
 
@@ -1924,7 +1928,9 @@ export async function POST(request: Request) {
               ].filter((t): t is string => typeof t === "string");
 
               for (const toolName of toolsToDebug) {
-                const results = step.toolResults.filter((r) => r.toolName === toolName);
+                const results = step.toolResults.filter(
+                  (r): r is NonNullable<typeof r> => r != null && r.toolName === toolName
+                );
                 for (const r of results) {
                   const msgId = generateUUID();
                   const summary = summarizeAgentOutputForChat(r.output);
