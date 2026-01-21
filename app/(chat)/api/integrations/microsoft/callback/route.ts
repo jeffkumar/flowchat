@@ -88,7 +88,7 @@ export async function GET(request: Request) {
     );
   }
 
-  const cookieStore = cookies();
+  const cookieStore = await cookies();
   const expectedState = cookieStore.get("ms_oauth_state")?.value;
   const verifier = cookieStore.get("ms_pkce_verifier")?.value;
   const returnTo = cookieStore.get("ms_return_to")?.value ?? "/integrations";
@@ -190,7 +190,7 @@ export async function GET(request: Request) {
   const cookieBase = {
     httpOnly: true,
     sameSite: isDevelopmentEnvironment ? ("lax" as const) : ("none" as const),
-    secure: true,
+    secure: !isDevelopmentEnvironment,
     path: "/",
   };
 

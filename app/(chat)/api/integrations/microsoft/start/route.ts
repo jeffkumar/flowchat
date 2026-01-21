@@ -74,7 +74,7 @@ export async function GET(request: Request) {
     // OAuth callback is a cross-site redirect (login.microsoftonline.com -> our domain).
     // In production, use SameSite=None; Secure so state/verifier cookies are reliably sent.
     sameSite: isDevelopmentEnvironment ? ("lax" as const) : ("none" as const),
-    secure: true,
+    secure: !isDevelopmentEnvironment,
     path: "/",
     // Avoid stale state/verifier if user restarts the flow later.
     maxAge: 10 * 60, // 10 minutes
