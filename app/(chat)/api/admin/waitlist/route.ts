@@ -4,6 +4,9 @@ import { isAdminSession } from "@/lib/admin";
 import {
   getAllWaitlistRequests,
   approveWaitlistRequest,
+  createUserWithHashedPassword,
+  getUser,
+  getWaitlistRequestById,
   rejectWaitlistRequest,
 } from "@/lib/db/queries";
 
@@ -57,6 +60,22 @@ export async function POST(request: Request) {
     }
 
     if (action === "approve") {
+      const waitlist = await getWaitlistRequestById(id);
+      if (!waitlist) {
+        return NextResponse.json({ error: "Waitlist request not found" }, { status: 404 });
+      }
+
+      const existingUsers = await getUser(waitlist.email);
+      if (existingUsers.length === 0) {
+        if (!waitlist.password) {
+          return NextResponse.json(
+            { error: "Waitlist request has no password. User cannot be created." },
+            { status: 400 }
+          );
+        }
+        await createUserWithHashedPassword(waitlist.email, waitlist.password);
+      }
+
       await approveWaitlistRequest({
         id,
         approvedBy: session.user.id,

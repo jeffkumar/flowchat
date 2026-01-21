@@ -385,7 +385,8 @@ const parsedConnectTimeout =
   typeof connectTimeoutRaw === "string" && connectTimeoutRaw.length > 0
     ? Number(connectTimeoutRaw)
     : undefined;
-const defaultConnectTimeoutSeconds = process.env.NODE_ENV === "production" ? 10 : 10;
+// In dev, fail fast when the DB isn't reachable so pages don't appear to "compile forever".
+const defaultConnectTimeoutSeconds = process.env.NODE_ENV === "production" ? 10 : 2;
 const connectTimeoutSeconds =
   typeof parsedConnectTimeout === "number" &&
   Number.isFinite(parsedConnectTimeout) &&
@@ -484,6 +485,25 @@ export async function createUser(email: string, password: string) {
 
       return created;
     });
+  } catch (_error) {
+    throw new ChatSDKError("bad_request:database", "Failed to create user");
+  }
+}
+
+export async function createUserWithHashedPassword(email: string, hashedPassword: string) {
+  try {
+    const normalizedEmail = normalizeEmail(email);
+
+    const [created] = await db
+      .insert(user)
+      .values({ email: normalizedEmail, password: hashedPassword })
+      .returning({ id: user.id, email: user.email });
+
+    if (!created) {
+      throw new Error("User insert returned no row");
+    }
+
+    return created;
   } catch (_error) {
     throw new ChatSDKError("bad_request:database", "Failed to create user");
   }

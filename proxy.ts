@@ -17,6 +17,22 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // Fast-path for API routes: avoid `getToken()` (expensive in dev) and let each API route
+  // enforce authorization as needed. We only block obviously-unauthenticated requests here.
+  if (pathname.startsWith("/api/")) {
+    const hasSessionCookie =
+      request.cookies.get("authjs.session-token")?.value ||
+      request.cookies.get("__Secure-authjs.session-token")?.value ||
+      request.cookies.get("next-auth.session-token")?.value ||
+      request.cookies.get("__Secure-next-auth.session-token")?.value;
+
+    if (!hasSessionCookie) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    return NextResponse.next();
+  }
+
   const token = await getToken({
     req: request,
     secret: process.env.AUTH_SECRET,
