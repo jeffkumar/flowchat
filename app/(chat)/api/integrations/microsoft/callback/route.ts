@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import { z } from "zod";
 import { auth } from "@/app/(auth)/auth";
 import { isDevelopmentEnvironment } from "@/lib/constants";
@@ -87,22 +88,10 @@ export async function GET(request: Request) {
     );
   }
 
-  const cookieHeader = request.headers.get("cookie") ?? "";
-  const cookies = new Map(
-    cookieHeader
-      .split(";")
-      .map((pair) => pair.trim())
-      .filter((pair) => pair.length > 0)
-      .map((pair) => {
-        const idx = pair.indexOf("=");
-        if (idx === -1) return [pair, ""];
-        return [pair.slice(0, idx), decodeURIComponent(pair.slice(idx + 1))];
-      })
-  );
-
-  const expectedState = cookies.get("ms_oauth_state");
-  const verifier = cookies.get("ms_pkce_verifier");
-  const returnTo = cookies.get("ms_return_to") ?? "/integrations";
+  const cookieStore = cookies();
+  const expectedState = cookieStore.get("ms_oauth_state")?.value;
+  const verifier = cookieStore.get("ms_pkce_verifier")?.value;
+  const returnTo = cookieStore.get("ms_return_to")?.value ?? "/integrations";
 
   if (!expectedState || !verifier || expectedState !== state) {
     return NextResponse.json({ error: "Invalid state" }, { status: 400 });
@@ -200,8 +189,8 @@ export async function GET(request: Request) {
 
   const cookieBase = {
     httpOnly: true,
-    sameSite: "lax" as const,
-    secure: !isDevelopmentEnvironment,
+    sameSite: isDevelopmentEnvironment ? ("lax" as const) : ("none" as const),
+    secure: true,
     path: "/",
   };
 

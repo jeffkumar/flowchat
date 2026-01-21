@@ -71,9 +71,13 @@ export async function GET(request: Request) {
 
   const cookieBase = {
     httpOnly: true,
-    sameSite: "lax" as const,
-    secure: !isDevelopmentEnvironment,
+    // OAuth callback is a cross-site redirect (login.microsoftonline.com -> our domain).
+    // In production, use SameSite=None; Secure so state/verifier cookies are reliably sent.
+    sameSite: isDevelopmentEnvironment ? ("lax" as const) : ("none" as const),
+    secure: true,
     path: "/",
+    // Avoid stale state/verifier if user restarts the flow later.
+    maxAge: 10 * 60, // 10 minutes
   };
 
   response.cookies.set({ name: "ms_oauth_state", value: state, ...cookieBase });
