@@ -297,6 +297,7 @@ export function Chat({
 
   const [selectedEntities, setSelectedEntities] = useState<EntityOption[]>([]);
   const selectedEntitiesRef = useRef<EntityOption[]>([]);
+  const isApplyingEntitySelectionRef = useRef(false);
 
   const {
     messages,
@@ -467,6 +468,12 @@ export function Chat({
       setPendingSources(null);
       pendingChartDocumentRef.current = null;
       pendingEntitySelectorRef.current = null;
+      // Clear selectedEntities when a new message is submitted, unless we're applying entity selection
+      if (!isApplyingEntitySelectionRef.current) {
+        setSelectedEntities([]);
+        selectedEntitiesRef.current = [];
+      }
+      isApplyingEntitySelectionRef.current = false;
     }
     statusRef.current = status;
   }, [status]);
@@ -538,6 +545,8 @@ export function Chat({
             .filter((p) => p.type === "text")
             .map((p) => p.text)
             .join("\n");
+          // Mark that we're applying entity selection so selectedEntities aren't cleared
+          isApplyingEntitySelectionRef.current = true;
           sendMessage({
             role: "user",
             parts: [{ type: "text", text: questionText }],

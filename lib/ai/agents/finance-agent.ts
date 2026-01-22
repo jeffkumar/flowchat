@@ -25,6 +25,14 @@ const FinanceAgentInputSchema = z.object({
       entity_name: z.string().min(1).max(200).optional(),
     })
     .optional(),
+  entity_hints: z
+    .array(
+      z.object({
+        entity_kind: z.enum(["personal", "business"]).optional(),
+        entity_name: z.string().min(1).max(200).optional(),
+      })
+    )
+    .optional(),
   time_hint: z
     .object({
       kind: z.enum(["year", "month"]).optional(),
@@ -346,17 +354,48 @@ export async function runFinanceAgent({
   // Use full text (including context) to recover missing time/entity.
   const range = inferDateRange(qLower, parsed.time_hint);
   const docType = inferDocType(qLower);
-  const entity = inferEntity(qLower, parsed.entity_hint);
+  
+  // Determine which entities to use: prioritize entity_hints (multiple), then entity_hint (single), then infer from text
+  const entitiesToUse: Array<{ kind: "personal" | "business"; name: string | null }> = [];
+  if (parsed.entity_hints && parsed.entity_hints.length > 0) {
+    // Use provided entity hints
+    for (const hint of parsed.entity_hints) {
+      if (hint.entity_kind === "personal") {
+        entitiesToUse.push({ kind: "personal", name: null });
+      } else if (hint.entity_kind === "business" && hint.entity_name) {
+        entitiesToUse.push({ kind: "business", name: hint.entity_name });
+      }
+    }
+  }
+  
+  // If no entities from hints, use single entity_hint or infer
+  const entity = entitiesToUse.length === 0 
+    ? inferEntity(qLower, parsed.entity_hint)
+    : entitiesToUse[0];
 
   // Allow explicit entity injection from the router (used for clarification follow-ups).
   const explicitBusinessName = q.match(/\bBusiness\s*:\s*([^\n\r]{2,120})/i)?.[1]?.trim();
   if (explicitBusinessName) {
+    if (entitiesToUse.length === 0) {
+      entitiesToUse.push({ kind: "business", name: explicitBusinessName });
+    } else {
+      // Update first entity if we have explicit business name
+      entitiesToUse[0] = { kind: "business", name: explicitBusinessName };
+    }
     entity.kind = "business";
     entity.name = explicitBusinessName;
   } else if (/\bEntity\s*:\s*Personal\b/i.test(q)) {
+    if (entitiesToUse.length === 0) {
+      entitiesToUse.push({ kind: "personal", name: null });
+    } else {
+      entitiesToUse[0] = { kind: "personal", name: null };
+    }
     entity.kind = "personal";
     entity.name = null;
   }
+  
+  // If we have multiple entities, we'll process them all
+  const hasMultipleEntities = entitiesToUse.length > 1;
 
   // Only infer category + presentation intent from the user's actual message,
   // not from appended context (which may contain misleading tokens like "gas"/"fuel").
@@ -473,10 +512,17 @@ export async function runFinanceAgent({
   const categoryForFilters =
     category ?? (wantsMerchant && contextText ? inferCategoryFromContext(contextText) : null);
 
-  const baseFilters = {
-    ...(entity.kind === "personal"
+  // Helper to build filters for a specific entity
+  const buildFiltersForEntity = (e: { kind: "personal" | "business"; name: string | null }) => ({
+    ...(e.kind === "personal"
       ? { entity_kind: "personal" as const }
-      : { entity_kind: "business" as const, entity_name: entity.name ?? "" }),
+      : { entity_kind: "business" as const, entity_name: e.name ?? "" }),
+    date_start: range.date_start,
+    date_end: range.date_end,
+    ...(categoryForFilters ? { category_contains: categoryForFilters } : {}),
+  });
+
+  const baseFilters = entity.kind ? buildFiltersForEntity(entity as { kind: "personal" | "business"; name: string | null }) : {
     date_start: range.date_start,
     date_end: range.date_end,
     ...(categoryForFilters ? { category_contains: categoryForFilters } : {}),
@@ -491,34 +537,65 @@ export async function runFinanceAgent({
     !mainLower.includes("deposit") &&
     !mainLower.includes("income");
 
+  // Helper to get entity label(s) for display
+  const getEntityLabel = () => {
+    if (hasMultipleEntities && entitiesToUse.length > 1) {
+      return entitiesToUse.map((e) => e.kind === "personal" ? "Personal" : e.name || "Business").join(" + ");
+    }
+    return entity.kind === "personal" ? "Personal" : entity.name || "Business";
+  };
+
   // For cc statements we treat "spend" as charges; try positive first, then negatives.
   if (docType === "cc_statement") {
     const topN = wantsMerchant ? inferTopN(mainLower) : null;
     if (list) {
-      const pos = await financeList({
-        userId: session.user.id,
-        projectId: parsed.projectId,
-        documentType: "cc_statement",
-        filters: { ...baseFilters, amount_min: 0.01 },
-      });
-      const posRows = pos.query_type === "list" ? pos.rows : [];
-      const neg =
-        posRows.length === 0
-          ? await financeList({
-              userId: session.user.id,
-              projectId: parsed.projectId,
-              documentType: "cc_statement",
-              filters: { ...baseFilters, amount_max: -0.01 },
-            })
-          : null;
-      const rows = (neg && neg.query_type === "list" ? neg.rows : posRows) as Array<{
+      // Helper to list across multiple entities
+      type TransactionRow = {
         txnDate: string;
         description: string | null;
         merchant: string | null;
         category: string | null;
         amount: string;
-      }>;
-      const negAmounts = Boolean(neg && neg.query_type === "list" && neg.rows.length > 0);
+      };
+      const listAcrossEntities = async (
+        amountFilter: { amount_min?: number; amount_max?: number }
+      ): Promise<TransactionRow[]> => {
+        if (hasMultipleEntities && entitiesToUse.length > 1) {
+          // Merge lists from all entities
+          const allRows: TransactionRow[] = [];
+          for (const e of entitiesToUse) {
+            const filters = { ...buildFiltersForEntity(e), ...amountFilter };
+            const result = await financeList({
+              userId: session.user.id,
+              projectId: parsed.projectId,
+              documentType: "cc_statement",
+              filters,
+            });
+            if (result.query_type === "list") {
+              allRows.push(...(result.rows as TransactionRow[]));
+            }
+          }
+          // Sort by date descending
+          return allRows.sort((a, b) => b.txnDate.localeCompare(a.txnDate));
+        } else {
+          // Single entity
+          const result = await financeList({
+            userId: session.user.id,
+            projectId: parsed.projectId,
+            documentType: "cc_statement",
+            filters: { ...baseFilters, ...amountFilter },
+          });
+          return result.query_type === "list" ? (result.rows as TransactionRow[]) : [];
+        }
+      };
+
+      const posRows = await listAcrossEntities({ amount_min: 0.01 });
+      const neg =
+        posRows.length === 0
+          ? await listAcrossEntities({ amount_max: -0.01 })
+          : null;
+      const rows = neg && neg.length > 0 ? neg : posRows;
+      const negAmounts = Boolean(neg && neg.length > 0);
 
       const tableRows = rows.slice(0, 200).map((r) => {
         const label = (r.description?.trim() || r.merchant?.trim() || "(no description)").slice(0, 80);
@@ -548,20 +625,45 @@ export async function runFinanceAgent({
       });
     }
 
-    const sumPos = (await financeSum({
-      userId: session.user.id,
-      projectId: parsed.projectId,
-      documentType: "cc_statement",
-      filters: { ...baseFilters, amount_min: 0.01 },
-    })) as { total: string; count: number };
-    const sumNeg =
-      sumPos.count === 0
-        ? ((await financeSum({
+    // Helper to sum across multiple entities
+    const sumAcrossEntities = async (
+      documentType: "cc_statement" | "bank_statement",
+      amountFilter: { amount_min?: number; amount_max?: number }
+    ): Promise<{ total: string; count: number }> => {
+      if (hasMultipleEntities && entitiesToUse.length > 1) {
+        // Sum across all entities
+        let combinedTotal = 0;
+        let combinedCount = 0;
+        for (const e of entitiesToUse) {
+          const filters = { ...buildFiltersForEntity(e), ...amountFilter };
+          const result = (await financeSum({
             userId: session.user.id,
             projectId: parsed.projectId,
-            documentType: "cc_statement",
-            filters: { ...baseFilters, amount_max: -0.01 },
-          })) as { total: string; count: number })
+            documentType,
+            filters,
+          })) as { total: string; count: number };
+          combinedTotal += parseFloat(result.total) || 0;
+          combinedCount += result.count || 0;
+        }
+        return {
+          total: combinedTotal.toFixed(2),
+          count: combinedCount,
+        };
+      } else {
+        // Single entity - use existing logic
+        return (await financeSum({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType,
+          filters: { ...baseFilters, ...amountFilter },
+        })) as { total: string; count: number };
+      }
+    };
+
+    const sumPos = await sumAcrossEntities("cc_statement", { amount_min: 0.01 });
+    const sumNeg =
+      sumPos.count === 0
+        ? await sumAcrossEntities("cc_statement", { amount_max: -0.01 })
         : null;
     const used = sumNeg && sumNeg.count > 0 ? sumNeg : sumPos;
     const total = used.total.startsWith("-") ? used.total.slice(1) : used.total;
@@ -580,7 +682,7 @@ export async function runFinanceAgent({
       if (count > 0) {
         return SpecialistAgentResponseSchema.parse({
           kind: "finance",
-          answer_draft: `Spend on ${entity.kind === "personal" ? "Personal" : entity.name} (${category}) in ${range.label}: $${bankSum.total} (${count} transactions).`,
+          answer_draft: `Spend on ${getEntityLabel()} (${category}) in ${range.label}: $${bankSum.total} (${count} transactions).`,
           questions_for_user: [],
           assumptions: ["Matched category against bank_statement withdrawals (amount < 0)."],
           tool_calls: [
@@ -600,44 +702,71 @@ export async function runFinanceAgent({
       }
     }
 
-    const grouped = qLower.includes("by month")
-      ? await financeGroupByMonth({
+    // Helper to group across multiple entities
+    const groupAcrossEntities = async (
+      groupByFn: (args: {
+        userId: string;
+        projectId?: string;
+        documentType: "cc_statement" | "bank_statement";
+        filters?: any;
+      }) => Promise<any>,
+      amountFilter: { amount_min?: number; amount_max?: number }
+    ): Promise<any> => {
+      if (hasMultipleEntities && entitiesToUse.length > 1) {
+        // Run groupBy for each entity and merge results
+        const allResults: Array<{ [key: string]: any }> = [];
+        for (const e of entitiesToUse) {
+          const filters = { ...buildFiltersForEntity(e), ...amountFilter };
+          const result = await groupByFn({
+            userId: session.user.id,
+            projectId: parsed.projectId,
+            documentType: "cc_statement",
+            filters,
+          });
+          if (result && Array.isArray(result.rows)) {
+            allResults.push(...result.rows);
+          }
+        }
+        // Merge by grouping key (month, merchant, category, description)
+        const merged = new Map<string, { [key: string]: any }>();
+        for (const row of allResults) {
+          const key = row.month || row.merchant || row.category || row.description || "";
+          if (key) {
+            const existing = merged.get(key);
+            if (existing) {
+              existing.amount = (parseFloat(existing.amount) + parseFloat(row.amount || "0")).toFixed(2);
+              existing.count = (existing.count || 0) + (row.count || 0);
+            } else {
+              merged.set(key, { ...row, amount: parseFloat(row.amount || "0").toFixed(2) });
+            }
+          }
+        }
+        return { rows: Array.from(merged.values()) };
+      } else {
+        // Single entity
+        return await groupByFn({
           userId: session.user.id,
           projectId: parsed.projectId,
           documentType: "cc_statement",
-          filters: { ...baseFilters, ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }) },
-        })
+          filters: { ...baseFilters, ...amountFilter },
+        });
+      }
+    };
+
+    const amountFilterForGroup = sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 };
+    const grouped = qLower.includes("by month")
+      ? await groupAcrossEntities(financeGroupByMonth, amountFilterForGroup)
       : wantsByDescriptionGlobal
-        ? await financeGroupByDescription({
-            userId: session.user.id,
-            projectId: parsed.projectId,
-            documentType: "cc_statement",
-            filters: { ...baseFilters, ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }) },
-          })
+        ? await groupAcrossEntities(financeGroupByDescription, amountFilterForGroup)
       : wantsMerchant
-        ? await financeGroupByMerchant({
-            userId: session.user.id,
-            projectId: parsed.projectId,
-            documentType: "cc_statement",
-            filters: { ...baseFilters, ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }) },
-          })
+        ? await groupAcrossEntities(financeGroupByMerchant, amountFilterForGroup)
         : qLower.includes("by category") || category
-          ? await financeGroupByCategory({
-              userId: session.user.id,
-              projectId: parsed.projectId,
-              documentType: "cc_statement",
-              filters: { ...baseFilters, ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }) },
-            })
-          : await financeGroupByMerchant({
-              userId: session.user.id,
-              projectId: parsed.projectId,
-              documentType: "cc_statement",
-              filters: { ...baseFilters, ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }) },
-            });
+          ? await groupAcrossEntities(financeGroupByCategory, amountFilterForGroup)
+          : await groupAcrossEntities(financeGroupByMerchant, amountFilterForGroup);
 
     const rows = Array.isArray((grouped as any).rows) ? ((grouped as any).rows as any[]) : [];
     const chartPayload = (() => {
-      const label = entityLabel(entity);
+      const label = getEntityLabel();
       if (qLower.includes("by month")) {
         return buildChartPayload({
           title: `Spend by month (${label}, ${range.label})`,
@@ -704,7 +833,7 @@ export async function runFinanceAgent({
     return SpecialistAgentResponseSchema.parse({
       kind: "finance",
       answer_draft: [
-        `Spend on ${entity.kind === "personal" ? "Personal" : entity.name}${category ? ` (${category})` : ""} in ${range.label}: $${total}${signNote} (${used.count} Transactions).`,
+        `Spend on ${getEntityLabel()}${category ? ` (${category})` : ""} in ${range.label}: $${total}${signNote} (${used.count} Transactions).`,
         table ? "" : "",
         table ? `\n${table}` : "",
       ]
@@ -758,7 +887,7 @@ export async function runFinanceAgent({
     if (ccSum.count > 0) {
       return SpecialistAgentResponseSchema.parse({
         kind: "finance",
-        answer_draft: `Spend on ${entity.kind === "personal" ? "Personal" : entity.name} (${category}) in ${range.label}: $${ccSum.total} (${ccSum.count} Transactions).`,
+        answer_draft: `Spend on ${getEntityLabel()} (${category}) in ${range.label}: $${ccSum.total} (${ccSum.count} Transactions).`,
         questions_for_user: [],
         assumptions: ["Matched category against cc_statement transactions (charges only)."],
         tool_calls: [],
@@ -769,18 +898,40 @@ export async function runFinanceAgent({
   }
 
   if (list) {
-    const out = await financeList({
-      userId: session.user.id,
-      projectId: parsed.projectId,
-      documentType: "bank_statement",
-      filters: { ...baseFilters, ...amountFilter },
-    });
-    const rows = (out.query_type === "list" ? out.rows : []) as Array<{
+    // Helper to list bank transactions across multiple entities
+    type BankTransactionRow = {
       txnDate: string;
       description: string | null;
       category: string | null;
       amount: string;
-    }>;
+    };
+    const listBankAcrossEntities = async (): Promise<BankTransactionRow[]> => {
+      if (hasMultipleEntities && entitiesToUse.length > 1) {
+        const allRows: BankTransactionRow[] = [];
+        for (const e of entitiesToUse) {
+          const filters = { ...buildFiltersForEntity(e), ...amountFilter };
+          const result = await financeList({
+            userId: session.user.id,
+            projectId: parsed.projectId,
+            documentType: "bank_statement",
+            filters,
+          });
+          if (result.query_type === "list") {
+            allRows.push(...(result.rows as BankTransactionRow[]));
+          }
+        }
+        return allRows.sort((a, b) => b.txnDate.localeCompare(a.txnDate));
+      } else {
+        const out = await financeList({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "bank_statement",
+          filters: { ...baseFilters, ...amountFilter },
+        });
+        return out.query_type === "list" ? (out.rows as BankTransactionRow[]) : [];
+      }
+    };
+    const rows = await listBankAcrossEntities();
     const tableRows = rows.slice(0, 200).map((r) => {
       const desc = (r.description?.trim() || "(no description)").slice(0, 90);
       const cat = r.category?.trim() || "Uncategorized";
@@ -805,46 +956,97 @@ export async function runFinanceAgent({
     });
   }
 
-  const sum = await financeSum({
-    userId: session.user.id,
-    projectId: parsed.projectId,
-    documentType: "bank_statement",
-    filters: { ...baseFilters, ...amountFilter },
-  });
-
-  const wantsMerchantBank = mainLower.includes("merchant") || mainLower.includes("by merchant");
-  const wantsByMonthDefault = isIncomeLike && !mainLower.includes("by ");
-  const grouped = qLower.includes("by month") || wantsByMonthDefault
-    ? await financeGroupByMonth({
+  // Sum bank transactions across multiple entities
+  const sum = hasMultipleEntities && entitiesToUse.length > 1
+    ? (async () => {
+        let combinedTotal = 0;
+        let combinedCount = 0;
+        for (const e of entitiesToUse) {
+          const filters = { ...buildFiltersForEntity(e), ...amountFilter };
+          const result = (await financeSum({
+            userId: session.user.id,
+            projectId: parsed.projectId,
+            documentType: "bank_statement",
+            filters,
+          })) as { total: string; count: number };
+          combinedTotal += parseFloat(result.total) || 0;
+          combinedCount += result.count || 0;
+        }
+        return {
+          total: combinedTotal.toFixed(2),
+          count: combinedCount,
+        };
+      })()
+    : await financeSum({
         userId: session.user.id,
         projectId: parsed.projectId,
         documentType: "bank_statement",
         filters: { ...baseFilters, ...amountFilter },
-      })
-    : wantsByDescription
-      ? await financeGroupByDescription({
-          userId: session.user.id,
-          projectId: parsed.projectId,
-          documentType: "bank_statement",
-          filters: { ...baseFilters, ...amountFilter },
-        })
-    : wantsMerchantBank
-      ? await financeGroupByMerchant({
-          userId: session.user.id,
-          projectId: parsed.projectId,
-          documentType: "bank_statement",
-          filters: { ...baseFilters, ...amountFilter },
-        })
-      : await financeGroupByCategory({
+      });
+  const sumResult = await sum;
+
+  const wantsMerchantBank = mainLower.includes("merchant") || mainLower.includes("by merchant");
+  const wantsByMonthDefault = isIncomeLike && !mainLower.includes("by ");
+  
+  // Helper to group bank transactions across multiple entities
+  const groupBankAcrossEntities = async (
+    groupByFn: (args: {
+        userId: string;
+        projectId?: string;
+        documentType: "bank_statement";
+        filters?: any;
+      }) => Promise<any>
+    ): Promise<any> => {
+      if (hasMultipleEntities && entitiesToUse.length > 1) {
+        const allResults: Array<{ [key: string]: any }> = [];
+        for (const e of entitiesToUse) {
+          const filters = { ...buildFiltersForEntity(e), ...amountFilter };
+          const result = await groupByFn({
+            userId: session.user.id,
+            projectId: parsed.projectId,
+            documentType: "bank_statement",
+            filters,
+          });
+          if (result && Array.isArray(result.rows)) {
+            allResults.push(...result.rows);
+          }
+        }
+        // Merge by grouping key
+        const merged = new Map<string, { [key: string]: any }>();
+        for (const row of allResults) {
+          const key = row.month || row.merchant || row.category || row.description || "";
+          if (key) {
+            const existing = merged.get(key);
+            if (existing) {
+              existing.total = (parseFloat(existing.total) + parseFloat(row.total || "0")).toFixed(2);
+              existing.count = (existing.count || 0) + (row.count || 0);
+            } else {
+              merged.set(key, { ...row, total: parseFloat(row.total || "0").toFixed(2) });
+            }
+          }
+        }
+        return { rows: Array.from(merged.values()) };
+      } else {
+        return await groupByFn({
           userId: session.user.id,
           projectId: parsed.projectId,
           documentType: "bank_statement",
           filters: { ...baseFilters, ...amountFilter },
         });
+      }
+    };
+
+  const grouped = qLower.includes("by month") || wantsByMonthDefault
+    ? await groupBankAcrossEntities(financeGroupByMonth)
+    : wantsByDescription
+      ? await groupBankAcrossEntities(financeGroupByDescription)
+    : wantsMerchantBank
+      ? await groupBankAcrossEntities(financeGroupByMerchant)
+      : await groupBankAcrossEntities(financeGroupByCategory);
 
   const rows = Array.isArray((grouped as any).rows) ? ((grouped as any).rows as any[]) : [];
   const chartPayload = (() => {
-    const label = entityLabel(entity);
+    const label = getEntityLabel();
     if (qLower.includes("by month") || wantsByMonthDefault) {
       return buildChartPayload({
         title: `${isIncomeLike ? "Deposits" : "Spend"} by month (${label}, ${range.label})`,
@@ -909,14 +1111,14 @@ export async function runFinanceAgent({
   return SpecialistAgentResponseSchema.parse({
     kind: "finance",
     answer_draft: [
-      `${isIncomeLike ? "Income/deposits" : "Spend/withdrawals"} for ${entity.kind === "personal" ? "Personal" : entity.name} in ${range.label}: $${sum.total} (${sum.count} Transactions).`,
+      `${isIncomeLike ? "Income/deposits" : "Spend/withdrawals"} for ${getEntityLabel()} in ${range.label}: $${sumResult.total} (${sumResult.count} Transactions).`,
       table ? `\n\n${table}` : "",
     ].join(""),
     questions_for_user: [],
     assumptions: [],
     tool_calls: [],
     citations: [],
-    confidence: sum.count === 0 ? "low" : "medium",
+    confidence: sumResult.count === 0 ? "low" : "medium",
     chart_payload: chartPayload ?? undefined,
   });
 }

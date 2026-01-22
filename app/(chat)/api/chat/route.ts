@@ -1776,16 +1776,12 @@ export async function POST(request: Request) {
             },
           });
 
-          // If selectedEntities are provided, use the first one (or combine them)
-          const entityHint = selectedEntities && selectedEntities.length > 0
-            ? (() => {
-                // For now, use the first selected entity. In the future, we could support multiple.
-                const first = selectedEntities[0];
-                return {
-                  entity_kind: first.kind,
-                  entity_name: first.kind === "business" ? first.name ?? undefined : undefined,
-                };
-              })()
+          // Pass all selected entities to the finance agent
+          const entityHints = selectedEntities && selectedEntities.length > 0
+            ? selectedEntities.map((e) => ({
+                entity_kind: e.kind,
+                entity_name: e.kind === "business" ? e.name ?? undefined : undefined,
+              }))
             : undefined;
 
           const agentResult = await runFinanceAgent({
@@ -1793,7 +1789,7 @@ export async function POST(request: Request) {
             projectId: activeProjectId,
             input: {
               question: financeQuestionForAgent,
-              entity_hint: entityHint,
+              entity_hints: entityHints,
             },
           });
 
