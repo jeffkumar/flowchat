@@ -38,6 +38,8 @@ import type {
   ChatMessage,
   EntityOption,
   EntitySelectorAnnotation,
+  TimeRangeOption,
+  TimeRangeSelectorAnnotation,
   RetrievedSource,
 } from "@/lib/types";
 import type { AppUsage } from "@/lib/usage";
@@ -78,6 +80,8 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Badge } from "@/components/ui/badge";
+import { X } from "lucide-react";
 
 type UploadDocumentType =
   | "general_doc"
@@ -295,9 +299,19 @@ export function Chat({
     questionId: string;
   } | null>(null);
 
+  const pendingTimeRangeSelectorRef = useRef<{
+    availableTimeRanges: TimeRangeOption[];
+    defaultTimeRange?: TimeRangeOption;
+    questionId: string;
+  } | null>(null);
+
   const [selectedEntities, setSelectedEntities] = useState<EntityOption[]>([]);
   const selectedEntitiesRef = useRef<EntityOption[]>([]);
   const isApplyingEntitySelectionRef = useRef(false);
+
+  const [selectedTimeRange, setSelectedTimeRange] = useState<TimeRangeOption | null>(null);
+  const selectedTimeRangeRef = useRef<TimeRangeOption | null>(null);
+  const isApplyingTimeRangeSelectionRef = useRef(false);
 
   const {
     messages,
@@ -328,6 +342,7 @@ export function Chat({
             retrievalRangePreset: retrievalRangePresetRef.current,
             retrievalTimeZone: browserTimeZoneRef.current,
             selectedEntities: selectedEntitiesRef.current,
+            selectedTimeRange: selectedTimeRangeRef.current ?? undefined,
             ...request.body,
           },
         };
@@ -349,6 +364,15 @@ export function Chat({
         if (typeof dataPart.data.questionId === "string") {
           pendingEntitySelectorRef.current = {
             availableEntities: dataPart.data.availableEntities,
+            questionId: dataPart.data.questionId,
+          };
+        }
+      }
+      if (dataPart.type === "data-timeRangeSelector") {
+        if (typeof dataPart.data.questionId === "string") {
+          pendingTimeRangeSelectorRef.current = {
+            availableTimeRanges: dataPart.data.availableTimeRanges,
+            defaultTimeRange: dataPart.data.defaultTimeRange,
             questionId: dataPart.data.questionId,
           };
         }
@@ -395,6 +419,32 @@ export function Chat({
           return prevMessages;
         });
         pendingChartDocumentRef.current = null;
+      }
+
+      const timeRangeSelector = pendingTimeRangeSelectorRef.current;
+      if (timeRangeSelector) {
+        setMessages((prevMessages) => {
+          const last = prevMessages[prevMessages.length - 1];
+          if (last && last.role === "assistant") {
+            const newAnnotations = [
+              ...(last.annotations || []),
+              {
+                type: "time-range-selector",
+                data: {
+                  availableTimeRanges: timeRangeSelector.availableTimeRanges,
+                  defaultTimeRange: timeRangeSelector.defaultTimeRange,
+                  questionId: timeRangeSelector.questionId,
+                },
+              },
+            ];
+            return [
+              ...prevMessages.slice(0, -1),
+              { ...last, annotations: newAnnotations },
+            ];
+          }
+          return prevMessages;
+        });
+        pendingTimeRangeSelectorRef.current = null;
       }
 
       const entitySelector = pendingEntitySelectorRef.current;
@@ -468,12 +518,10 @@ export function Chat({
       setPendingSources(null);
       pendingChartDocumentRef.current = null;
       pendingEntitySelectorRef.current = null;
-      // Clear selectedEntities when a new message is submitted, unless we're applying entity selection
-      if (!isApplyingEntitySelectionRef.current) {
-        setSelectedEntities([]);
-        selectedEntitiesRef.current = [];
-      }
+      pendingTimeRangeSelectorRef.current = null;
+      // Don't clear selectedEntities or selectedTimeRange on message submission - they persist until explicitly cleared
       isApplyingEntitySelectionRef.current = false;
+      isApplyingTimeRangeSelectionRef.current = false;
     }
     statusRef.current = status;
   }, [status]);
@@ -501,6 +549,65 @@ export function Chat({
   useEffect(() => {
     selectedEntitiesRef.current = selectedEntities;
   }, [selectedEntities]);
+
+  useEffect(() => {
+    selectedTimeRangeRef.current = selectedTimeRange;
+  }, [selectedTimeRange]);
+
+  const handleTimeRangeSelection = useCallback(
+    ({ timeRange, questionId }: { timeRange: TimeRangeOption; questionId: string }) => {
+      setSelectedTimeRange(timeRange);
+      selectedTimeRangeRef.current = timeRange;
+
+      const isTimeRangeSelector = (a: unknown): a is TimeRangeSelectorAnnotation => {
+        if (!a || typeof a !== "object") return false;
+        if (!("type" in a)) return false;
+        if ((a as { type?: unknown }).type !== "time-range-selector") return false;
+        if (!("data" in a)) return false;
+        const data = (a as { data?: unknown }).data;
+        if (!data || typeof data !== "object") return false;
+        return typeof (data as { questionId?: unknown }).questionId === "string";
+      };
+
+      // Remove the selector UI from the message once applied (matches existing behavior).
+      setMessages((prevMessages) =>
+        prevMessages.map((m) => {
+          if (m.role !== "assistant" || !m.annotations) return m;
+          const hasSelector = m.annotations.some(
+            (a) => isTimeRangeSelector(a) && a.data.questionId === questionId
+          );
+          if (!hasSelector) return m;
+          const annotations = m.annotations.filter(
+            (a) =>
+              !(
+                isTimeRangeSelector(a) && a.data.questionId === questionId
+              )
+          );
+          return { ...m, annotations };
+        })
+      );
+
+      if (timeRange) {
+        const lastUserMessage = messages
+          .slice()
+          .reverse()
+          .find((m) => m.role === "user");
+        if (lastUserMessage) {
+          const questionText = lastUserMessage.parts
+            .filter((p) => p.type === "text")
+            .map((p) => p.text)
+            .join("\n");
+          // Mark that we're applying time range selection so selectedTimeRange isn't cleared
+          isApplyingTimeRangeSelectionRef.current = true;
+          sendMessage({
+            role: "user",
+            parts: [{ type: "text", text: questionText }],
+          });
+        }
+      }
+    },
+    [messages, sendMessage, setMessages]
+  );
 
   const handleEntitySelection = useCallback(
     ({ entities, questionId }: { entities: EntityOption[]; questionId: string }) => {
@@ -770,11 +877,41 @@ export function Chat({
           showCitations={showCitations}
           onEntitySelection={handleEntitySelection}
           selectedEntities={selectedEntities}
+          onTimeRangeSelection={handleTimeRangeSelection}
+          selectedTimeRange={selectedTimeRange}
         />
 
         <div className="sticky bottom-0 z-1 mx-auto flex w-full max-w-4xl flex-col gap-2 border-t-0 bg-background dark:bg-auth-charcoal px-2 pb-3 md:px-4 md:pb-4">
           {!isReadonly && (
             <>
+              {selectedEntities && selectedEntities.length > 0 && (
+                <div className="flex items-center gap-2 px-1">
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">Accounts:</span>
+                  <div className="flex items-center gap-1.5 flex-wrap min-w-0 flex-1">
+                    {selectedEntities.map((entity) => {
+                      const label = entity.kind === "personal" ? "Personal" : entity.name || "Business";
+                      return (
+                        <Badge key={`${entity.kind}-${entity.name || "null"}`} variant="secondary" className="text-xs whitespace-nowrap">
+                          {label}
+                        </Badge>
+                      );
+                    })}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setSelectedEntities([]);
+                      selectedEntitiesRef.current = [];
+                    }}
+                    className="h-6 px-2 text-xs whitespace-nowrap"
+                    type="button"
+                  >
+                    <X className="h-3 w-3" />
+                    <span className="hidden sm:inline">Clear</span>
+                  </Button>
+                </div>
+              )}
               <div className="flex items-center justify-between gap-2 px-1">
                 <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
                   <input
@@ -851,9 +988,11 @@ export function Chat({
         isReadonly={isReadonly}
         messages={messages}
         onEntitySelection={handleEntitySelection}
+        onTimeRangeSelection={handleTimeRangeSelection}
         regenerate={regenerate}
         selectedModelId={currentModelId}
         selectedEntities={selectedEntities}
+        selectedTimeRange={selectedTimeRange}
         selectedVisibilityType={visibilityType}
         sendMessage={sendMessage}
         setAttachments={setAttachments}

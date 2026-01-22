@@ -40,6 +40,14 @@ const FinanceAgentInputSchema = z.object({
       month: z.number().int().min(1).max(12).optional(),
     })
     .optional(),
+  time_range: z
+    .object({
+      type: z.enum(["preset", "custom"]),
+      label: z.string().min(1).max(100),
+      date_start: z.string().optional(),
+      date_end: z.string().optional(),
+    })
+    .optional(),
 });
 export type FinanceAgentInput = z.infer<typeof FinanceAgentInputSchema>;
 
@@ -352,7 +360,51 @@ export async function runFinanceAgent({
   }
 
   // Use full text (including context) to recover missing time/entity.
-  const range = inferDateRange(qLower, parsed.time_hint);
+  // Priority: 1) Infer from question text (using selectedTimeRange's year as context for month references)
+  //           2) Use provided time_range if inference fails
+  // This ensures that if user asks "how about June?" with 2025 selected, it uses June 2025, not current year
+  let range: DateRange | null = null;
+  
+  // Extract year from selectedTimeRange to use as context for inference
+  // This way "august" with a previous 2025 selection infers August 2025, not current year
+  let timeHintWithContext = parsed.time_hint;
+  if (!timeHintWithContext?.year && parsed.time_range?.date_start) {
+    const yearMatch = parsed.time_range.date_start.match(/^(\d{4})/);
+    if (yearMatch) {
+      const contextYear = parseInt(yearMatch[1], 10);
+      if (Number.isFinite(contextYear) && contextYear >= 1900 && contextYear <= 2200) {
+        timeHintWithContext = {
+          ...timeHintWithContext,
+          kind: "year",
+          year: contextYear,
+        };
+      }
+    }
+  }
+  
+  // First, try to infer time from the question text (using context year if available)
+  const inferredRange = inferDateRange(qLower, timeHintWithContext);
+  
+  if (inferredRange) {
+    // If we can infer time from the question, use it (takes precedence over selectedTimeRange)
+    range = inferredRange;
+  } else if (parsed.time_range) {
+    // If no time can be inferred but a time_range was provided, use it
+    if (parsed.time_range.date_start && parsed.time_range.date_end) {
+      range = {
+        date_start: parsed.time_range.date_start,
+        date_end: parsed.time_range.date_end,
+        label: parsed.time_range.label,
+      };
+    } else if (parsed.time_range.type === "preset" && parsed.time_range.label === "All time") {
+      // For "All time", we'll use a very wide range
+      range = {
+        date_start: "1900-01-01",
+        date_end: "2200-01-01",
+        label: "All time",
+      };
+    }
+  }
   const docType = inferDocType(qLower);
   
   // Determine which entities to use: prioritize entity_hints (multiple), then entity_hint (single), then infer from text
@@ -405,7 +457,9 @@ export async function runFinanceAgent({
   const list = wantsList(mainLower) && !wantsByDescriptionGlobal;
 
   // If entity is missing, use project entity summary to decide whether we need clarification.
-  if (!entity.kind) {
+  // Skip this check if we already have entities from hints (user has already selected accounts)
+  // If entity_hints are provided, never ask for entity selection - user has already selected
+  if (!entity.kind && (!parsed.entity_hints || parsed.entity_hints.length === 0)) {
     const summary = await getProjectEntitySummaryForUser({
       userId: session.user.id,
       projectId: parsed.projectId,
@@ -456,23 +510,115 @@ export async function runFinanceAgent({
       entity.name = options[0];
     }
   }
+  
+  // If we have entities from hints but entity.kind is still not set, use the first entity from hints
+  // This ensures that when entity_hints are provided, we always use them
+  if (!entity.kind && entitiesToUse.length > 0) {
+    entity.kind = entitiesToUse[0].kind;
+    entity.name = entitiesToUse[0].name;
+  }
+  
+  // If entity_hints were provided but entitiesToUse is empty (invalid hints), 
+  // and entity.kind is still not set, try to use the first hint directly
+  if (!entity.kind && parsed.entity_hints && parsed.entity_hints.length > 0 && entitiesToUse.length === 0) {
+    const firstHint = parsed.entity_hints[0];
+    if (firstHint.entity_kind === "personal") {
+      entity.kind = "personal";
+      entity.name = null;
+    } else if (firstHint.entity_kind === "business" && firstHint.entity_name) {
+      entity.kind = "business";
+      entity.name = firstHint.entity_name;
+    }
+  }
 
   if (!range) {
+    // Generate available time range options
+    const now = new Date();
+    const nowYear = now.getUTCFullYear();
+    
+    // Calculate date ranges for presets
+    const today = toYmd(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());
+    if (!today) {
+      // If we can't calculate today's date, something is very wrong
+      return SpecialistAgentResponseSchema.parse({
+        kind: "finance",
+        answer_draft: "",
+        questions_for_user: ["Unable to determine current date. Please try again."],
+        assumptions: [],
+        tool_calls: [],
+        citations: [],
+        confidence: "low",
+      });
+    }
+    
+    const thirtyDaysAgo = addDaysIso(today, -30);
+    const ninetyDaysAgo = addDaysIso(today, -90);
+    const yearStart = `${nowYear}-01-01`;
+    const yearEnd = `${nowYear + 1}-01-01`;
+    const lastYearStart = `${nowYear - 1}-01-01`;
+    const lastYearEnd = `${nowYear}-01-01`;
+    
+    // Default to current year
+    const defaultTimeRange: { type: "preset"; label: string; date_start: string; date_end: string } = {
+      type: "preset",
+      label: `This year (${nowYear})`,
+      date_start: yearStart,
+      date_end: yearEnd,
+    };
+    
+    const availableTimeRanges: Array<{ type: "preset" | "custom"; label: string; date_start?: string; date_end?: string }> = [
+      {
+        type: "preset",
+        label: "Last 30 days",
+        date_start: thirtyDaysAgo ?? undefined,
+        date_end: today,
+      },
+      {
+        type: "preset",
+        label: "Last 90 days",
+        date_start: ninetyDaysAgo ?? undefined,
+        date_end: today,
+      },
+      {
+        type: "preset",
+        label: `This year (${nowYear})`,
+        date_start: yearStart,
+        date_end: yearEnd,
+      },
+      {
+        type: "preset",
+        label: `Last year (${nowYear - 1})`,
+        date_start: lastYearStart,
+        date_end: lastYearEnd,
+      },
+      {
+        type: "preset",
+        label: "All time",
+      },
+      {
+        type: "custom",
+        label: "Custom range",
+      },
+    ];
+    
     return SpecialistAgentResponseSchema.parse({
       kind: "finance",
       answer_draft: "",
-      questions_for_user: [
-        "What time window should I use? (e.g. 2025, June 2025, or 2025-06-01 to 2025-09-01)",
-      ],
+      questions_for_user: [],
       assumptions: [],
       tool_calls: [],
       citations: [],
       confidence: "low",
+      needs_time_selection: {
+        available_time_ranges: availableTimeRanges,
+        default_time_range: defaultTimeRange,
+      },
     });
   }
 
   // If business was requested but name is missing, ask.
-  if (entity.kind === "business" && (!entity.name || !entity.name.trim())) {
+  // Skip this check if we already have entities from hints (user has already selected accounts)
+  if (entity.kind === "business" && (!entity.name || !entity.name.trim()) && (!parsed.entity_hints || parsed.entity_hints.length === 0)) {
     const summary = await getProjectEntitySummaryForUser({
       userId: session.user.id,
       projectId: parsed.projectId,
@@ -733,11 +879,25 @@ export async function runFinanceAgent({
           const key = row.month || row.merchant || row.category || row.description || "";
           if (key) {
             const existing = merged.get(key);
+            // CC statements use 'amount', bank statements use 'total' - normalize to 'total' for chart
+            const rowValue = row.amount || row.total || "0";
+            const existingValue = existing?.amount || existing?.total || "0";
             if (existing) {
-              existing.amount = (parseFloat(existing.amount) + parseFloat(row.amount || "0")).toFixed(2);
+              existing.total = (parseFloat(existingValue) + parseFloat(rowValue)).toFixed(2);
               existing.count = (existing.count || 0) + (row.count || 0);
+              // Remove 'amount' field if it exists to avoid confusion
+              if (existing.amount) delete existing.amount;
             } else {
-              merged.set(key, { ...row, amount: parseFloat(row.amount || "0").toFixed(2) });
+              const normalizedRow = { ...row };
+              if (normalizedRow.amount) {
+                normalizedRow.total = parseFloat(normalizedRow.amount).toFixed(2);
+                delete normalizedRow.amount;
+              } else if (normalizedRow.total) {
+                normalizedRow.total = parseFloat(normalizedRow.total).toFixed(2);
+              } else {
+                normalizedRow.total = "0.00";
+              }
+              merged.set(key, normalizedRow);
             }
           }
         }
@@ -956,21 +1116,33 @@ export async function runFinanceAgent({
     });
   }
 
-  // Sum bank transactions across multiple entities
+  // Sum bank transactions across multiple entities (also include CC statements for multi-entity)
   const sum = hasMultipleEntities && entitiesToUse.length > 1
     ? (async () => {
         let combinedTotal = 0;
         let combinedCount = 0;
         for (const e of entitiesToUse) {
           const filters = { ...buildFiltersForEntity(e), ...amountFilter };
-          const result = (await financeSum({
+          // Query both bank_statement and cc_statement for each entity
+          const bankResult = (await financeSum({
             userId: session.user.id,
             projectId: parsed.projectId,
             documentType: "bank_statement",
             filters,
           })) as { total: string; count: number };
-          combinedTotal += parseFloat(result.total) || 0;
-          combinedCount += result.count || 0;
+          combinedTotal += parseFloat(bankResult.total) || 0;
+          combinedCount += bankResult.count || 0;
+          
+          // Also query CC statements (spend is typically positive in CC statements)
+          const ccFilters = { ...buildFiltersForEntity(e), amount_min: 0.01 };
+          const ccResult = (await financeSum({
+            userId: session.user.id,
+            projectId: parsed.projectId,
+            documentType: "cc_statement",
+            filters: ccFilters,
+          })) as { total: string; count: number };
+          combinedTotal += parseFloat(ccResult.total) || 0;
+          combinedCount += ccResult.count || 0;
         }
         return {
           total: combinedTotal.toFixed(2),
@@ -988,27 +1160,45 @@ export async function runFinanceAgent({
   const wantsMerchantBank = mainLower.includes("merchant") || mainLower.includes("by merchant");
   const wantsByMonthDefault = isIncomeLike && !mainLower.includes("by ");
   
-  // Helper to group bank transactions across multiple entities
+  // Helper to group transactions across multiple entities (both bank and CC statements)
   const groupBankAcrossEntities = async (
     groupByFn: (args: {
         userId: string;
         projectId?: string;
-        documentType: "bank_statement";
+        documentType: "bank_statement" | "cc_statement";
         filters?: any;
       }) => Promise<any>
     ): Promise<any> => {
       if (hasMultipleEntities && entitiesToUse.length > 1) {
         const allResults: Array<{ [key: string]: any }> = [];
         for (const e of entitiesToUse) {
-          const filters = { ...buildFiltersForEntity(e), ...amountFilter };
-          const result = await groupByFn({
+          // Query bank statements
+          const bankFilters = { ...buildFiltersForEntity(e), ...amountFilter };
+          const bankResult = await groupByFn({
             userId: session.user.id,
             projectId: parsed.projectId,
             documentType: "bank_statement",
-            filters,
+            filters: bankFilters,
           });
-          if (result && Array.isArray(result.rows)) {
-            allResults.push(...result.rows);
+          if (bankResult && Array.isArray(bankResult.rows)) {
+            allResults.push(...bankResult.rows);
+          }
+          
+          // Also query CC statements for each entity
+          const ccFilters = { ...buildFiltersForEntity(e), amount_min: 0.01 };
+          const ccResult = await groupByFn({
+            userId: session.user.id,
+            projectId: parsed.projectId,
+            documentType: "cc_statement",
+            filters: ccFilters,
+          });
+          if (ccResult && Array.isArray(ccResult.rows)) {
+            // Normalize CC data: use 'total' field (CC might use 'amount')
+            const normalizedRows = ccResult.rows.map((row: any) => ({
+              ...row,
+              total: row.total || row.amount || "0",
+            }));
+            allResults.push(...normalizedRows);
           }
         }
         // Merge by grouping key
@@ -1017,11 +1207,12 @@ export async function runFinanceAgent({
           const key = row.month || row.merchant || row.category || row.description || "";
           if (key) {
             const existing = merged.get(key);
+            const rowValue = parseFloat(row.total || row.amount || "0");
             if (existing) {
-              existing.total = (parseFloat(existing.total) + parseFloat(row.total || "0")).toFixed(2);
+              existing.total = (parseFloat(existing.total) + rowValue).toFixed(2);
               existing.count = (existing.count || 0) + (row.count || 0);
             } else {
-              merged.set(key, { ...row, total: parseFloat(row.total || "0").toFixed(2) });
+              merged.set(key, { ...row, total: rowValue.toFixed(2) });
             }
           }
         }

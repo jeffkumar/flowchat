@@ -149,7 +149,6 @@ export function ChartViewer({
     <div className="mx-auto w-full max-w-3xl p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-sm font-medium">{payload.title}</div>
           <div className="text-xs text-muted-foreground">Total: {formatUsd(total)}</div>
         </div>
 

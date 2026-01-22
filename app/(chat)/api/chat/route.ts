@@ -777,6 +777,7 @@ export async function POST(request: Request) {
       retrievalRangePreset,
       retrievalTimeZone,
       selectedEntities,
+      selectedTimeRange,
     }: {
       id: string;
       message: ChatMessage;
@@ -788,6 +789,7 @@ export async function POST(request: Request) {
       retrievalRangePreset?: RetrievalRangePreset;
       retrievalTimeZone?: string;
       selectedEntities?: Array<{ kind: "personal" | "business"; name: string | null }>;
+      selectedTimeRange?: { type: "preset" | "custom"; label: string; date_start?: string; date_end?: string };
     } = requestBody;
 
     const session = await auth();
@@ -1784,12 +1786,26 @@ export async function POST(request: Request) {
               }))
             : undefined;
 
+          // Pass selected time range to the finance agent
+          // Only pass if it has valid date_start and date_end, or is "All time"
+          const timeRange = selectedTimeRange && 
+            (selectedTimeRange.date_start && selectedTimeRange.date_end || 
+             (selectedTimeRange.type === "preset" && selectedTimeRange.label === "All time"))
+            ? {
+                type: selectedTimeRange.type,
+                label: selectedTimeRange.label,
+                date_start: selectedTimeRange.date_start,
+                date_end: selectedTimeRange.date_end,
+              }
+            : undefined;
+
           const agentResult = await runFinanceAgent({
             session,
             projectId: activeProjectId,
             input: {
               question: financeQuestionForAgent,
               entity_hints: entityHints,
+              time_range: timeRange,
             },
           });
 
@@ -1801,8 +1817,31 @@ export async function POST(request: Request) {
             },
           });
 
+          // Check if time range selection is needed
+          // Only show time range selector if no time range is already selected
+          if (agentResult.needs_time_selection && !selectedTimeRange) {
+            dataStream.write({
+              type: "data-timeRangeSelector",
+              data: {
+                availableTimeRanges: agentResult.needs_time_selection.available_time_ranges,
+                defaultTimeRange: agentResult.needs_time_selection.default_time_range,
+                questionId: generateUUID(),
+              },
+            });
+            const msgId = generateUUID();
+            dataStream.write({ type: "text-start", id: msgId });
+            dataStream.write({
+              type: "text-delta",
+              id: msgId,
+              delta: "Please select a time period for your query:",
+            });
+            dataStream.write({ type: "text-end", id: msgId });
+            return;
+          }
+
           // Check if entity selection is needed
-          if (agentResult.needs_entity_selection) {
+          // Only show entity selector if no entities are already selected
+          if (agentResult.needs_entity_selection && (!selectedEntities || selectedEntities.length === 0)) {
             dataStream.write({
               type: "data-entitySelector",
               data: {

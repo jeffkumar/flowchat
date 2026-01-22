@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { memo, useEffect, useState } from "react";
 import { useMessages } from "@/hooks/use-messages";
 import type { Vote } from "@/lib/db/schema";
-import type { ChatMessage, EntityOption } from "@/lib/types";
+import type { ChatMessage, EntityOption, TimeRangeOption } from "@/lib/types";
 import type { UIArtifact } from "./artifact";
 import { useDataStream } from "./data-stream-provider";
 import { PreviewMessage, ThinkingMessage } from "./message";
@@ -20,6 +20,8 @@ type ArtifactMessagesProps = {
   artifactStatus: UIArtifact["status"];
   selectedEntities?: EntityOption[];
   onEntitySelection?: (args: { entities: EntityOption[]; questionId: string }) => void;
+  selectedTimeRange?: TimeRangeOption | null;
+  onTimeRangeSelection?: (args: { timeRange: TimeRangeOption; questionId: string }) => void;
 };
 
 function PureArtifactMessages({
@@ -32,6 +34,8 @@ function PureArtifactMessages({
   isReadonly,
   selectedEntities,
   onEntitySelection,
+  selectedTimeRange,
+  onTimeRangeSelection,
 }: ArtifactMessagesProps) {
   const {
     containerRef: messagesContainerRef,
@@ -77,6 +81,7 @@ function PureArtifactMessages({
           key={message.id}
           message={message}
           onEntitySelection={onEntitySelection}
+          onTimeRangeSelection={onTimeRangeSelection}
           showCitations={true}
           regenerate={regenerate}
           requiresScrollPadding={
@@ -84,6 +89,7 @@ function PureArtifactMessages({
           }
           setMessages={setMessages}
           selectedEntities={selectedEntities}
+          selectedTimeRange={selectedTimeRange}
           vote={
             votes
               ? votes.find((vote) => vote.messageId === message.id)

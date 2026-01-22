@@ -8,6 +8,8 @@ import type {
   ChartDocumentAnnotation,
   EntityOption,
   EntitySelectorAnnotation,
+  TimeRangeOption,
+  TimeRangeSelectorAnnotation,
   RetrievedSource,
 } from "@/lib/types";
 import { cn, fetcher, sanitizeText } from "@/lib/utils";
@@ -20,6 +22,7 @@ import type { Document } from "@/lib/db/schema";
 import useSWR from "swr";
 import { ChartViewer, safeParseChartPayload } from "@/components/chart-viewer";
 import { EntitySelector } from "@/components/entity-selector";
+import { TimeRangeSelector } from "@/components/time-range-selector";
 import { MessageContent } from "./elements/message";
 import { Response } from "./elements/response";
 import { Source } from "./elements/source";
@@ -36,6 +39,7 @@ import { MessageEditor } from "./message-editor";
 import { MessageReasoning } from "./message-reasoning";
 import { PreviewAttachment } from "./preview-attachment";
 import { Weather } from "./weather";
+import { Maximize2 } from "lucide-react";
 
 const PurePreviewMessage = ({
   chatId,
@@ -49,6 +53,8 @@ const PurePreviewMessage = ({
   showCitations,
   selectedEntities = [],
   onEntitySelection = () => {},
+  selectedTimeRange = null,
+  onTimeRangeSelection = () => {},
 }: {
   chatId: string;
   message: ChatMessage;
@@ -61,6 +67,8 @@ const PurePreviewMessage = ({
   showCitations: boolean;
   selectedEntities?: EntityOption[];
   onEntitySelection?: (args: { entities: EntityOption[]; questionId: string }) => void;
+  selectedTimeRange?: TimeRangeOption | null;
+  onTimeRangeSelection?: (args: { timeRange: TimeRangeOption; questionId: string }) => void;
 }) => {
   const [mode, setMode] = useState<"view" | "edit">("view");
   const { setArtifact } = useArtifact();
@@ -78,6 +86,11 @@ const PurePreviewMessage = ({
     (a): a is EntitySelectorAnnotation => a?.type === "entity-selector"
   );
   const [isEntitySelectorCollapsed, setIsEntitySelectorCollapsed] = useState(false);
+
+  const timeRangeSelectorAnnotation = message.annotations?.find(
+    (a): a is TimeRangeSelectorAnnotation => a?.type === "time-range-selector"
+  );
+  const [isTimeRangeSelectorCollapsed, setIsTimeRangeSelectorCollapsed] = useState(false);
 
   const sources = existingSources;
   const uniqueSources = (() => {
@@ -167,7 +180,7 @@ const PurePreviewMessage = ({
                       {isChartCollapsed ? "Expand" : "Collapse"}
                     </button>
                     <button
-                      className="rounded-md border bg-background px-2 py-1 text-xs"
+                      className="rounded-md border bg-background p-1.5"
                       disabled={isReadonly}
                       onClick={(event) => {
                         if (isReadonly) return;
@@ -188,8 +201,9 @@ const PurePreviewMessage = ({
                         }));
                       }}
                       type="button"
+                      title="Open in full screen"
                     >
-                      Open
+                      <Maximize2 className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 </div>
@@ -207,7 +221,49 @@ const PurePreviewMessage = ({
             </div>
           ) : null}
 
-          {message.role === "assistant" && entitySelectorAnnotation ? (
+          {message.role === "assistant" && timeRangeSelectorAnnotation && !selectedTimeRange ? (
+            <div className="mb-3 w-full">
+              <div className="rounded-xl border bg-background">
+                <div className="flex items-center justify-between gap-3 px-3 py-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium">Select time period</div>
+                    <div className="text-xs text-muted-foreground">
+                      Choose a time range for your finance query
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="rounded-md border bg-background px-2 py-1 text-xs"
+                      onClick={() => setIsTimeRangeSelectorCollapsed((v) => !v)}
+                      type="button"
+                    >
+                      {isTimeRangeSelectorCollapsed ? "Expand" : "Collapse"}
+                    </button>
+                  </div>
+                </div>
+
+                {!isTimeRangeSelectorCollapsed ? (
+                  <div className="px-3 pb-3">
+                    <TimeRangeSelector
+                      availableTimeRanges={timeRangeSelectorAnnotation.data.availableTimeRanges}
+                      defaultTimeRange={timeRangeSelectorAnnotation.data.defaultTimeRange}
+                      onSelectionChange={(timeRange) => {
+                        onTimeRangeSelection({
+                          timeRange,
+                          questionId: timeRangeSelectorAnnotation.data.questionId,
+                        });
+                      }}
+                      questionId={timeRangeSelectorAnnotation.data.questionId}
+                      selectedTimeRange={selectedTimeRange}
+                      className="rounded-lg border p-4"
+                    />
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {message.role === "assistant" && entitySelectorAnnotation && (!selectedEntities || selectedEntities.length === 0) ? (
             <div className="mb-3 w-full">
               <div className="rounded-xl border bg-background">
                 <div className="flex items-center justify-between gap-3 px-3 py-2">
@@ -530,6 +586,9 @@ export const PreviewMessage = memo(
       return false;
     }
     if (!equal(prevProps.selectedEntities, nextProps.selectedEntities)) {
+      return false;
+    }
+    if (!equal(prevProps.selectedTimeRange, nextProps.selectedTimeRange)) {
       return false;
     }
     return false;

@@ -4,7 +4,7 @@ import { ArrowDownIcon } from "lucide-react";
 import { memo, useEffect, useState } from "react";
 import { useMessages } from "@/hooks/use-messages";
 import type { Vote } from "@/lib/db/schema";
-import type { ChatMessage, EntityOption } from "@/lib/types";
+import type { ChatMessage, EntityOption, TimeRangeOption } from "@/lib/types";
 import { useDataStream } from "./data-stream-provider";
 import { Greeting } from "./greeting";
 import { PreviewMessage, ThinkingMessage } from "./message";
@@ -22,6 +22,8 @@ type MessagesProps = {
   showCitations: boolean;
   selectedEntities: EntityOption[];
   onEntitySelection: (args: { entities: EntityOption[]; questionId: string }) => void;
+  selectedTimeRange: TimeRangeOption | null;
+  onTimeRangeSelection: (args: { timeRange: TimeRangeOption; questionId: string }) => void;
 };
 
 function PureMessages({
@@ -36,6 +38,8 @@ function PureMessages({
   showCitations,
   selectedEntities,
   onEntitySelection,
+  selectedTimeRange,
+  onTimeRangeSelection,
 }: MessagesProps) {
   const {
     containerRef: messagesContainerRef,
@@ -87,12 +91,14 @@ function PureMessages({
               key={message.id}
               message={message}
               onEntitySelection={onEntitySelection}
+              onTimeRangeSelection={onTimeRangeSelection}
               regenerate={regenerate}
               requiresScrollPadding={
                 hasSentMessage && index === messages.length - 1
               }
               setMessages={setMessages}
               selectedEntities={selectedEntities}
+              selectedTimeRange={selectedTimeRange}
               vote={
                 votes
                   ? votes.find((vote) => vote.messageId === message.id)

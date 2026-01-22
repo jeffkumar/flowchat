@@ -25,6 +25,14 @@ export const EntityOptionSchema = z.object({
 });
 export type EntityOption = z.infer<typeof EntityOptionSchema>;
 
+export const TimeRangeOptionSchema = z.object({
+  type: z.enum(["preset", "custom"]),
+  label: z.string().min(1).max(100),
+  date_start: z.string().optional(),
+  date_end: z.string().optional(),
+});
+export type TimeRangeOption = z.infer<typeof TimeRangeOptionSchema>;
+
 export const ChartPayloadRowSchema = z.object({
   label: z.string().min(1).max(120),
   value: z.number(),
@@ -53,6 +61,12 @@ export const SpecialistAgentResponseSchema = z.object({
   needs_entity_selection: z
     .object({
       available_entities: z.array(EntityOptionSchema),
+    })
+    .optional(),
+  needs_time_selection: z
+    .object({
+      available_time_ranges: z.array(TimeRangeOptionSchema),
+      default_time_range: TimeRangeOptionSchema.optional(),
     })
     .optional(),
 });

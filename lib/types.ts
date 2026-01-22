@@ -38,10 +38,20 @@ export type EntitySelectorAnnotation = {
   };
 };
 
+export type TimeRangeSelectorAnnotation = {
+  type: "time-range-selector";
+  data: {
+    availableTimeRanges: TimeRangeOption[];
+    defaultTimeRange?: TimeRangeOption;
+    questionId: string;
+  };
+};
+
 export type ChatAnnotation =
   | { type: "sources"; data: RetrievedSource[] }
   | ChartDocumentAnnotation
   | EntitySelectorAnnotation
+  | TimeRangeSelectorAnnotation
   | { type: string; data: unknown };
 
 export const messageMetadataSchema = z.object({
@@ -71,6 +81,13 @@ export type EntityOption = {
   name: string | null;
 };
 
+export type TimeRangeOption = {
+  type: "preset" | "custom";
+  label: string;
+  date_start?: string;
+  date_end?: string;
+};
+
 export type CustomUIDataTypes = {
   textDelta: string;
   imageDelta: string;
@@ -89,6 +106,11 @@ export type CustomUIDataTypes = {
   agentStatus: { agent: string; message: string };
   entitySelector: {
     availableEntities: EntityOption[];
+    questionId?: string;
+  };
+  timeRangeSelector: {
+    availableTimeRanges: TimeRangeOption[];
+    defaultTimeRange?: TimeRangeOption;
     questionId?: string;
   };
 };

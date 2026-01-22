@@ -72,6 +72,8 @@ function PureArtifact({
   selectedModelId,
   selectedEntities,
   onEntitySelection,
+  selectedTimeRange,
+  onTimeRangeSelection,
 }: {
   chatId: string;
   input: string;
@@ -90,6 +92,8 @@ function PureArtifact({
   selectedModelId: string;
   selectedEntities?: import("@/lib/types").EntityOption[];
   onEntitySelection?: (args: { entities: import("@/lib/types").EntityOption[]; questionId: string }) => void;
+  selectedTimeRange?: import("@/lib/types").TimeRangeOption | null;
+  onTimeRangeSelection?: (args: { timeRange: import("@/lib/types").TimeRangeOption; questionId: string }) => void;
 }) {
   const { artifact, setArtifact, metadata, setMetadata } = useArtifact();
 
@@ -340,6 +344,8 @@ function PureArtifact({
                   status={status}
                   onEntitySelection={onEntitySelection}
                   selectedEntities={selectedEntities}
+                  onTimeRangeSelection={onTimeRangeSelection}
+                  selectedTimeRange={selectedTimeRange}
                   votes={votes}
                 />
 

@@ -50,7 +50,7 @@ function PureChatHeader({
       <ProjectSwitcher />
 
       {!isReadonly && (
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-1 flex-shrink-0">
           {(!open || windowWidth < 768) && (
             <Button
               className="h-8 px-2 md:h-fit md:px-2"

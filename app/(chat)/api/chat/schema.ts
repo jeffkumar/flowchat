@@ -48,6 +48,14 @@ export const postRequestBodySchema = z.object({
       })
     )
     .optional(),
+  selectedTimeRange: z
+    .object({
+      type: z.enum(["preset", "custom"]),
+      label: z.string().min(1).max(100),
+      date_start: z.string().optional(),
+      date_end: z.string().optional(),
+    })
+    .optional(),
 });
 
 export type PostRequestBody = z.infer<typeof postRequestBodySchema>;
