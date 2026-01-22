@@ -337,8 +337,8 @@ export async function POST(
           fileBuffer: rawBuffer,
         });
         const obj = extracted as Record<string, unknown>;
-        const txns = Array.isArray(obj.transactions) ? obj.transactions : [];
-        if (txns.length === 0) {
+        const Transactions = Array.isArray(obj.transactions) ? obj.transactions : [];
+        if (Transactions.length === 0) {
           throw new Error("Reducto returned no transactions; falling back to CSV parsing.");
         }
       } catch (_error) {
@@ -367,8 +367,8 @@ export async function POST(
       });
       if (doc.documentType === "bank_statement" || doc.documentType === "cc_statement") {
         const obj = extracted as Record<string, unknown>;
-        const txns = Array.isArray(obj.transactions) ? obj.transactions : [];
-        if (txns.length === 0) {
+        const Transactions = Array.isArray(obj.transactions) ? obj.transactions : [];
+        if (Transactions.length === 0) {
           throw new Error("Reducto returned no transactions.");
         }
       }
@@ -387,9 +387,9 @@ export async function POST(
 
     if (doc.documentType === "bank_statement" || doc.documentType === "cc_statement") {
       const obj = extracted as Record<string, unknown>;
-      const txns = Array.isArray(obj.transactions) ? obj.transactions : [];
+      const Transactions = Array.isArray(obj.transactions) ? obj.transactions : [];
 
-      const normalizedRows = txns
+      const normalizedRows = Transactions
         .map((t) => (t && typeof t === "object" ? (t as Record<string, unknown>) : null))
         .filter((t): t is Record<string, unknown> => t !== null)
         .map((t, idx) => {
