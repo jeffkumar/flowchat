@@ -69,6 +69,7 @@ export async function GET(request: Request) {
 
   const response = NextResponse.redirect(authorizeUrl);
 
+  const originHost = new URL(request.url).host;
   const cookieBase = {
     httpOnly: true,
     // OAuth callback is a cross-site redirect (login.microsoftonline.com -> our domain).
@@ -89,6 +90,11 @@ export async function GET(request: Request) {
   response.cookies.set({
     name: "ms_return_to",
     value: returnTo,
+    ...cookieBase,
+  });
+  response.cookies.set({
+    name: "ms_oauth_origin_host",
+    value: originHost,
     ...cookieBase,
   });
 

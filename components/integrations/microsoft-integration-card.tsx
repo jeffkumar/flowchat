@@ -45,6 +45,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
+import { useSearchParams } from "next/navigation";
 import {
   Folder,
   File as FileIcon,
@@ -212,11 +213,19 @@ import { BusinessNameTypeahead } from "@/components/business-name-typeahead";
 
 export function MicrosoftIntegrationCard() {
   const { selectedProjectId } = useProjectSelector();
+  const searchParams = useSearchParams();
 
   const { data: status, mutate: mutateStatus, isLoading } = useSWR<MicrosoftStatus>(
     "/api/integrations/microsoft/status",
     fetcher
   );
+
+  useEffect(() => {
+    const err = searchParams.get("microsoftError");
+    if (err === "invalid_state") {
+      toast.error("Microsoft connect failed. Please click Connect again.");
+    }
+  }, [searchParams]);
 
   const [selectedDriveId, setSelectedDriveId] = useState<string | null>(null);
   const [docTypeByKey, setDocTypeByKey] = useState<Record<string, IngestDocumentType>>(

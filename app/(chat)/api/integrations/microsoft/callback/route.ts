@@ -92,9 +92,52 @@ export async function GET(request: Request) {
   const expectedState = cookieStore.get("ms_oauth_state")?.value;
   const verifier = cookieStore.get("ms_pkce_verifier")?.value;
   const returnTo = cookieStore.get("ms_return_to")?.value ?? "/integrations";
+  const originHost = cookieStore.get("ms_oauth_origin_host")?.value ?? null;
 
   if (!expectedState || !verifier || expectedState !== state) {
-    return NextResponse.json({ error: "Invalid state" }, { status: 400 });
+    console.error("[microsoft oauth] invalid state", {
+      originHost,
+      callbackHost: new URL(request.url).host,
+      forwardedHost: request.headers.get("x-forwarded-host"),
+      forwardedProto: request.headers.get("x-forwarded-proto"),
+      hasCookieHeader: (request.headers.get("cookie") ?? "").length > 0,
+      hasExpectedStateCookie: Boolean(expectedState),
+      hasVerifierCookie: Boolean(verifier),
+      statePrefix: state.slice(0, 6),
+      expectedStatePrefix: expectedState ? expectedState.slice(0, 6) : null,
+    });
+
+    const response = NextResponse.redirect(
+      new URL(
+        `/integrations?microsoftError=invalid_state`,
+        request.url
+      )
+    );
+
+    const cookieBase = {
+      httpOnly: true,
+      sameSite: isDevelopmentEnvironment ? ("lax" as const) : ("none" as const),
+      secure: !isDevelopmentEnvironment,
+      path: "/",
+    };
+
+    response.cookies.set({ name: "ms_oauth_state", value: "", maxAge: 0, ...cookieBase });
+    response.cookies.set({
+      name: "ms_pkce_verifier",
+      value: "",
+      maxAge: 0,
+      ...cookieBase,
+    });
+    response.cookies.set({ name: "ms_return_to", value: "", maxAge: 0, ...cookieBase });
+    response.cookies.set({
+      name: "ms_oauth_origin_host",
+      value: "",
+      maxAge: 0,
+      ...cookieBase,
+    });
+
+    response.headers.set("cache-control", "no-store");
+    return response;
   }
 
   const body = new URLSearchParams();
@@ -202,6 +245,12 @@ export async function GET(request: Request) {
     ...cookieBase,
   });
   response.cookies.set({ name: "ms_return_to", value: "", maxAge: 0, ...cookieBase });
+  response.cookies.set({
+    name: "ms_oauth_origin_host",
+    value: "",
+    maxAge: 0,
+    ...cookieBase,
+  });
 
   return response;
 }
