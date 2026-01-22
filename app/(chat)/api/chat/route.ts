@@ -1693,19 +1693,46 @@ export async function POST(request: Request) {
         const normalizedLastUserText =
           expandEntityOnlyReply ?? expandBusinessNameOnlyReply ?? lastUserText;
         const isAggregationQuery = AGGREGATION_HINT_RE.test(normalizedLastUserText);
+
+        const lastAssistantText = (() => {
+          const lastAssistant = uiMessages
+            .slice()
+            .reverse()
+            .find((m) => m.role === "assistant");
+          if (!lastAssistant) return "";
+          return lastAssistant.parts
+            .filter(
+              (p): p is Extract<(typeof lastAssistant.parts)[number], { type: "text" }> => p.type === "text"
+            )
+            .map((p) => p.text)
+            .join(" ")
+            .trim();
+        })();
+
+        const assistantAskedForTimeWindow =
+          /\bwhat\s+time\s+window\s+should\s+i\s+use\b/i.test(lastAssistantText);
+
+        // Time-window replies like "June and July 2025" often happen immediately after FinanceAgent asks
+        // for a date range. Treat those as finance follow-ups so we route back into FinanceAgent.
+        const isFinanceTimeWindowReply =
+          assistantAskedForTimeWindow && TIME_RANGE_HINT_RE.test(normalizedLastUserText);
+
         const isFinanceQuery =
           isAggregationQuery ||
           FINANCE_DATA_QUERY_RE.test(normalizedLastUserText) ||
           INCOME_DATA_QUERY_RE.test(normalizedLastUserText) ||
           INVOICE_REVENUE_RE.test(normalizedLastUserText) ||
           FINANCE_FOLLOWUP_RE.test(normalizedLastUserText) ||
+          isFinanceTimeWindowReply ||
           Boolean(expandEntityOnlyReply) ||
           Boolean(expandBusinessNameOnlyReply);
 
         const financeQuestionForAgent = (() => {
           if (expandEntityOnlyReply) return expandEntityOnlyReply;
           if (expandBusinessNameOnlyReply) return expandBusinessNameOnlyReply;
-          if (!FINANCE_FOLLOWUP_RE.test(normalizedLastUserText)) return normalizedLastUserText;
+          if (!FINANCE_FOLLOWUP_RE.test(normalizedLastUserText) && !isFinanceTimeWindowReply) {
+            return normalizedLastUserText;
+          }
 
           const hasTime =
             /\b(19\d{2}|20\d{2})\b/.test(normalizedLastUserText) ||

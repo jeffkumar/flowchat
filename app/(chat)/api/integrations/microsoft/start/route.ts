@@ -27,6 +27,38 @@ function parseScopes(input: string) {
   return safe.length > 0 ? safe : ["openid", "profile", "email", "offline_access", "User.Read", "Files.Read.All", "Sites.Read.All"];
 }
 
+function getRequestBaseUrl(request: Request): URL {
+  const url = new URL(request.url);
+  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+  const host = forwardedHost ?? request.headers.get("host") ?? url.host;
+  const proto = forwardedProto ?? url.protocol.replace(":", "");
+  return new URL(`${proto}://${host}`);
+}
+
+function pickMicrosoftRedirectUri({
+  request,
+}: {
+  request: Request;
+}): string {
+  const baseUrl = getRequestBaseUrl(request);
+  const derived = new URL("/api/integrations/microsoft/callback", baseUrl).toString();
+  const configured = process.env.MICROSOFT_REDIRECT_URI;
+
+  if (typeof configured === "string" && configured.length > 0) {
+    try {
+      const configuredUrl = new URL(configured);
+      if (configuredUrl.host === baseUrl.host) {
+        return configuredUrl.toString();
+      }
+    } catch {
+      // Ignore invalid configured URL and fall back to derived.
+    }
+  }
+
+  return derived;
+}
+
 export async function GET(request: Request) {
   const session = await auth();
   if (!session?.user) {
@@ -34,18 +66,11 @@ export async function GET(request: Request) {
   }
 
   const clientId = process.env.MICROSOFT_CLIENT_ID;
-  const redirectUri = process.env.MICROSOFT_REDIRECT_URI;
+  const redirectUri = pickMicrosoftRedirectUri({ request });
 
   if (typeof clientId !== "string" || clientId.length === 0) {
     return NextResponse.json(
       { error: "MICROSOFT_CLIENT_ID is not set" },
-      { status: 500 }
-    );
-  }
-
-  if (typeof redirectUri !== "string" || redirectUri.length === 0) {
-    return NextResponse.json(
-      { error: "MICROSOFT_REDIRECT_URI is not set" },
       { status: 500 }
     );
   }
