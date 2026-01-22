@@ -219,6 +219,17 @@ function parseCsvEnv(value: string | undefined): string[] {
     .filter((s) => s.length > 0);
 }
 
+function isSlackContextAllowedForSessionEmail(sessionEmail: string | null): boolean {
+  const allowlist = parseCsvEnv(process.env.SLACK_CONTEXT_ALLOWLIST_EMAILS).map((e) =>
+    e.toLowerCase()
+  );
+  if (allowlist.length === 0) return false;
+  if (!sessionEmail) return false;
+  const normalized = sessionEmail.trim().toLowerCase();
+  if (!normalized) return false;
+  return allowlist.includes(normalized);
+}
+
 function getRetrievalTimeFilterModeInfoForProject(projectId: string | undefined): {
   mode: RetrievalTimeFilterMode;
   defaultMode: RetrievalTimeFilterMode;
@@ -777,6 +788,9 @@ export async function POST(request: Request) {
     }
 
     const userType: UserType = session.user.type;
+    const slackContextAllowed = isSlackContextAllowedForSessionEmail(
+      typeof session.user.email === "string" ? session.user.email : null
+    );
 
     const messageCount = await getMessageCountByUserId({
       id: session.user.id,
@@ -947,9 +961,16 @@ export async function POST(request: Request) {
         const requestedSourceTypes = (
           Array.isArray(sourceTypes) ? sourceTypes : undefined
         ) as SourceType[] | undefined;
+        const allowedSourceTypes = (() => {
+          if (slackContextAllowed) return requestedSourceTypes;
+          if (requestedSourceTypes) {
+            return requestedSourceTypes.filter((t) => t !== "slack");
+          }
+          return ["docs"] satisfies SourceType[];
+        })();
         const effectiveSourceTypes = docLockFilenameHint
           ? (["docs"] satisfies SourceType[])
-          : requestedSourceTypes;
+          : allowedSourceTypes;
         const namespaces = namespacesForSourceTypes(
           effectiveSourceTypes,
           activeProjectId,

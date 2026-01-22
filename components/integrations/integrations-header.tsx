@@ -11,7 +11,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Settings, Settings2 } from "lucide-react";
+import { Settings, Settings2, UserPlus } from "lucide-react";
 import { ViewDocs } from "@/components/view-docs";
 import { useProjectSelector } from "@/hooks/use-project-selector";
 import { Button } from "@/components/ui/button";
@@ -19,9 +19,11 @@ import {
   readIgnoredDocIdsForProject,
   writeIgnoredDocIdsForProject,
 } from "@/lib/utils";
+import { ShareProjectDialog } from "@/components/share-project-dialog";
 
 export function IntegrationsHeader() {
   const [isViewDocsOpen, setIsViewDocsOpen] = useState(false);
+  const [isShareOpen, setIsShareOpen] = useState(false);
   const [ignoredDocIds, setIgnoredDocIds] = useState<string[]>([]);
   const { selectedProject, selectedProjectId } = useProjectSelector();
 
@@ -44,6 +46,16 @@ export function IntegrationsHeader() {
         <SidebarToggle />
         <ProjectSwitcher />
         <div className="ml-auto flex items-center gap-1">
+          <Button
+            size="sm"
+            type="button"
+            variant="outline"
+            disabled={!selectedProjectId}
+            onClick={() => setIsShareOpen(true)}
+          >
+            <UserPlus className="mr-2 h-4 w-4" />
+            Add people
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="gap-1" type="button">
@@ -73,6 +85,14 @@ export function IntegrationsHeader() {
         ignoredDocIds={ignoredDocIds}
         setIgnoredDocIds={setIgnoredDocIds}
       />
+
+      {selectedProjectId && (
+        <ShareProjectDialog
+          projectId={selectedProjectId}
+          open={isShareOpen}
+          onOpenChange={setIsShareOpen}
+        />
+      )}
     </>
   );
 }

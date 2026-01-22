@@ -5,6 +5,8 @@ import useSWR from "swr";
 import { fetcher } from "@/lib/utils";
 import type { ProjectDoc } from "@/lib/db/schema";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import {
   Sheet,
   SheetContent,
@@ -13,7 +15,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { EyeIcon, EyeOffIcon, LoaderIcon, Trash2Icon } from "lucide-react";
+import { EyeIcon, EyeOffIcon, LoaderIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { format } from "date-fns";
@@ -30,6 +32,19 @@ import {
 } from "@/components/ui/alert-dialog";
 import { OneDriveIcon } from "@/components/icons";
 
+type MembersResponse = {
+  members: Array<
+    | { kind: "user"; userId: string; email: string; role: "owner" | "admin" | "member" }
+    | { kind: "invite"; email: string; role: "admin" | "member" }
+  >;
+};
+
+type MicrosoftStatus = { connected: boolean };
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
 interface ViewDocsProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
@@ -43,6 +58,8 @@ export function ViewDocs({
   ignoredDocIds,
   setIgnoredDocIds,
 }: ViewDocsProps) {
+  const router = useRouter();
+  const { data: session } = useSession();
   const { selectedProjectId, selectedProject } = useProjectSelector();
   const [docToDelete, setDocToDelete] = useState<ProjectDoc | null>(null);
   const [showClearAllDialog, setShowClearAllDialog] = useState(false);
@@ -51,6 +68,27 @@ export function ViewDocs({
     selectedProjectId ? `/api/projects/${selectedProjectId}/docs` : null,
     fetcher
   );
+
+  const { data: membersData } = useSWR<MembersResponse>(
+    selectedProjectId ? `/api/projects/${selectedProjectId}/members` : null,
+    fetcher
+  );
+
+  const { data: msStatus } = useSWR<MicrosoftStatus>(
+    "/api/integrations/microsoft/status",
+    fetcher
+  );
+
+  const currentUserId = session?.user?.id ?? null;
+  const role = (() => {
+    if (!currentUserId) return null;
+    const row = membersData?.members?.find(
+      (m) => m.kind === "user" && m.userId === currentUserId
+    );
+    return row && row.kind === "user" ? row.role : null;
+  })();
+  const isAdmin = role === "owner" || role === "admin";
+  const msConnected = Boolean(msStatus?.connected);
 
   const toggleDocVisibility = (docId: string) => {
     if (ignoredDocIds.includes(docId)) {
@@ -66,6 +104,11 @@ export function ViewDocs({
   };
 
   const projectName = selectedProject?.name ?? "";
+
+  const openProjectFiles = () => {
+    onOpenChange(false);
+    router.push("/project-files");
+  };
 
   const deleteDoc = (doc: ProjectDoc) => {
     if (!selectedProjectId) {
@@ -95,6 +138,64 @@ export function ViewDocs({
       },
       error: (error) =>
         error instanceof Error ? error.message : "Failed to delete document",
+    });
+  };
+
+  const syncMicrosoftDoc = (doc: ProjectDoc) => {
+    if (!selectedProjectId) {
+      toast.error("No project selected");
+      return;
+    }
+    if (!isAdmin) {
+      toast.error("Only project admins can sync integration files");
+      return;
+    }
+    if (!msConnected) {
+      toast.error("Connect Microsoft first to sync files");
+      return;
+    }
+
+    const metadata =
+      doc.metadata && typeof doc.metadata === "object"
+        ? (doc.metadata as Record<string, unknown>)
+        : null;
+    const driveId =
+      metadata && isNonEmptyString(metadata.driveId) ? metadata.driveId : null;
+    const itemId =
+      metadata && isNonEmptyString(metadata.itemId) ? metadata.itemId : null;
+    if (!driveId || !itemId) {
+      toast.error("Missing SharePoint/OneDrive metadata for this document");
+      return;
+    }
+
+    const syncPromise = fetch(
+      `/api/projects/${selectedProjectId}/integrations/microsoft/sync`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          driveId,
+          items: [{ itemId, filename: doc.filename }],
+          documentType: doc.documentType,
+        }),
+      }
+    ).then(async (response) => {
+      if (!response.ok) {
+        const json = (await response.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(json?.error ?? "Failed to sync document");
+      }
+    });
+
+    toast.promise(syncPromise, {
+      loading: "Syncing file...",
+      success: () => {
+        void mutate();
+        return "Sync started";
+      },
+      error: (error) =>
+        error instanceof Error ? error.message : "Failed to sync document",
     });
   };
 
@@ -138,6 +239,12 @@ export function ViewDocs({
           </SheetDescription>
         </SheetHeader>
 
+        <div className="mt-4 flex items-center justify-end">
+          <Button onClick={openProjectFiles} type="button" variant="outline" size="sm">
+            Open Project Files
+          </Button>
+        </div>
+
         <div className="flex-1 overflow-hidden mt-6">
           {isLoading ? (
             <div className="flex items-center justify-center h-full">
@@ -171,6 +278,8 @@ export function ViewDocs({
                     Boolean(driveId && itemId) ||
                     sourceLower.includes("sharepoint.com") ||
                     sourceLower.includes("onedrive");
+                  const canDelete =
+                    isAdmin || (currentUserId !== null && doc.createdBy === currentUserId);
                   return (
                     <div
                       key={doc.id}
@@ -232,8 +341,37 @@ export function ViewDocs({
                             <EyeIcon className="h-4 w-4" />
                           )}
                         </Button>
+                        {isMicrosoftSource ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span>
+                                <Button
+                                  className="shrink-0"
+                                  disabled={!isAdmin || !msConnected}
+                                  onClick={() => syncMicrosoftDoc(doc)}
+                                  size="icon"
+                                  title="Sync file"
+                                  type="button"
+                                  variant="ghost"
+                                >
+                                  <RefreshCwIcon className="h-4 w-4 text-muted-foreground" />
+                                </Button>
+                              </span>
+                            </TooltipTrigger>
+                            {!isAdmin ? (
+                              <TooltipContent side="top">
+                                Only project admins can sync integration files.
+                              </TooltipContent>
+                            ) : !msConnected ? (
+                              <TooltipContent side="top">
+                                Connect Microsoft to sync files.
+                              </TooltipContent>
+                            ) : null}
+                          </Tooltip>
+                        ) : null}
                         <Button
                           className="shrink-0"
+                          disabled={!canDelete}
                           onClick={() => setDocToDelete(doc)}
                           size="icon"
                           title={isMicrosoftSource ? "Remove from context" : "Delete document"}
