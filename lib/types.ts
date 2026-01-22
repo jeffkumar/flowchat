@@ -22,8 +22,17 @@ export type RetrievedSource = {
   content?: string;
 };
 
+export type ChartDocumentAnnotation = {
+  type: "chart-document";
+  data: {
+    documentId: string;
+    title: string;
+  };
+};
+
 export type ChatAnnotation =
   | { type: "sources"; data: RetrievedSource[] }
+  | ChartDocumentAnnotation
   | { type: string; data: unknown };
 
 export const messageMetadataSchema = z.object({
@@ -67,6 +76,7 @@ export type CustomUIDataTypes = {
   finish: null;
   usage: AppUsage;
   sources: RetrievedSource[];
+  chartDocument: { id: string; title: string; kind: "chart" };
   agentStatus: { agent: string; message: string };
   entitySelector: {
     availableEntities: EntityOption[];

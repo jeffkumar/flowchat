@@ -281,6 +281,10 @@ export function Chat({
   );
   const pendingSourcesRef = useRef<RetrievedSource[] | null>(null);
 
+  const pendingChartDocumentRef = useRef<{ id: string; title: string } | null>(
+    null
+  );
+
   const [selectedEntities, setSelectedEntities] = useState<EntityOption[]>([]);
   const selectedEntitiesRef = useRef<EntityOption[]>([]);
   const [entitySelectorData, setEntitySelectorData] = useState<{
@@ -331,6 +335,9 @@ export function Chat({
         pendingSourcesRef.current = dataPart.data;
         setPendingSources(dataPart.data);
       }
+      if (dataPart.type === "data-chartDocument") {
+        pendingChartDocumentRef.current = { id: dataPart.data.id, title: dataPart.data.title };
+      }
       if (dataPart.type === "data-entitySelector") {
         setEntitySelectorData(dataPart.data);
       }
@@ -357,6 +364,25 @@ export function Chat({
         });
         pendingSourcesRef.current = null;
         setPendingSources(null);
+      }
+
+      const chartDoc = pendingChartDocumentRef.current;
+      if (chartDoc) {
+        setMessages((prevMessages) => {
+          const last = prevMessages[prevMessages.length - 1];
+          if (last && last.role === "assistant") {
+            const newAnnotations = [
+              ...(last.annotations || []),
+              { type: "chart-document", data: { documentId: chartDoc.id, title: chartDoc.title } },
+            ];
+            return [
+              ...prevMessages.slice(0, -1),
+              { ...last, annotations: newAnnotations },
+            ];
+          }
+          return prevMessages;
+        });
+        pendingChartDocumentRef.current = null;
       }
 
       mutate(
@@ -403,6 +429,7 @@ export function Chat({
     if (statusRef.current !== status && status === "submitted") {
       pendingSourcesRef.current = null;
       setPendingSources(null);
+      pendingChartDocumentRef.current = null;
     }
     statusRef.current = status;
   }, [status]);

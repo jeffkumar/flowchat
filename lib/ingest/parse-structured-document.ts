@@ -75,6 +75,42 @@ function classifyBankTxnCategory(description: string): string | null {
   ) {
     return "transfer";
   }
+  if (
+    d.includes("payroll") ||
+    d.includes("salary") ||
+    d.includes("direct dep") ||
+    d.includes("direct deposit") ||
+    d.includes("ach credit") ||
+    d.includes("deposit") ||
+    d.includes("wire credit")
+  ) {
+    return "income";
+  }
+  if (
+    d.includes("interest") ||
+    d.includes("int paid") ||
+    d.includes("dividend")
+  ) {
+    return "interest";
+  }
+  if (
+    d.includes("fee") ||
+    d.includes("service charge") ||
+    d.includes("monthly maintenance") ||
+    d.includes("overdraft")
+  ) {
+    return "fee";
+  }
+  if (d.includes("atm") || d.includes("cash withdrawal")) {
+    return "atm";
+  }
+  if (
+    d.includes("refund") ||
+    d.includes("reversal") ||
+    d.includes("chargeback")
+  ) {
+    return "refund";
+  }
   return null;
 }
 
@@ -477,14 +513,14 @@ export async function parseStructuredProjectDoc({
           fileBuffer: rawBuffer,
         });
         const obj = extracted as Record<string, unknown>;
-        const txns = Array.isArray(obj.transactions) ? obj.transactions : [];
-        if (txns.length === 0) {
+        const Transactions = Array.isArray(obj.transactions) ? obj.transactions : [];
+        if (Transactions.length === 0) {
           throw new Error("Reducto returned no transactions; falling back to CSV parsing.");
         }
 
         // Reducto can return transactions for CSVs but omit running balance even when present in the CSV.
         // If we can parse balances from the CSV, prefer the CSV-parsed transactions.
-        const reductoHasBalance = txns.some((t) => {
+        const reductoHasBalance = Transactions.some((t) => {
           if (!t || typeof t !== "object") return false;
           return "balance" in (t as Record<string, unknown>);
         });
@@ -517,8 +553,8 @@ export async function parseStructuredProjectDoc({
       });
       if (doc.documentType === "bank_statement" || doc.documentType === "cc_statement") {
         const obj = extracted as Record<string, unknown>;
-        const txns = Array.isArray(obj.transactions) ? obj.transactions : [];
-        if (txns.length === 0) {
+        const Transactions = Array.isArray(obj.transactions) ? obj.transactions : [];
+        if (Transactions.length === 0) {
           throw new Error("Reducto returned no transactions.");
         }
       }
@@ -536,9 +572,9 @@ export async function parseStructuredProjectDoc({
     if (doc.documentType === "bank_statement" || doc.documentType === "cc_statement") {
       // Handle both Reducto output (obj.transactions) and CSV fallback (obj.transactions)
       const obj = extracted as Record<string, unknown>;
-      const txns = Array.isArray(obj.transactions) ? obj.transactions : [];
+      const Transactions = Array.isArray(obj.transactions) ? obj.transactions : [];
 
-      const normalizedRows = txns
+      const normalizedRows = Transactions
         .map((t) => (t && typeof t === "object" ? (t as Record<string, unknown>) : null))
         .filter((t): t is Record<string, unknown> => t !== null)
         .map((t, idx) => {
@@ -549,10 +585,9 @@ export async function parseStructuredProjectDoc({
           const description = normalizeDescription(t.description);
           const merchantRaw =
             typeof t.merchant === "string" ? t.merchant.trim().slice(0, 200) : "";
-          // Prefer explicit merchant; otherwise derive a merchant-like value from description.
-          const merchant =
-            normalizeMerchantLike(merchantRaw) ??
-            (description ? normalizeMerchantLike(description) : null);
+          // Merchant must be explicitly extracted and pass validation.
+          // Do NOT derive merchant from description (it creates garbage buckets like "-", "*", ".Bozeman").
+          const merchant = normalizeMerchantLike(merchantRaw);
           const currency = typeof t.currency === "string" ? t.currency.trim().slice(0, 16) : null;
           const balance = t.balance === null || t.balance === undefined ? null : parseDecimalString(t.balance);
           const rawCategory =

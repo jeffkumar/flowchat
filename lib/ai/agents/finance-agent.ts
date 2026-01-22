@@ -3,6 +3,7 @@ import "server-only";
 import type { Session } from "next-auth";
 import { z } from "zod";
 import {
+  financeGroupByDescription,
   financeGroupByCategory,
   financeGroupByMerchant,
   financeGroupByMonth,
@@ -222,6 +223,85 @@ function toGfmTable(headers: readonly string[], rows: readonly (readonly string[
   const sepLine = `| ${headers.map(() => "---").join(" | ")} |`;
   const body = rows.map((r) => `| ${r.map((c) => esc(c)).join(" | ")} |`);
   return [headerLine, sepLine, ...body].join("\n");
+}
+
+function coerceNonNegativeNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, value);
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed)) return Math.max(0, parsed);
+  }
+  return null;
+}
+
+function buildChartPayload({
+  title,
+  breakdown,
+  rows,
+  labelKey,
+}: {
+  title: string;
+  breakdown: "category" | "month" | "merchant" | "description";
+  rows: unknown[];
+  labelKey: "category" | "month" | "merchant" | "description";
+}):
+  | {
+      version: 1;
+      title: string;
+      breakdown: "category" | "month" | "merchant" | "description";
+      unit: "USD";
+      rows: Array<{ label: string; value: number; count?: number }>;
+    }
+  | null {
+  const out: Array<{ label: string; value: number; count?: number }> = [];
+
+  for (const r of rows.slice(0, 250)) {
+    if (!r || typeof r !== "object") continue;
+    const rec = r as Record<string, unknown>;
+
+    const rawLabel = rec[labelKey];
+    const label =
+      typeof rawLabel === "string" && rawLabel.trim().length > 0
+        ? rawLabel.trim()
+        : labelKey === "category"
+          ? "Uncategorized"
+          : "(unknown)";
+
+    const rawTotal = rec.total;
+    const value = coerceNonNegativeNumber(
+      typeof rawTotal === "string" ? rawTotal.replace(/^-/, "") : rawTotal
+    );
+    if (value === null) continue;
+
+    const count =
+      typeof rec.count === "number" && Number.isFinite(rec.count) && rec.count >= 0
+        ? Math.floor(rec.count)
+        : undefined;
+
+    out.push({
+      label: label.slice(0, 120),
+      value,
+      ...(typeof count === "number" ? { count } : {}),
+    });
+  }
+
+  if (out.length === 0) return null;
+
+  out.sort((a, b) => b.value - a.value);
+
+  return {
+    version: 1,
+    title: title.slice(0, 140),
+    breakdown,
+    unit: "USD",
+    rows: out,
+  };
+}
+
+function entityLabel(entity: { kind: "personal" | "business" | null; name: string | null }) {
+  if (entity.kind === "personal") return "Personal";
+  if (entity.kind === "business") return entity.name || "Business";
+  return "Unknown";
 }
 
 export async function runFinanceAgent({
@@ -500,7 +580,7 @@ export async function runFinanceAgent({
       if (count > 0) {
         return SpecialistAgentResponseSchema.parse({
           kind: "finance",
-          answer_draft: `Spend on ${entity.kind === "personal" ? "Personal" : entity.name} (${category}) in ${range.label}: $${bankSum.total} (${count} txns).`,
+          answer_draft: `Spend on ${entity.kind === "personal" ? "Personal" : entity.name} (${category}) in ${range.label}: $${bankSum.total} (${count} transactions).`,
           questions_for_user: [],
           assumptions: ["Matched category against bank_statement withdrawals (amount < 0)."],
           tool_calls: [
@@ -549,23 +629,50 @@ export async function runFinanceAgent({
             });
 
     const rows = Array.isArray((grouped as any).rows) ? ((grouped as any).rows as any[]) : [];
-    const table = (() => {
+    const chartPayload = (() => {
+      const label = entityLabel(entity);
+      if (qLower.includes("by month")) {
+        return buildChartPayload({
+          title: `Spend by month (${label}, ${range.label})`,
+          breakdown: "month",
+          rows,
+          labelKey: "month",
+        });
+      }
+      if (qLower.includes("by category") || category) {
+        return buildChartPayload({
+          title: `Spend by category (${label}, ${range.label})`,
+          breakdown: "category",
+          rows,
+          labelKey: "category",
+        });
+      }
+      return buildChartPayload({
+        title: `Spend by merchant (${label}, ${range.label})`,
+        breakdown: "merchant",
+        rows,
+        labelKey: "merchant",
+      });
+    })();
+    const table = chartPayload
+      ? ""
+      : (() => {
       if (rows.length === 0) return "";
       if (qLower.includes("by month")) {
         return toGfmTable(
-          ["Month", "Total", "Txns"],
+          ["Month", "Total", "Transactions"],
           rows.slice(0, 24).map((r) => [String(r.month), `$${String(r.total).replace(/^-/, "")}`, String(r.count)])
         );
       }
       if (qLower.includes("by category") || category) {
         return toGfmTable(
-          ["Category", "Total", "Txns"],
+          ["Category", "Total", "Transactions"],
           rows.slice(0, 24).map((r) => [String(r.category ?? "Uncategorized"), `$${String(r.total).replace(/^-/, "")}`, String(r.count)])
         );
       }
       if (wantsMerchant && typeof topN === "number") {
         return toGfmTable(
-          ["Merchant", "Total", "Txns"],
+          ["Merchant", "Total", "Transactions"],
           rows.slice(0, topN).map((r) => [
             String(r.merchant ?? "(unknown)"),
             `$${String(r.total).replace(/^-/, "")}`,
@@ -574,7 +681,7 @@ export async function runFinanceAgent({
         );
       }
       return toGfmTable(
-        ["Merchant", "Total", "Txns"],
+        ["Merchant", "Total", "Transactions"],
         rows.slice(0, 24).map((r) => [String(r.merchant ?? "(unknown)"), `$${String(r.total).replace(/^-/, "")}`, String(r.count)])
       );
     })();
@@ -582,7 +689,7 @@ export async function runFinanceAgent({
     return SpecialistAgentResponseSchema.parse({
       kind: "finance",
       answer_draft: [
-        `Spend on ${entity.kind === "personal" ? "Personal" : entity.name}${category ? ` (${category})` : ""} in ${range.label}: $${total}${signNote} (${used.count} txns).`,
+        `Spend on ${entity.kind === "personal" ? "Personal" : entity.name}${category ? ` (${category})` : ""} in ${range.label}: $${total}${signNote} (${used.count} Transactions).`,
         table ? "" : "",
         table ? `\n${table}` : "",
       ]
@@ -616,12 +723,15 @@ export async function runFinanceAgent({
       ],
       citations: [],
       confidence: used.count === 0 ? "low" : "medium",
+      chart_payload: chartPayload ?? undefined,
     });
   }
 
   // Bank statement: treat spend as withdrawals (amount < 0) unless user is asking income/deposits.
   const isIncomeLike = qLower.includes("income") || qLower.includes("deposit") || qLower.includes("deposits") || qLower.includes("revenue");
   const amountFilter = isIncomeLike ? { amount_min: 0.01 } : { amount_max: -0.01 };
+  const wantsByDescription =
+    mainLower.includes("by description") || mainLower.includes("by memo") || mainLower.includes("by details");
 
   if (shouldPreferCcOnCategory) {
     const ccSum = (await financeSum({
@@ -633,7 +743,7 @@ export async function runFinanceAgent({
     if (ccSum.count > 0) {
       return SpecialistAgentResponseSchema.parse({
         kind: "finance",
-        answer_draft: `Spend on ${entity.kind === "personal" ? "Personal" : entity.name} (${category}) in ${range.label}: $${ccSum.total} (${ccSum.count} txns).`,
+        answer_draft: `Spend on ${entity.kind === "personal" ? "Personal" : entity.name} (${category}) in ${range.label}: $${ccSum.total} (${ccSum.count} Transactions).`,
         questions_for_user: [],
         assumptions: ["Matched category against cc_statement transactions (charges only)."],
         tool_calls: [],
@@ -687,40 +797,104 @@ export async function runFinanceAgent({
     filters: { ...baseFilters, ...amountFilter },
   });
 
-  const grouped = qLower.includes("by category")
-    ? await financeGroupByCategory({
+  const wantsMerchantBank = mainLower.includes("merchant") || mainLower.includes("by merchant");
+  const wantsByMonthDefault = isIncomeLike && !mainLower.includes("by ");
+  const grouped = qLower.includes("by month") || wantsByMonthDefault
+    ? await financeGroupByMonth({
         userId: session.user.id,
         projectId: parsed.projectId,
         documentType: "bank_statement",
         filters: { ...baseFilters, ...amountFilter },
       })
-    : qLower.includes("by month")
-      ? await financeGroupByMonth({
+    : wantsByDescription
+      ? await financeGroupByDescription({
           userId: session.user.id,
           projectId: parsed.projectId,
           documentType: "bank_statement",
           filters: { ...baseFilters, ...amountFilter },
         })
-      : null;
+    : wantsMerchantBank
+      ? await financeGroupByMerchant({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "bank_statement",
+          filters: { ...baseFilters, ...amountFilter },
+        })
+      : await financeGroupByCategory({
+          userId: session.user.id,
+          projectId: parsed.projectId,
+          documentType: "bank_statement",
+          filters: { ...baseFilters, ...amountFilter },
+        });
 
-  const rows = grouped && Array.isArray((grouped as any).rows) ? ((grouped as any).rows as any[]) : [];
-  const table =
-    rows.length === 0
+  const rows = Array.isArray((grouped as any).rows) ? ((grouped as any).rows as any[]) : [];
+  const chartPayload = (() => {
+    const label = entityLabel(entity);
+    if (qLower.includes("by month") || wantsByMonthDefault) {
+      return buildChartPayload({
+        title: `${isIncomeLike ? "Deposits" : "Spend"} by month (${label}, ${range.label})`,
+        breakdown: "month",
+        rows,
+        labelKey: "month",
+      });
+    }
+    if (wantsByDescription) {
+      return buildChartPayload({
+        title: `${isIncomeLike ? "Deposits" : "Spend"} by description (${label}, ${range.label})`,
+        breakdown: "description",
+        rows,
+        labelKey: "description",
+      });
+    }
+    if (wantsMerchantBank) {
+      return buildChartPayload({
+        title: `${isIncomeLike ? "Deposits" : "Spend"} by merchant (${label}, ${range.label})`,
+        breakdown: "merchant",
+        rows,
+        labelKey: "merchant",
+      });
+    }
+    return buildChartPayload({
+      title: `${isIncomeLike ? "Deposits" : "Spend"} by category (${label}, ${range.label})`,
+      breakdown: "category",
+      rows,
+      labelKey: "category",
+    });
+  })();
+  const table = chartPayload
+    ? ""
+    : rows.length === 0
       ? ""
-      : qLower.includes("by month")
+      : qLower.includes("by month") || wantsByMonthDefault
         ? toGfmTable(
-            ["Month", "Total", "Txns"],
+            ["Month", "Total", "Transactions"],
             rows.slice(0, 24).map((r) => [String(r.month), `$${String(r.total)}`, String(r.count)])
           )
-        : toGfmTable(
-            ["Category", "Total", "Txns"],
-            rows.slice(0, 24).map((r) => [String(r.category ?? "Uncategorized"), `$${String(r.total)}`, String(r.count)])
-          );
+        : wantsByDescription
+          ? toGfmTable(
+              ["Description", "Total", "Transactions"],
+              rows
+                .slice(0, 24)
+                .map((r) => [String(r.description ?? "(unknown)"), `$${String(r.total)}`, String(r.count)])
+            )
+        : wantsMerchantBank
+          ? toGfmTable(
+              ["Merchant", "Total", "Transactions"],
+              rows
+                .slice(0, 24)
+                .map((r) => [String(r.merchant ?? "(unknown)"), `$${String(r.total)}`, String(r.count)])
+            )
+          : toGfmTable(
+              ["Category", "Total", "Transactions"],
+              rows
+                .slice(0, 24)
+                .map((r) => [String(r.category ?? "Uncategorized"), `$${String(r.total)}`, String(r.count)])
+            );
 
   return SpecialistAgentResponseSchema.parse({
     kind: "finance",
     answer_draft: [
-      `${isIncomeLike ? "Income/deposits" : "Spend/withdrawals"} for ${entity.kind === "personal" ? "Personal" : entity.name} in ${range.label}: $${sum.total} (${sum.count} txns).`,
+      `${isIncomeLike ? "Income/deposits" : "Spend/withdrawals"} for ${entity.kind === "personal" ? "Personal" : entity.name} in ${range.label}: $${sum.total} (${sum.count} Transactions).`,
       table ? `\n\n${table}` : "",
     ].join(""),
     questions_for_user: [],
@@ -728,6 +902,7 @@ export async function runFinanceAgent({
     tool_calls: [],
     citations: [],
     confidence: sum.count === 0 ? "low" : "medium",
+    chart_payload: chartPayload ?? undefined,
   });
 }
 

@@ -45,6 +45,7 @@ import {
   getOrCreateDefaultProjectForUser,
   getProjectByIdForUser,
   getProjectEntitySummaryForUser,
+  saveDocument,
   saveChat,
   saveMessages,
   updateChatLastContextById,
@@ -217,6 +218,14 @@ function parseCsvEnv(value: string | undefined): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
+}
+
+function stripMarkdownTables(text: string): string {
+  // Remove GitHub-flavored markdown tables when we show an equivalent chart.
+  // Matches a header row, separator row, and subsequent table rows.
+  const tableBlockRe =
+    /^\|.*\|\s*\n^\|(?:\s*:?-{3,}:?\s*\|)+\s*\n(?:^\|.*\|\s*\n?)*/gms;
+  return text.replace(tableBlockRe, "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function isSlackContextAllowedForSessionEmail(sessionEmail: string | null): boolean {
@@ -1783,10 +1792,36 @@ export async function POST(request: Request) {
             dataStream.write({
               type: "text-delta",
               id: msgId,
-              delta: "Please select the account(s) you'd like to analyze:",
+              delta: "Please tell me the account(s) you'd like to analyze:",
             });
             dataStream.write({ type: "text-end", id: msgId });
             return;
+          }
+
+          let chartWasShown = false;
+          if (agentResult.chart_payload && session.user?.id) {
+            try {
+              const chartDocId = generateUUID();
+              const chartTitle =
+                typeof agentResult.chart_payload.title === "string" &&
+                agentResult.chart_payload.title.trim().length > 0
+                  ? agentResult.chart_payload.title.trim()
+                  : "Chart";
+              await saveDocument({
+                id: chartDocId,
+                title: chartTitle,
+                kind: "chart",
+                content: JSON.stringify(agentResult.chart_payload),
+                userId: session.user.id,
+              });
+              dataStream.write({
+                type: "data-chartDocument",
+                data: { id: chartDocId, title: chartTitle, kind: "chart" },
+              });
+              chartWasShown = true;
+            } catch (_err) {
+              // Best-effort: chart is an enhancement; do not fail the chat response.
+            }
           }
 
           const msgId = generateUUID();
@@ -1794,7 +1829,9 @@ export async function POST(request: Request) {
             agentResult.questions_for_user.length > 0
               ? agentResult.questions_for_user.join(" ")
               : agentResult.answer_draft.trim().length > 0
-                ? agentResult.answer_draft
+                ? chartWasShown
+                  ? stripMarkdownTables(agentResult.answer_draft)
+                  : agentResult.answer_draft
                 : "I couldn't compute that from the available data. Can you share more details?";
           dataStream.write({ type: "text-start", id: msgId });
           dataStream.write({ type: "text-delta", id: msgId, delta: text });

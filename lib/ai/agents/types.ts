@@ -25,6 +25,22 @@ export const EntityOptionSchema = z.object({
 });
 export type EntityOption = z.infer<typeof EntityOptionSchema>;
 
+export const ChartPayloadRowSchema = z.object({
+  label: z.string().min(1).max(120),
+  value: z.number(),
+  count: z.number().int().nonnegative().optional(),
+});
+export type ChartPayloadRow = z.infer<typeof ChartPayloadRowSchema>;
+
+export const ChartPayloadSchema = z.object({
+  version: z.literal(1),
+  title: z.string().min(1).max(140),
+  breakdown: z.enum(["category", "month", "merchant", "description"]),
+  unit: z.literal("USD"),
+  rows: z.array(ChartPayloadRowSchema).max(250),
+});
+export type ChartPayload = z.infer<typeof ChartPayloadSchema>;
+
 export const SpecialistAgentResponseSchema = z.object({
   kind: AgentKindSchema,
   answer_draft: z.string(),
@@ -33,6 +49,7 @@ export const SpecialistAgentResponseSchema = z.object({
   tool_calls: z.array(AgentToolCallSchema).default([]),
   citations: z.array(AgentCitationSchema).default([]),
   confidence: AgentConfidenceSchema.default("medium"),
+  chart_payload: ChartPayloadSchema.optional(),
   needs_entity_selection: z
     .object({
       available_entities: z.array(EntityOptionSchema),

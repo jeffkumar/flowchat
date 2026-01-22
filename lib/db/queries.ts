@@ -2323,7 +2323,7 @@ export async function getProjectContextSnippetForUser({
       const period = periodStart && periodEnd ? `${periodStart}–${periodEnd}` : null;
       const txnInfo =
         d.documentType === "bank_statement" || d.documentType === "cc_statement"
-          ? `, txns=${d.txnCount ?? 0}`
+          ? `, Transactions=${d.txnCount ?? 0}`
           : "";
       const filename = truncateText(d.filename, 60);
       const parse = d.parseStatus;
@@ -3178,23 +3178,22 @@ export async function financeGroupByMerchant({
     const whereSql = and(...whereClauses);
     const dedupeKey = sql<string>`COALESCE(${financialTransaction.txnHash}, (${financialTransaction.documentId}::text || '|' || ${financialTransaction.rowHash}))`;
 
-    // Normalize merchant for grouping so we don't end up with buckets like "-", "&", "4BOZEMAN".
-    // Prefer stored merchant, fall back to description, then clean it.
+    // Group by *merchant only*. Do NOT fall back to description.
+    // Apply a stricter validity check so garbage becomes NULL.
     const merchantKey = sql<string>`
-      NULLIF(
-        regexp_replace(
+      CASE
+        WHEN ${financialTransaction.merchant} IS NULL THEN NULL
+        WHEN length(regexp_replace(${financialTransaction.merchant}, '[^A-Za-z]', '', 'g')) < 3 THEN NULL
+        ELSE NULLIF(
           regexp_replace(
-            trim(COALESCE(${financialTransaction.merchant}, ${financialTransaction.description})),
-            '\\s+',
-            ' ',
+            regexp_replace(trim(${financialTransaction.merchant}), '\\s+', ' ', 'g'),
+            '^[^A-Za-z0-9]+|[^A-Za-z0-9]+$',
+            '',
             'g'
           ),
-          '^[^A-Za-z0-9]+|[^A-Za-z0-9]+$',
-          '',
-          'g'
-        ),
-        ''
-      )
+          ''
+        )
+      END
     `;
 
     const rows = await db.execute(sql`
@@ -3228,6 +3227,109 @@ export async function financeGroupByMerchant({
     throw new ChatSDKError(
       "bad_request:database",
       error instanceof Error ? error.message : "Failed to run finance group_by_merchant"
+    );
+  }
+}
+
+export async function financeGroupByDescription({
+  userId,
+  projectId,
+  documentType,
+  filters,
+}: {
+  userId: string;
+  projectId?: string;
+  documentType: Exclude<FinanceDocumentType, "invoice">;
+  filters?: FinanceQueryFilters;
+}) {
+  try {
+    const docIdFilter = buildDocIdFilter(filters?.doc_ids);
+    const entityFilter = buildEntityFilter({
+      entityKind: filters?.entity_kind,
+      entityName: filters?.entity_name,
+    });
+    const vendorFilter = buildVendorContainsFilter({
+      documentType,
+      vendorContains: filters?.vendor_contains,
+    });
+    const categoryContains = buildCategoryContainsFilter(filters?.category_contains);
+    const dateClauses = buildDateRangeFilter({
+      documentType,
+      dateStart: filters?.date_start,
+      dateEnd: filters?.date_end,
+    });
+    const projectScope = typeof projectId === "string" ? eq(project.id, projectId) : null;
+    const accessClause = buildProjectAccessClause(userId);
+    const excludeCategories = buildExcludeCategoriesFilter(filters?.exclude_categories);
+    const categoriesIn = buildCategoriesInFilter(filters?.categories_in);
+
+    const whereClauses: SQL[] = [accessClause, eq(projectDoc.documentType, documentType)];
+    if (projectScope) whereClauses.push(projectScope);
+    if (docIdFilter) whereClauses.push(docIdFilter);
+    if (entityFilter) whereClauses.push(entityFilter);
+    if (vendorFilter) whereClauses.push(vendorFilter);
+    if (categoryContains) whereClauses.push(categoryContains);
+    whereClauses.push(...dateClauses);
+    if (excludeCategories) whereClauses.push(excludeCategories);
+    if (categoriesIn) whereClauses.push(categoriesIn);
+    whereClauses.push(
+      ...buildAmountRangeFilter({
+        amountMin: filters?.amount_min,
+        amountMax: filters?.amount_max,
+      })
+    );
+
+    const whereSql = and(...whereClauses);
+    const dedupeKey = sql<string>`COALESCE(${financialTransaction.txnHash}, (${financialTransaction.documentId}::text || '|' || ${financialTransaction.rowHash}))`;
+
+    // Description grouping key: normalized description only (no merchant fallback).
+    const descriptionKey = sql<string>`
+      CASE
+        WHEN ${financialTransaction.description} IS NULL THEN NULL
+        WHEN length(regexp_replace(${financialTransaction.description}, '[^A-Za-z]', '', 'g')) < 3 THEN NULL
+        ELSE NULLIF(
+          regexp_replace(
+            regexp_replace(trim(${financialTransaction.description}), '\\s+', ' ', 'g'),
+            '^[^A-Za-z0-9]+|[^A-Za-z0-9]+$',
+            '',
+            'g'
+          ),
+          ''
+        )
+      END
+    `;
+
+    const rows = await db.execute(sql`
+      SELECT
+        t.description,
+        COALESCE(SUM(t.amount), 0)::text AS total,
+        COUNT(*)::int AS count
+      FROM (
+        SELECT DISTINCT ON (${dedupeKey})
+          ${descriptionKey} AS description,
+          ${financialTransaction.amount} AS amount
+        FROM ${financialTransaction}
+        INNER JOIN ${projectDoc} ON ${eq(financialTransaction.documentId, projectDoc.id)}
+        INNER JOIN ${project} ON ${eq(projectDoc.projectId, project.id)}
+        LEFT JOIN ${projectUser} ON ${and(eq(projectUser.projectId, project.id), eq(projectUser.userId, userId))}
+        WHERE ${whereSql}
+        ORDER BY ${dedupeKey} ASC, ${projectDoc.createdAt} ASC, ${financialTransaction.id} ASC
+      ) t
+      GROUP BY t.description
+      ORDER BY ABS(COALESCE(SUM(t.amount), 0)) DESC
+      LIMIT 200
+    `);
+
+    return {
+      query_type: "group_by_description" as const,
+      document_type: documentType,
+      rows: rows as unknown as Array<{ description: string | null; total: string; count: number }>,
+      provenance: { source: "postgres" as const },
+    };
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to run finance group_by_description"
     );
   }
 }
