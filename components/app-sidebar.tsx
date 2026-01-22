@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/sidebar";
 import { useProjectSelector } from "@/hooks/use-project-selector";
 import { cn } from "@/lib/utils";
-import { Plug2 } from "lucide-react";
+import { FileText, Plug2 } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -166,6 +166,17 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                   >
                     <Plug2 className="h-4 w-4" />
                     <span>Integrations</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild>
+                  <Link
+                    href="/project-files"
+                    onClick={() => setOpenMobile(false)}
+                  >
+                    <FileText className="h-4 w-4" />
+                    <span>Project Files</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>

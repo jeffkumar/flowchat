@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { SidebarToggle } from "@/components/sidebar-toggle";
 import { ProjectSwitcher } from "@/components/project-switcher";
 import {
@@ -15,11 +15,28 @@ import { Settings, Settings2 } from "lucide-react";
 import { ViewDocs } from "@/components/view-docs";
 import { useProjectSelector } from "@/hooks/use-project-selector";
 import { Button } from "@/components/ui/button";
+import {
+  readIgnoredDocIdsForProject,
+  writeIgnoredDocIdsForProject,
+} from "@/lib/utils";
 
 export function IntegrationsHeader() {
   const [isViewDocsOpen, setIsViewDocsOpen] = useState(false);
   const [ignoredDocIds, setIgnoredDocIds] = useState<string[]>([]);
-  const { selectedProject } = useProjectSelector();
+  const { selectedProject, selectedProjectId } = useProjectSelector();
+
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setIgnoredDocIds([]);
+      return;
+    }
+    setIgnoredDocIds(readIgnoredDocIdsForProject(selectedProjectId));
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    writeIgnoredDocIdsForProject(selectedProjectId, ignoredDocIds);
+  }, [ignoredDocIds, selectedProjectId]);
 
   return (
     <>

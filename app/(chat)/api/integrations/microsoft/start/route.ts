@@ -98,6 +98,8 @@ export async function GET(request: Request) {
     ...cookieBase,
   });
 
+  // Never cache OAuth start redirects; caching can reuse an old state and cause mismatches.
+  response.headers.set("cache-control", "no-store");
   return response;
 }
 

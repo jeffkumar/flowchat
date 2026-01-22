@@ -35,7 +35,13 @@ import type { Vote } from "@/lib/db/schema";
 import { ChatSDKError } from "@/lib/errors";
 import type { Attachment, ChatMessage, RetrievedSource, EntityOption } from "@/lib/types";
 import type { AppUsage } from "@/lib/usage";
-import { fetcher, fetchWithErrorHandlers, generateUUID } from "@/lib/utils";
+import {
+  fetcher,
+  fetchWithErrorHandlers,
+  generateUUID,
+  readIgnoredDocIdsForProject,
+  writeIgnoredDocIdsForProject,
+} from "@/lib/utils";
 import { useRetrievalSettings } from "@/hooks/use-retrieval-settings";
 import { Artifact } from "./artifact";
 import { EntitySelector } from "./entity-selector";
@@ -254,6 +260,20 @@ export function Chat({
 
   const [ignoredDocIds, setIgnoredDocIds] = useState<string[]>([]);
   const ignoredDocIdsRef = useRef(ignoredDocIds);
+
+  // Persist ignored docs locally per-project (device-local).
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setIgnoredDocIds([]);
+      return;
+    }
+    setIgnoredDocIds(readIgnoredDocIdsForProject(selectedProjectId));
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    writeIgnoredDocIdsForProject(selectedProjectId, ignoredDocIds);
+  }, [ignoredDocIds, selectedProjectId]);
 
   const [showCitations, setShowCitations] = useState(true);
   const [pendingSources, setPendingSources] = useState<RetrievedSource[] | null>(

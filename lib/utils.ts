@@ -79,6 +79,33 @@ export function getLocalStorage(key: string) {
   return [];
 }
 
+const IGNORED_DOC_IDS_PREFIX = 'flowchat:ignoredDocIds:';
+
+export function getIgnoredDocIdsStorageKey(projectId: string) {
+  return `${IGNORED_DOC_IDS_PREFIX}${projectId}`;
+}
+
+export function readIgnoredDocIdsForProject(projectId: string): string[] {
+  if (typeof window === 'undefined') return [];
+
+  const raw = localStorage.getItem(getIgnoredDocIdsStorageKey(projectId));
+  if (!raw) return [];
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((v): v is string => typeof v === 'string' && v.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function writeIgnoredDocIdsForProject(projectId: string, ids: string[]) {
+  if (typeof window === 'undefined') return;
+  const unique = Array.from(new Set(ids.filter((v) => typeof v === 'string' && v.length > 0)));
+  localStorage.setItem(getIgnoredDocIdsStorageKey(projectId), JSON.stringify(unique));
+}
+
 export function generateUUID(): string {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
