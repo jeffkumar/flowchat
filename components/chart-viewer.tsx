@@ -60,6 +60,31 @@ function formatUsd(value: number) {
   return `$${rounded.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 }
 
+function formatMonthLabel(label: string): string {
+  const m = label.match(/^(\d{4})-(\d{2})$/);
+  if (!m) return label;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+    return label;
+  }
+  const months = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ] as const;
+  return `${months[month - 1]} ${String(year)}`;
+}
+
 function colorVar(index: number) {
   const i = (index % 5) + 1;
   return `var(--chart-${String(i)})`;
@@ -117,6 +142,8 @@ export function ChartViewer({
   }, [allRows, total]);
 
   const maxValue = useMemo(() => Math.max(1, ...rows.map((r) => r.value)), [rows]);
+  const displayLabel = (label: string) =>
+    payload.breakdown === "month" ? formatMonthLabel(label) : label;
 
   return (
     <div className="mx-auto w-full max-w-3xl p-6">
@@ -192,7 +219,7 @@ export function ChartViewer({
                         className="inline-block h-2.5 w-2.5 rounded-sm"
                         style={{ backgroundColor: colorVar(idx) }}
                       />
-                      <span className="truncate text-sm">{row.label}</span>
+                      <span className="truncate text-sm">{displayLabel(row.label)}</span>
                     </div>
                     <div className="shrink-0 text-xs text-muted-foreground">
                       {formatUsd(row.value)} ({pct}%)
@@ -214,7 +241,7 @@ export function ChartViewer({
               >
                 <div className="min-w-0">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="truncate text-sm">{row.label}</div>
+                    <div className="truncate text-sm">{displayLabel(row.label)}</div>
                     <div className="shrink-0 text-xs text-muted-foreground">{formatUsd(row.value)}</div>
                   </div>
                   <div className="mt-1 h-2 w-full overflow-hidden rounded bg-muted">

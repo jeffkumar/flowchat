@@ -253,6 +253,11 @@ function PureArtifact({
     throw new Error("Artifact definition not found!");
   }
 
+  // `artifactDefinitions` is a heterogeneous union (each artifact has different metadata types).
+  // When rendering the `content` component, TypeScript may try to intersect incompatible prop types
+  // and reduce them to `never`. Treat this boundary as untyped.
+  const ArtifactContent = artifactDefinition.content as unknown as React.ComponentType<any>;
+
   useEffect(() => {
     if (artifact.documentId !== "init" && artifactDefinition.initialize) {
       artifactDefinition.initialize({
@@ -459,7 +464,7 @@ function PureArtifact({
             </div>
 
             <div className="h-full max-w-full! items-center overflow-y-scroll bg-background dark:bg-muted">
-              <artifactDefinition.content
+              <ArtifactContent
                 content={
                   isCurrentVersion
                     ? artifact.content
