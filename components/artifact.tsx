@@ -70,6 +70,8 @@ function PureArtifact({
   isReadonly,
   selectedVisibilityType,
   selectedModelId,
+  selectedEntities,
+  onEntitySelection,
 }: {
   chatId: string;
   input: string;
@@ -86,6 +88,8 @@ function PureArtifact({
   isReadonly: boolean;
   selectedVisibilityType: VisibilityType;
   selectedModelId: string;
+  selectedEntities?: import("@/lib/types").EntityOption[];
+  onEntitySelection?: (args: { entities: import("@/lib/types").EntityOption[]; questionId: string }) => void;
 }) {
   const { artifact, setArtifact, metadata, setMetadata } = useArtifact();
 
@@ -334,6 +338,8 @@ function PureArtifact({
                   regenerate={regenerate}
                   setMessages={setMessages}
                   status={status}
+                  onEntitySelection={onEntitySelection}
+                  selectedEntities={selectedEntities}
                   votes={votes}
                 />
 

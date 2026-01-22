@@ -3,7 +3,13 @@ import type { UseChatHelpers } from "@ai-sdk/react";
 import equal from "fast-deep-equal";
 import { memo, useState, useEffect } from "react";
 import type { Vote } from "@/lib/db/schema";
-import type { ChatMessage, ChartDocumentAnnotation, RetrievedSource } from "@/lib/types";
+import type {
+  ChatMessage,
+  ChartDocumentAnnotation,
+  EntityOption,
+  EntitySelectorAnnotation,
+  RetrievedSource,
+} from "@/lib/types";
 import { cn, fetcher, sanitizeText } from "@/lib/utils";
 import { getRandomThinkingMessage } from "@/lib/ai/messages";
 import { useArtifact } from "@/hooks/use-artifact";
@@ -13,6 +19,7 @@ import { DocumentPreview } from "./document-preview";
 import type { Document } from "@/lib/db/schema";
 import useSWR from "swr";
 import { ChartViewer, safeParseChartPayload } from "@/components/chart-viewer";
+import { EntitySelector } from "@/components/entity-selector";
 import { MessageContent } from "./elements/message";
 import { Response } from "./elements/response";
 import { Source } from "./elements/source";
@@ -40,6 +47,8 @@ const PurePreviewMessage = ({
   isReadonly,
   requiresScrollPadding: _requiresScrollPadding,
   showCitations,
+  selectedEntities = [],
+  onEntitySelection = () => {},
 }: {
   chatId: string;
   message: ChatMessage;
@@ -50,6 +59,8 @@ const PurePreviewMessage = ({
   isReadonly: boolean;
   requiresScrollPadding: boolean;
   showCitations: boolean;
+  selectedEntities?: EntityOption[];
+  onEntitySelection?: (args: { entities: EntityOption[]; questionId: string }) => void;
 }) => {
   const [mode, setMode] = useState<"view" | "edit">("view");
   const { setArtifact } = useArtifact();
@@ -62,6 +73,11 @@ const PurePreviewMessage = ({
     (a): a is ChartDocumentAnnotation => a?.type === "chart-document"
   );
   const [isChartCollapsed, setIsChartCollapsed] = useState(false);
+
+  const entitySelectorAnnotation = message.annotations?.find(
+    (a): a is EntitySelectorAnnotation => a?.type === "entity-selector"
+  );
+  const [isEntitySelectorCollapsed, setIsEntitySelectorCollapsed] = useState(false);
 
   const sources = existingSources;
   const uniqueSources = (() => {
@@ -186,6 +202,47 @@ const PurePreviewMessage = ({
                       Loading chart…
                     </div>
                   )
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {message.role === "assistant" && entitySelectorAnnotation ? (
+            <div className="mb-3 w-full">
+              <div className="rounded-xl border bg-background">
+                <div className="flex items-center justify-between gap-3 px-3 py-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium">Select accounts</div>
+                    <div className="text-xs text-muted-foreground">
+                      Choose which accounts to use for the finance question
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="rounded-md border bg-background px-2 py-1 text-xs"
+                      onClick={() => setIsEntitySelectorCollapsed((v) => !v)}
+                      type="button"
+                    >
+                      {isEntitySelectorCollapsed ? "Expand" : "Collapse"}
+                    </button>
+                  </div>
+                </div>
+
+                {!isEntitySelectorCollapsed ? (
+                  <div className="px-3 pb-3">
+                    <EntitySelector
+                      availableEntities={entitySelectorAnnotation.data.availableEntities}
+                      onSelectionChange={(entities) => {
+                        onEntitySelection({
+                          entities,
+                          questionId: entitySelectorAnnotation.data.questionId,
+                        });
+                      }}
+                      questionId={entitySelectorAnnotation.data.questionId}
+                      selectedEntities={selectedEntities}
+                      className="rounded-lg border p-4"
+                    />
+                  </div>
                 ) : null}
               </div>
             </div>
@@ -470,6 +527,9 @@ export const PreviewMessage = memo(
       return false;
     }
     if (prevProps.showCitations !== nextProps.showCitations) {
+      return false;
+    }
+    if (!equal(prevProps.selectedEntities, nextProps.selectedEntities)) {
       return false;
     }
     return false;

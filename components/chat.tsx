@@ -3,7 +3,7 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { unstable_serialize } from "swr/infinite";
 import { ChatHeader, type RetrievalRangePreset } from "@/components/chat-header";
@@ -33,7 +33,13 @@ import { useChatVisibility } from "@/hooks/use-chat-visibility";
 import { useProjectSelector } from "@/hooks/use-project-selector";
 import type { Vote } from "@/lib/db/schema";
 import { ChatSDKError } from "@/lib/errors";
-import type { Attachment, ChatMessage, RetrievedSource, EntityOption } from "@/lib/types";
+import type {
+  Attachment,
+  ChatMessage,
+  EntityOption,
+  EntitySelectorAnnotation,
+  RetrievedSource,
+} from "@/lib/types";
 import type { AppUsage } from "@/lib/usage";
 import {
   fetcher,
@@ -44,7 +50,6 @@ import {
 } from "@/lib/utils";
 import { useRetrievalSettings } from "@/hooks/use-retrieval-settings";
 import { Artifact } from "./artifact";
-import { EntitySelector } from "./entity-selector";
 import { useDataStream } from "./data-stream-provider";
 import { Messages } from "./messages";
 import { MultimodalInput } from "./multimodal-input";
@@ -285,12 +290,13 @@ export function Chat({
     null
   );
 
+  const pendingEntitySelectorRef = useRef<{
+    availableEntities: EntityOption[];
+    questionId: string;
+  } | null>(null);
+
   const [selectedEntities, setSelectedEntities] = useState<EntityOption[]>([]);
   const selectedEntitiesRef = useRef<EntityOption[]>([]);
-  const [entitySelectorData, setEntitySelectorData] = useState<{
-    availableEntities: EntityOption[];
-    questionId?: string;
-  } | null>(null);
 
   const {
     messages,
@@ -339,7 +345,12 @@ export function Chat({
         pendingChartDocumentRef.current = { id: dataPart.data.id, title: dataPart.data.title };
       }
       if (dataPart.type === "data-entitySelector") {
-        setEntitySelectorData(dataPart.data);
+        if (typeof dataPart.data.questionId === "string") {
+          pendingEntitySelectorRef.current = {
+            availableEntities: dataPart.data.availableEntities,
+            questionId: dataPart.data.questionId,
+          };
+        }
       }
     },
     onFinish: (result) => {
@@ -383,6 +394,31 @@ export function Chat({
           return prevMessages;
         });
         pendingChartDocumentRef.current = null;
+      }
+
+      const entitySelector = pendingEntitySelectorRef.current;
+      if (entitySelector) {
+        setMessages((prevMessages) => {
+          const last = prevMessages[prevMessages.length - 1];
+          if (last && last.role === "assistant") {
+            const newAnnotations = [
+              ...(last.annotations || []),
+              {
+                type: "entity-selector",
+                data: {
+                  availableEntities: entitySelector.availableEntities,
+                  questionId: entitySelector.questionId,
+                },
+              },
+            ];
+            return [
+              ...prevMessages.slice(0, -1),
+              { ...last, annotations: newAnnotations },
+            ];
+          }
+          return prevMessages;
+        });
+        pendingEntitySelectorRef.current = null;
       }
 
       mutate(
@@ -430,6 +466,7 @@ export function Chat({
       pendingSourcesRef.current = null;
       setPendingSources(null);
       pendingChartDocumentRef.current = null;
+      pendingEntitySelectorRef.current = null;
     }
     statusRef.current = status;
   }, [status]);
@@ -457,6 +494,59 @@ export function Chat({
   useEffect(() => {
     selectedEntitiesRef.current = selectedEntities;
   }, [selectedEntities]);
+
+  const handleEntitySelection = useCallback(
+    ({ entities, questionId }: { entities: EntityOption[]; questionId: string }) => {
+      setSelectedEntities(entities);
+      selectedEntitiesRef.current = entities;
+
+      const isEntitySelector = (a: unknown): a is EntitySelectorAnnotation => {
+        if (!a || typeof a !== "object") return false;
+        if (!("type" in a)) return false;
+        if ((a as { type?: unknown }).type !== "entity-selector") return false;
+        if (!("data" in a)) return false;
+        const data = (a as { data?: unknown }).data;
+        if (!data || typeof data !== "object") return false;
+        return typeof (data as { questionId?: unknown }).questionId === "string";
+      };
+
+      // Remove the selector UI from the message once applied (matches existing behavior).
+      setMessages((prevMessages) =>
+        prevMessages.map((m) => {
+          if (m.role !== "assistant" || !m.annotations) return m;
+          const hasSelector = m.annotations.some(
+            (a) => isEntitySelector(a) && a.data.questionId === questionId
+          );
+          if (!hasSelector) return m;
+          const annotations = m.annotations.filter(
+            (a) =>
+              !(
+                isEntitySelector(a) && a.data.questionId === questionId
+              )
+          );
+          return { ...m, annotations };
+        })
+      );
+
+      if (entities.length > 0) {
+        const lastUserMessage = messages
+          .slice()
+          .reverse()
+          .find((m) => m.role === "user");
+        if (lastUserMessage) {
+          const questionText = lastUserMessage.parts
+            .filter((p) => p.type === "text")
+            .map((p) => p.text)
+            .join("\n");
+          sendMessage({
+            role: "user",
+            parts: [{ type: "text", text: questionText }],
+          });
+        }
+      }
+    },
+    [messages, sendMessage, setMessages]
+  );
 
   const searchParams = useSearchParams();
   const query = searchParams.get("query");
@@ -669,6 +759,8 @@ export function Chat({
           status={status}
           votes={votes}
           showCitations={showCitations}
+          onEntitySelection={handleEntitySelection}
+          selectedEntities={selectedEntities}
         />
 
         <div className="sticky bottom-0 z-1 mx-auto flex w-full max-w-4xl flex-col gap-2 border-t-0 bg-background dark:bg-auth-charcoal px-2 pb-3 md:px-4 md:pb-4">
@@ -749,8 +841,10 @@ export function Chat({
         input={input}
         isReadonly={isReadonly}
         messages={messages}
+        onEntitySelection={handleEntitySelection}
         regenerate={regenerate}
         selectedModelId={currentModelId}
+        selectedEntities={selectedEntities}
         selectedVisibilityType={visibilityType}
         sendMessage={sendMessage}
         setAttachments={setAttachments}
@@ -760,37 +854,6 @@ export function Chat({
         stop={stop}
         votes={votes}
       />
-
-      {entitySelectorData && (
-        <div className="mx-auto w-full max-w-4xl px-2 md:px-4">
-          <EntitySelector
-            availableEntities={entitySelectorData.availableEntities}
-            onSelectionChange={(entities) => {
-              setSelectedEntities(entities);
-              setEntitySelectorData(null);
-              if (entities.length > 0) {
-                // Auto-submit the query with selected entities
-                const lastUserMessage = messages
-                  .slice()
-                  .reverse()
-                  .find((m) => m.role === "user");
-                if (lastUserMessage) {
-                  const questionText = lastUserMessage.parts
-                    .filter((p) => p.type === "text")
-                    .map((p) => p.text)
-                    .join("\n");
-                  sendMessage({
-                    role: "user",
-                    parts: [{ type: "text", text: questionText }],
-                  });
-                }
-              }
-            }}
-            questionId={entitySelectorData.questionId}
-            selectedEntities={selectedEntities}
-          />
-        </div>
-      )}
 
       <AlertDialog
         onOpenChange={setShowCreditCardAlert}

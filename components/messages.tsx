@@ -4,7 +4,7 @@ import { ArrowDownIcon } from "lucide-react";
 import { memo, useEffect, useState } from "react";
 import { useMessages } from "@/hooks/use-messages";
 import type { Vote } from "@/lib/db/schema";
-import type { ChatMessage } from "@/lib/types";
+import type { ChatMessage, EntityOption } from "@/lib/types";
 import { useDataStream } from "./data-stream-provider";
 import { Greeting } from "./greeting";
 import { PreviewMessage, ThinkingMessage } from "./message";
@@ -20,6 +20,8 @@ type MessagesProps = {
   isArtifactVisible: boolean;
   selectedModelId: string;
   showCitations: boolean;
+  selectedEntities: EntityOption[];
+  onEntitySelection: (args: { entities: EntityOption[]; questionId: string }) => void;
 };
 
 function PureMessages({
@@ -32,6 +34,8 @@ function PureMessages({
   isReadonly,
   selectedModelId: _selectedModelId,
   showCitations,
+  selectedEntities,
+  onEntitySelection,
 }: MessagesProps) {
   const {
     containerRef: messagesContainerRef,
@@ -82,11 +86,13 @@ function PureMessages({
               isReadonly={isReadonly}
               key={message.id}
               message={message}
+              onEntitySelection={onEntitySelection}
               regenerate={regenerate}
               requiresScrollPadding={
                 hasSentMessage && index === messages.length - 1
               }
               setMessages={setMessages}
+              selectedEntities={selectedEntities}
               vote={
                 votes
                   ? votes.find((vote) => vote.messageId === message.id)

@@ -30,9 +30,18 @@ export type ChartDocumentAnnotation = {
   };
 };
 
+export type EntitySelectorAnnotation = {
+  type: "entity-selector";
+  data: {
+    availableEntities: EntityOption[];
+    questionId: string;
+  };
+};
+
 export type ChatAnnotation =
   | { type: "sources"; data: RetrievedSource[] }
   | ChartDocumentAnnotation
+  | EntitySelectorAnnotation
   | { type: string; data: unknown };
 
 export const messageMetadataSchema = z.object({

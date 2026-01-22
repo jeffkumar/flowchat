@@ -56,7 +56,7 @@ export function EntitySelector({
   }
 
   return (
-    <div className={cn("flex flex-col gap-3 rounded-lg border p-4", className)}>
+    <div className={cn("flex flex-col gap-3", className)}>
       <div className="flex items-center justify-between">
         <div className="flex flex-col gap-1">
           <h3 className="text-sm font-medium">Select accounts to analyze</h3>

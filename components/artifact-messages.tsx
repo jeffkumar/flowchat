@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { memo, useEffect, useState } from "react";
 import { useMessages } from "@/hooks/use-messages";
 import type { Vote } from "@/lib/db/schema";
-import type { ChatMessage } from "@/lib/types";
+import type { ChatMessage, EntityOption } from "@/lib/types";
 import type { UIArtifact } from "./artifact";
 import { useDataStream } from "./data-stream-provider";
 import { PreviewMessage, ThinkingMessage } from "./message";
@@ -18,6 +18,8 @@ type ArtifactMessagesProps = {
   regenerate: UseChatHelpers<ChatMessage>["regenerate"];
   isReadonly: boolean;
   artifactStatus: UIArtifact["status"];
+  selectedEntities?: EntityOption[];
+  onEntitySelection?: (args: { entities: EntityOption[]; questionId: string }) => void;
 };
 
 function PureArtifactMessages({
@@ -28,6 +30,8 @@ function PureArtifactMessages({
   setMessages,
   regenerate,
   isReadonly,
+  selectedEntities,
+  onEntitySelection,
 }: ArtifactMessagesProps) {
   const {
     containerRef: messagesContainerRef,
@@ -72,12 +76,14 @@ function PureArtifactMessages({
           isReadonly={isReadonly}
           key={message.id}
           message={message}
+          onEntitySelection={onEntitySelection}
           showCitations={true}
           regenerate={regenerate}
           requiresScrollPadding={
             hasSentMessage && index === messages.length - 1
           }
           setMessages={setMessages}
+          selectedEntities={selectedEntities}
           vote={
             votes
               ? votes.find((vote) => vote.messageId === message.id)
