@@ -35,7 +35,9 @@ function PureArtifactActions({
     throw new Error("Artifact definition not found!");
   }
 
-  const actionContext: ArtifactActionContext = {
+  // NOTE: `artifactDefinitions` is a heterogeneous union of artifacts with different metadata types.
+  // At this UI boundary we intentionally treat metadata as `any` to avoid impossible intersections.
+  const actionContext: ArtifactActionContext<any> = {
     content: artifact.content,
     handleVersionChange,
     currentVersionIndex,
@@ -59,14 +61,14 @@ function PureArtifactActions({
                 isLoading || artifact.status === "streaming"
                   ? true
                   : action.isDisabled
-                    ? action.isDisabled(actionContext)
+                    ? action.isDisabled(actionContext as any)
                     : false
               }
               onClick={async () => {
                 setIsLoading(true);
 
                 try {
-                  await Promise.resolve(action.onClick(actionContext));
+                  await Promise.resolve(action.onClick(actionContext as any));
                 } catch (_error) {
                   toast.error("Failed to execute action");
                 } finally {

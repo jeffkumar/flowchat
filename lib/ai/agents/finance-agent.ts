@@ -203,8 +203,6 @@ function wantsList(textLower: string) {
     textLower.includes("individual") ||
     textLower.includes("transactions") ||
     textLower.includes("transaction") ||
-    textLower.includes("descriptions") ||
-    textLower.includes("description") ||
     textLower.includes("details")
   );
 }
@@ -363,7 +361,9 @@ export async function runFinanceAgent({
   // Only infer category + presentation intent from the user's actual message,
   // not from appended context (which may contain misleading tokens like "gas"/"fuel").
   const category = inferCategory(mainLower);
-  const list = wantsList(mainLower);
+  const wantsByDescriptionGlobal =
+    mainLower.includes("by description") || mainLower.includes("by memo") || mainLower.includes("by details");
+  const list = wantsList(mainLower) && !wantsByDescriptionGlobal;
 
   // If entity is missing, use project entity summary to decide whether we need clarification.
   if (!entity.kind) {
@@ -607,6 +607,13 @@ export async function runFinanceAgent({
           documentType: "cc_statement",
           filters: { ...baseFilters, ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }) },
         })
+      : wantsByDescriptionGlobal
+        ? await financeGroupByDescription({
+            userId: session.user.id,
+            projectId: parsed.projectId,
+            documentType: "cc_statement",
+            filters: { ...baseFilters, ...(sumNeg && sumNeg.count > 0 ? { amount_max: -0.01 } : { amount_min: 0.01 }) },
+          })
       : wantsMerchant
         ? await financeGroupByMerchant({
             userId: session.user.id,
@@ -637,6 +644,14 @@ export async function runFinanceAgent({
           breakdown: "month",
           rows,
           labelKey: "month",
+        });
+      }
+      if (wantsByDescriptionGlobal) {
+        return buildChartPayload({
+          title: `Spend by description (${label}, ${range.label})`,
+          breakdown: "description",
+          rows,
+          labelKey: "description",
         });
       }
       if (qLower.includes("by category") || category) {
