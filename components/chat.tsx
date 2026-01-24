@@ -82,6 +82,7 @@ import {
 } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
 import { X } from "lucide-react";
+import { DEFAULT_AGENT_MODE, type AgentMode } from "@/lib/ai/models";
 
 type UploadDocumentType =
   | "general_doc"
@@ -211,6 +212,7 @@ export function Chat({
   isReadonly,
   autoResume,
   initialLastContext,
+  initialAgentMode = DEFAULT_AGENT_MODE,
 }: {
   id: string;
   initialMessages: ChatMessage[];
@@ -219,6 +221,7 @@ export function Chat({
   isReadonly: boolean;
   autoResume: boolean;
   initialLastContext?: AppUsage;
+  initialAgentMode?: AgentMode;
 }) {
   const router = useRouter();
 
@@ -246,6 +249,8 @@ export function Chat({
   const [showCreditCardAlert, setShowCreditCardAlert] = useState(false);
   const [currentModelId, setCurrentModelId] = useState(initialChatModel);
   const currentModelIdRef = useRef(currentModelId);
+  const [currentAgentMode, setCurrentAgentMode] = useState<AgentMode>(initialAgentMode);
+  const currentAgentModeRef = useRef(currentAgentMode);
   const { selectedProjectId } = useProjectSelector();
   const selectedProjectIdRef = useRef(selectedProjectId);
 
@@ -336,6 +341,7 @@ export function Chat({
             message: request.messages.at(-1),
             selectedChatModel: currentModelIdRef.current,
             selectedVisibilityType: visibilityType,
+            selectedAgentMode: currentAgentModeRef.current,
             sourceTypes: sourceTypesRef.current,
             projectId: selectedProjectIdRef.current,
             ignoredDocIds: ignoredDocIdsRef.current,
@@ -529,6 +535,10 @@ export function Chat({
   useEffect(() => {
     currentModelIdRef.current = currentModelId;
   }, [currentModelId]);
+
+  useEffect(() => {
+    currentAgentModeRef.current = currentAgentMode;
+  }, [currentAgentMode]);
 
   useEffect(() => {
     selectedProjectIdRef.current = selectedProjectId;
@@ -965,7 +975,9 @@ export function Chat({
                 chatId={id}
                 input={input}
                 messages={messages}
+                onAgentModeChange={setCurrentAgentMode}
                 onModelChange={setCurrentModelId}
+                selectedAgentMode={currentAgentMode}
                 selectedModelId={currentModelId}
                 selectedVisibilityType={visibilityType}
                 sendMessage={sendMessage}

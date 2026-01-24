@@ -5,7 +5,7 @@ import { Suspense } from "react";
 import { auth } from "@/app/(auth)/auth";
 import { Chat } from "@/components/chat";
 import { DataStreamHandler } from "@/components/data-stream-handler";
-import { DEFAULT_CHAT_MODEL } from "@/lib/ai/models";
+import { DEFAULT_CHAT_MODEL, DEFAULT_AGENT_MODE, type AgentMode } from "@/lib/ai/models";
 import { getChatById, getMessagesByChatId } from "@/lib/db/queries";
 import { ChatSDKError } from "@/lib/errors";
 import { convertToUIMessages } from "@/lib/utils";
@@ -66,6 +66,7 @@ async function ChatPage({ params }: { params: Promise<{ id: string }> }) {
           <Chat
             autoResume={true}
             id={chat.id}
+            initialAgentMode={DEFAULT_AGENT_MODE}
             initialChatModel={DEFAULT_CHAT_MODEL}
             initialLastContext={chat.lastContext ?? undefined}
             initialMessages={[]}
@@ -86,6 +87,9 @@ async function ChatPage({ params }: { params: Promise<{ id: string }> }) {
 
   const cookieStore = await cookies();
   const chatModelFromCookie = cookieStore.get("chat-model");
+  const agentModeFromCookie = cookieStore.get("agent-mode");
+  const initialAgentMode: AgentMode =
+    agentModeFromCookie?.value === "finance" ? "finance" : DEFAULT_AGENT_MODE;
 
   if (!chatModelFromCookie) {
     return (
@@ -93,6 +97,7 @@ async function ChatPage({ params }: { params: Promise<{ id: string }> }) {
         <Chat
           autoResume={true}
           id={chat.id}
+          initialAgentMode={initialAgentMode}
           initialChatModel={DEFAULT_CHAT_MODEL}
           initialLastContext={chat.lastContext ?? undefined}
           initialMessages={uiMessages}
@@ -109,6 +114,7 @@ async function ChatPage({ params }: { params: Promise<{ id: string }> }) {
       <Chat
         autoResume={true}
         id={chat.id}
+        initialAgentMode={initialAgentMode}
         initialChatModel={chatModelFromCookie.value}
         initialLastContext={chat.lastContext ?? undefined}
         initialMessages={uiMessages}

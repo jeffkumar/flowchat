@@ -771,6 +771,7 @@ export async function POST(request: Request) {
       message,
       selectedChatModel,
       selectedVisibilityType,
+      selectedAgentMode,
       projectId: providedProjectId,
       sourceTypes,
       ignoredDocIds,
@@ -783,6 +784,7 @@ export async function POST(request: Request) {
       message: ChatMessage;
       selectedChatModel: ChatModel["id"];
       selectedVisibilityType: VisibilityType;
+      selectedAgentMode?: "project" | "finance";
       projectId?: string;
       sourceTypes?: Array<"slack" | "docs">;
       ignoredDocIds?: string[];
@@ -791,6 +793,9 @@ export async function POST(request: Request) {
       selectedEntities?: Array<{ kind: "personal" | "business"; name: string | null }>;
       selectedTimeRange?: { type: "preset" | "custom"; label: string; date_start?: string; date_end?: string };
     } = requestBody;
+
+    // Agent mode determines which tools are available
+    const isFinanceMode = selectedAgentMode === "finance";
 
     const session = await auth();
 
@@ -1190,7 +1195,8 @@ export async function POST(request: Request) {
           });
         }
 
-        const isAggregationQuery = AGGREGATION_HINT_RE.test(userText);
+        // Only treat as aggregation query if in Finance mode
+        const isAggregationQuery = isFinanceMode && AGGREGATION_HINT_RE.test(userText);
 
         const cappedRows: typeof timeFilteredRows = [];
         const docIdCounts = new Map<string, number>();
@@ -1508,11 +1514,12 @@ export async function POST(request: Request) {
           });
         }
 
-        // Determine if this is a finance query (will be computed later, but we need it here for the prompt)
-        // For now, use the early check we did above
-        const systemPrompt = isLikelyFinanceQuery
-          ? "You are Flowchat (FrontlineAgent).\n\nYou answer questions based primarily on the conversation (the user's messages and your prior replies).\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n\nRules:\n- If you need to call a tool, call it immediately. Do not provide a conversational preamble or explain what you are about to do. Just call the tool.\n- CRITICAL: For finance, totals, or data analysis, you MUST call runFinanceAgent. Do not attempt to answer from memory or background context alone.\n- Use runFinanceAgent for any totals/sums/counts/aggregations. \n- If you need both a total and a breakdown (e.g. \"by month\"), ensure you ask the specialist for both or use the total provided by the specialist.\n- When presenting structured numeric results (breakdowns, comparisons, lists), prefer GitHub-flavored markdown tables.\n- If the user asks about a month by name (e.g. \"November\") but does not specify a year, assume the year is the current year.\n- If the user's message is a follow-up like \"break it down\" / \"by category\" / \"show me the list\" and omits time or entity, you MUST infer the missing time/entity from the immediately preceding conversation turns and include them explicitly when calling runFinanceAgent.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n\nKeep clarifying questions short and actionable."
-          : "You are Flowchat (FrontlineAgent).\n\nYou answer questions based primarily on the conversation (the user's messages and your prior replies). Retrieved context (Slack messages and uploaded docs) is OPTIONAL background and may be irrelevant; only use it when it clearly helps answer the current question.\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n- runCitationsAgent: validate claims against sources and add inline citations like 【N】.\n\nRules:\n- If you need to call a tool, call it immediately. Do not provide a conversational preamble or explain what you are about to do. Just call the tool.\n- CRITICAL: For finance, totals, or data analysis, you MUST call runFinanceAgent. Do not attempt to answer from memory or background context alone.\n- Use runFinanceAgent for any totals/sums/counts/aggregations. \n- If you need both a total and a breakdown (e.g. \"by month\"), ensure you ask the specialist for both or use the total provided by the specialist.\n- When presenting structured numeric results (breakdowns, comparisons, lists), prefer GitHub-flavored markdown tables.\n- If the user asks about a month by name (e.g. \"November\") but does not specify a year, assume the year is the current year.\n- If the user's message is a follow-up like \"break it down\" / \"by category\" / \"show me the list\" and omits time or entity, you MUST infer the missing time/entity from the immediately preceding conversation turns and include them explicitly when calling runFinanceAgent.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n- If you used retrieved context, optionally call runCitationsAgent at the end to add citations.\n\nKeep clarifying questions short and actionable.";
+        // System prompt depends on agent mode
+        const systemPrompt = isFinanceMode
+          ? isLikelyFinanceQuery
+            ? "You are Flowchat (FrontlineAgent) in Finance Mode.\n\nYou answer questions based primarily on the conversation (the user's messages and your prior replies).\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n\nRules:\n- If you need to call a tool, call it immediately. Do not provide a conversational preamble or explain what you are about to do. Just call the tool.\n- CRITICAL: For finance, totals, or data analysis, you MUST call runFinanceAgent. Do not attempt to answer from memory or background context alone.\n- Use runFinanceAgent for any totals/sums/counts/aggregations. \n- If you need both a total and a breakdown (e.g. \"by month\"), ensure you ask the specialist for both or use the total provided by the specialist.\n- When presenting structured numeric results (breakdowns, comparisons, lists), prefer GitHub-flavored markdown tables.\n- If the user asks about a month by name (e.g. \"November\") but does not specify a year, assume the year is the current year.\n- If the user's message is a follow-up like \"break it down\" / \"by category\" / \"show me the list\" and omits time or entity, you MUST infer the missing time/entity from the immediately preceding conversation turns and include them explicitly when calling runFinanceAgent.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n\nKeep clarifying questions short and actionable."
+            : "You are Flowchat (FrontlineAgent) in Finance Mode.\n\nYou answer questions based primarily on the conversation (the user's messages and your prior replies). Retrieved context (Slack messages and uploaded docs) is OPTIONAL background and may be irrelevant; only use it when it clearly helps answer the current question.\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n- runCitationsAgent: validate claims against sources and add inline citations like 【N】.\n\nRules:\n- If you need to call a tool, call it immediately. Do not provide a conversational preamble or explain what you are about to do. Just call the tool.\n- CRITICAL: For finance, totals, or data analysis, you MUST call runFinanceAgent. Do not attempt to answer from memory or background context alone.\n- Use runFinanceAgent for any totals/sums/counts/aggregations. \n- If you need both a total and a breakdown (e.g. \"by month\"), ensure you ask the specialist for both or use the total provided by the specialist.\n- When presenting structured numeric results (breakdowns, comparisons, lists), prefer GitHub-flavored markdown tables.\n- If the user asks about a month by name (e.g. \"November\") but does not specify a year, assume the year is the current year.\n- If the user's message is a follow-up like \"break it down\" / \"by category\" / \"show me the list\" and omits time or entity, you MUST infer the missing time/entity from the immediately preceding conversation turns and include them explicitly when calling runFinanceAgent.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n- If you used retrieved context, optionally call runCitationsAgent at the end to add citations.\n\nKeep clarifying questions short and actionable."
+          : "You are Flowchat (FrontlineAgent) in Project Mode.\n\nYou answer questions based primarily on the conversation (the user's messages and your prior replies). Retrieved context (uploaded docs) is your primary source for answering questions about project documents.\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runCitationsAgent: validate claims against sources and add inline citations like 【N】.\n\nRules:\n- If you need to call a tool, call it immediately. Do not provide a conversational preamble or explain what you are about to do. Just call the tool.\n- Answer questions using the retrieved document context. Quote specific passages when helpful.\n- When presenting structured results (comparisons, lists), prefer GitHub-flavored markdown tables.\n- If you used retrieved context, optionally call runCitationsAgent at the end to add citations.\n- For document Q&A, focus on accuracy and cite specific sections from the documents.\n\nKeep responses clear, accurate, and well-cited.";
 
         const baseMessages = convertToModelMessages(uiMessages);
 
@@ -1694,7 +1701,8 @@ export async function POST(request: Request) {
 
         const normalizedLastUserText =
           expandEntityOnlyReply ?? expandBusinessNameOnlyReply ?? lastUserText;
-        const isAggregationQuery = AGGREGATION_HINT_RE.test(normalizedLastUserText);
+        // Only treat as aggregation query if in Finance mode
+        const isAggregationQuery = isFinanceMode && AGGREGATION_HINT_RE.test(normalizedLastUserText);
 
         const lastAssistantText = (() => {
           const lastAssistant = uiMessages
@@ -1719,15 +1727,18 @@ export async function POST(request: Request) {
         const isFinanceTimeWindowReply =
           assistantAskedForTimeWindow && TIME_RANGE_HINT_RE.test(normalizedLastUserText);
 
+        // Only detect as finance query if user has explicitly selected Finance mode
         const isFinanceQuery =
-          isAggregationQuery ||
-          FINANCE_DATA_QUERY_RE.test(normalizedLastUserText) ||
-          INCOME_DATA_QUERY_RE.test(normalizedLastUserText) ||
-          INVOICE_REVENUE_RE.test(normalizedLastUserText) ||
-          FINANCE_FOLLOWUP_RE.test(normalizedLastUserText) ||
-          isFinanceTimeWindowReply ||
-          Boolean(expandEntityOnlyReply) ||
-          Boolean(expandBusinessNameOnlyReply);
+          isFinanceMode && (
+            isAggregationQuery ||
+            FINANCE_DATA_QUERY_RE.test(normalizedLastUserText) ||
+            INCOME_DATA_QUERY_RE.test(normalizedLastUserText) ||
+            INVOICE_REVENUE_RE.test(normalizedLastUserText) ||
+            FINANCE_FOLLOWUP_RE.test(normalizedLastUserText) ||
+            isFinanceTimeWindowReply ||
+            Boolean(expandEntityOnlyReply) ||
+            Boolean(expandBusinessNameOnlyReply)
+          );
 
         const financeQuestionForAgent = (() => {
           if (expandEntityOnlyReply) return expandEntityOnlyReply;
@@ -2066,29 +2077,41 @@ export async function POST(request: Request) {
               }
             }
           },
+          // In Project mode: exclude finance tools entirely
+          // In Finance mode: include finance tools based on query type
           experimental_activeTools:
-            isAggregationQuery
-              ? ["financeQuery", "runFinanceAgent", "runProjectAgent"]
-              : isFinanceQuery
-                ? [
-                    "getWeather",
-                    "createDocument",
-                    "updateDocument",
-                    "requestSuggestions",
-                    "financeQuery",
-                    "runFinanceAgent",
-                    "runProjectAgent",
-                  ]
-                : [
-                    "getWeather",
-                    "createDocument",
-                    "updateDocument",
-                    "requestSuggestions",
-                    "financeQuery",
-                    "runFinanceAgent",
-                    "runProjectAgent",
-                    "runCitationsAgent",
-                  ],
+            isFinanceMode
+              ? isAggregationQuery
+                ? ["financeQuery", "runFinanceAgent", "runProjectAgent"]
+                : isFinanceQuery
+                  ? [
+                      "getWeather",
+                      "createDocument",
+                      "updateDocument",
+                      "requestSuggestions",
+                      "financeQuery",
+                      "runFinanceAgent",
+                      "runProjectAgent",
+                    ]
+                  : [
+                      "getWeather",
+                      "createDocument",
+                      "updateDocument",
+                      "requestSuggestions",
+                      "financeQuery",
+                      "runFinanceAgent",
+                      "runProjectAgent",
+                      "runCitationsAgent",
+                    ]
+              : [
+                  // Project mode: no finance tools
+                  "getWeather",
+                  "createDocument",
+                  "updateDocument",
+                  "requestSuggestions",
+                  "runProjectAgent",
+                  "runCitationsAgent",
+                ],
           experimental_transform: smoothStream({ chunking: "word" }),
           tools: {
             getWeather,

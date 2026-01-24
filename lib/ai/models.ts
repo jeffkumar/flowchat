@@ -24,3 +24,27 @@ export const chatModels: ChatModel[] = [
     description: "High-performance model from Baseten",
   },
 ];
+
+// Agent Modes
+export type AgentMode = "project" | "finance";
+
+export type AgentModeConfig = {
+  id: AgentMode;
+  name: string;
+  description: string;
+};
+
+export const agentModes: AgentModeConfig[] = [
+  {
+    id: "project",
+    name: "Project",
+    description: "Document Q&A, chat, and artifacts",
+  },
+  {
+    id: "finance",
+    name: "Finance",
+    description: "Financial analysis and transactions",
+  },
+];
+
+export const DEFAULT_AGENT_MODE: AgentMode = "project";

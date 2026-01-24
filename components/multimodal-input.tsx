@@ -29,7 +29,9 @@ import {
 } from "@/components/ui/select";
 import { chatModels } from "@/lib/ai/models";
 import type { Attachment, ChatMessage } from "@/lib/types";
+import type { AgentMode } from "@/lib/ai/models";
 import { cn, fetcher } from "@/lib/utils";
+import { AgentModeSelector } from "./agent-mode-selector";
 import {
   PromptInput,
   PromptInputModelSelect,
@@ -186,6 +188,8 @@ function PureMultimodalInput({
   selectedModelId,
   onModelChange,
   selectedProjectId,
+  selectedAgentMode,
+  onAgentModeChange,
 }: {
   chatId: string;
   input: string;
@@ -202,6 +206,8 @@ function PureMultimodalInput({
   selectedModelId: string;
   onModelChange?: (modelId: string) => void;
   selectedProjectId?: string;
+  selectedAgentMode?: AgentMode;
+  onAgentModeChange?: (mode: AgentMode) => void;
 }) {
   const { mutate } = useSWRConfig();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -545,6 +551,12 @@ function PureMultimodalInput({
               uploadDocumentType={uploadDocumentType}
               onRequestFiles={() => setEntityDialogOpen(true)}
             />
+            {selectedAgentMode && onAgentModeChange && (
+              <AgentModeSelector
+                selectedAgentMode={selectedAgentMode}
+                onAgentModeChange={onAgentModeChange}
+              />
+            )}
           </PromptInputTools>
 
           {status === "submitted" ? (
@@ -671,6 +683,9 @@ export const MultimodalInput = memo(
       return false;
     }
     if (prevProps.selectedProjectId !== nextProps.selectedProjectId) {
+      return false;
+    }
+    if (prevProps.selectedAgentMode !== nextProps.selectedAgentMode) {
       return false;
     }
 

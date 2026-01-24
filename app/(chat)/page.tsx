@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { Chat } from "@/components/chat";
 import { DataStreamHandler } from "@/components/data-stream-handler";
-import { DEFAULT_CHAT_MODEL } from "@/lib/ai/models";
+import { DEFAULT_CHAT_MODEL, DEFAULT_AGENT_MODE, type AgentMode } from "@/lib/ai/models";
 import { generateUUID } from "@/lib/utils";
 import { auth } from "../(auth)/auth";
 
@@ -26,6 +26,9 @@ async function NewChatPage() {
 
   const cookieStore = await cookies();
   const modelIdFromCookie = cookieStore.get("chat-model");
+  const agentModeFromCookie = cookieStore.get("agent-mode");
+  const initialAgentMode: AgentMode =
+    agentModeFromCookie?.value === "finance" ? "finance" : DEFAULT_AGENT_MODE;
 
   if (!modelIdFromCookie) {
     return (
@@ -33,6 +36,7 @@ async function NewChatPage() {
         <Chat
           autoResume={false}
           id={id}
+          initialAgentMode={initialAgentMode}
           initialChatModel={DEFAULT_CHAT_MODEL}
           initialMessages={[]}
           initialVisibilityType="private"
@@ -49,6 +53,7 @@ async function NewChatPage() {
       <Chat
         autoResume={false}
         id={id}
+        initialAgentMode={initialAgentMode}
         initialChatModel={modelIdFromCookie.value}
         initialMessages={[]}
         initialVisibilityType="private"

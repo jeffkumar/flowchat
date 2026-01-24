@@ -211,7 +211,14 @@ export function ProjectFilesViewer() {
                   className="flex items-center justify-between rounded-lg border bg-card p-3 text-card-foreground shadow-sm"
                 >
                   <div className="flex min-w-0 flex-1 flex-col gap-1 overflow-hidden">
-                    <span className="truncate text-sm font-medium">{doc.filename}</span>
+                    <a
+                      className="truncate text-sm font-medium underline underline-offset-2"
+                      href={doc.blobUrl}
+                      rel="noopener noreferrer"
+                      target="_blank"
+                    >
+                      {doc.filename}
+                    </a>
                     <span className="text-xs text-muted-foreground">
                       {format(new Date(doc.createdAt), "PP")}
                     </span>
