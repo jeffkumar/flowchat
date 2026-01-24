@@ -28,7 +28,7 @@ export async function GET(
   }
 
   const members = await getProjectMembers({ projectId });
-  return NextResponse.json({ members }, { status: 200 });
+  return NextResponse.json({ members, currentUserRole: role }, { status: 200 });
 }
 
 export async function POST(
@@ -41,6 +41,14 @@ export async function POST(
   }
 
   const { projectId } = await params;
+
+  const role = await getProjectRole({ projectId, userId: session.user.id });
+  if (!role) {
+    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  }
+  if (role === "member") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   let body: unknown;
   try {

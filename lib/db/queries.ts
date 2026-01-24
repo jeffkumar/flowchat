@@ -385,8 +385,9 @@ const parsedConnectTimeout =
   typeof connectTimeoutRaw === "string" && connectTimeoutRaw.length > 0
     ? Number(connectTimeoutRaw)
     : undefined;
-// In dev, fail fast when the DB isn't reachable so pages don't appear to "compile forever".
-const defaultConnectTimeoutSeconds = process.env.NODE_ENV === "production" ? 10 : 2;
+// Neon serverless can take 3-5+ seconds to cold start, so use generous timeouts.
+// In production, connections are usually warm. In dev, we need patience for cold starts.
+const defaultConnectTimeoutSeconds = process.env.NODE_ENV === "production" ? 15 : 30;
 const connectTimeoutSeconds =
   typeof parsedConnectTimeout === "number" &&
   Number.isFinite(parsedConnectTimeout) &&
@@ -401,9 +402,13 @@ const client =
   globalCache.__flowchat_postgres_client__ ??
   postgres(safePostgresUrl, {
     max: maxConnections,
-    idle_timeout: 20,
+    idle_timeout: 60, // Keep connections alive longer to avoid cold-start latency
     connect_timeout: connectTimeoutSeconds,
     prepare: !isPoolerUrl,
+    // Keepalive helps prevent connections from being dropped by intermediate proxies/NATs
+    keep_alive: 30,
+    // Fetch column types on connect - disable to speed up initial connection
+    fetch_types: false,
   });
 
 const db = globalCache.__flowchat_db__ ?? drizzle(client);

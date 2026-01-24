@@ -38,6 +38,11 @@ type ProjectMemberRow =
       status: "pending";
     };
 
+type MembersResponse = {
+  members: ProjectMemberRow[];
+  currentUserRole?: "owner" | "admin" | "member";
+};
+
 export function ShareProjectDialog({
   projectId,
   open,
@@ -47,12 +52,14 @@ export function ShareProjectDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { data, mutate, isLoading } = useSWR<{ members: ProjectMemberRow[] }>(
+  const { data, mutate, isLoading } = useSWR<MembersResponse>(
     open ? `/api/projects/${projectId}/members` : null,
     fetcher
   );
 
   const members = useMemo(() => data?.members ?? [], [data?.members]);
+  const currentUserRole = data?.currentUserRole ?? null;
+  const canManageMembers = currentUserRole === "owner" || currentUserRole === "admin";
 
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<"member" | "admin">("member");
@@ -144,26 +151,28 @@ export function ShareProjectDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex gap-2">
-          <Input
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="email@example.com"
-            autoComplete="email"
-          />
-          <Select value={role} onValueChange={(v) => setRole(v as "admin" | "member")}>
-            <SelectTrigger className="w-[140px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="member">Member</SelectItem>
-              <SelectItem value="admin">Admin</SelectItem>
-            </SelectContent>
-          </Select>
-          <Button type="button" onClick={invite} disabled={isSubmitting || !email.trim()}>
-            Invite
-          </Button>
-        </div>
+        {canManageMembers && (
+          <div className="flex gap-2">
+            <Input
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="email@example.com"
+              autoComplete="email"
+            />
+            <Select value={role} onValueChange={(v) => setRole(v as "admin" | "member")}>
+              <SelectTrigger className="w-[140px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="member">Member</SelectItem>
+                <SelectItem value="admin">Admin</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button type="button" onClick={invite} disabled={isSubmitting || !email.trim()}>
+              Invite
+            </Button>
+          </div>
+        )}
 
         <div className="mt-4 space-y-2">
           {isLoading ? (
@@ -190,33 +199,39 @@ export function ShareProjectDialog({
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <Select
-                      value={roleValue}
-                      onValueChange={(v) => updateRole(m, v as "admin" | "member")}
-                      disabled={m.kind === "user" && m.role === "owner"}
-                    >
-                      <SelectTrigger className="w-[140px]">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {m.kind === "user" && m.role === "owner" && (
-                          <SelectItem value="owner">Owner</SelectItem>
-                        )}
-                        <SelectItem value="member">Member</SelectItem>
-                        <SelectItem value="admin">Admin</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    {canManageMembers ? (
+                      <Select
+                        value={roleValue}
+                        onValueChange={(v) => updateRole(m, v as "admin" | "member")}
+                        disabled={m.kind === "user" && m.role === "owner"}
+                      >
+                        <SelectTrigger className="w-[140px]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {m.kind === "user" && m.role === "owner" && (
+                            <SelectItem value="owner">Owner</SelectItem>
+                          )}
+                          <SelectItem value="member">Member</SelectItem>
+                          <SelectItem value="admin">Admin</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <span className="w-[140px] text-sm capitalize">{roleValue}</span>
+                    )}
 
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      onClick={() => remove(m)}
-                      disabled={m.kind === "user" && m.role === "owner"}
-                      title={m.kind === "invite" ? "Remove invite" : "Remove member"}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    {canManageMembers && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        onClick={() => remove(m)}
+                        disabled={m.kind === "user" && m.role === "owner"}
+                        title={m.kind === "invite" ? "Remove invite" : "Remove member"}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
                   </div>
                 </div>
               );

@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { put } from "@vercel/blob";
 import mammoth from "mammoth";
+import Reducto, { toFile } from "reductoai";
 import {
   createEmbedding,
   type TurbopufferUpsertRow,
@@ -106,9 +108,48 @@ async function extractTextFromPdf(buffer: Buffer) {
   }
 }
 
-async function extractPagesFromPdf(buffer: Buffer): Promise<string[]> {
-  // Reuse the same extraction logic, but keep per-page boundaries for chunking.
-  // This intentionally duplicates minimal logic to avoid changing existing behavior for non-PDF inputs.
+async function extractPagesWithReducto(
+  buffer: Buffer,
+  filename: string
+): Promise<string[]> {
+  const apiKey = process.env.REDUCTO_API_KEY ?? process.env.REDUCTO_KEY;
+  if (!apiKey) {
+    throw new Error("No Reducto API key configured");
+  }
+
+  const client = new Reducto({ apiKey });
+  const uploadFile = await toFile(buffer, filename, { type: "application/pdf" });
+  const upload = await client.upload({ file: uploadFile });
+
+  const response = await client.parse.run({ input: upload });
+
+  // Handle async vs sync response
+  if (!("result" in response)) {
+    throw new Error("Reducto parse returned an async job; expected a synchronous result.");
+  }
+
+  // Reducto parse returns chunks with markdown content
+  const { result } = response;
+  const resultObj = result as { chunks?: Array<{ content?: string }> };
+  if (!resultObj || !Array.isArray(resultObj.chunks)) {
+    throw new Error("Reducto parse returned no chunks");
+  }
+
+  const pages = resultObj.chunks
+    .map((chunk) =>
+      typeof chunk.content === "string" ? chunk.content.trim() : ""
+    )
+    .filter((text) => text.length > 0);
+
+  if (pages.length === 0) {
+    throw new Error("Reducto parse returned empty content");
+  }
+
+  return pages;
+}
+
+async function extractPagesWithPdfjs(buffer: Buffer): Promise<string[]> {
+  // Fallback: pdfjs-based extraction when Reducto is unavailable.
   const g = globalThis as unknown as Record<string, unknown>;
   if (typeof g.DOMMatrix === "undefined") {
     g.DOMMatrix = class DOMMatrix {
@@ -178,6 +219,19 @@ async function extractPagesFromPdf(buffer: Buffer): Promise<string[]> {
   }
 }
 
+async function extractPagesFromPdf(
+  buffer: Buffer,
+  filename?: string
+): Promise<string[]> {
+  // Try Reducto first for better OCR and form field extraction
+  try {
+    return await extractPagesWithReducto(buffer, filename ?? "document.pdf");
+  } catch {
+    // Fall back to pdfjs when Reducto is unavailable or fails
+    return await extractPagesWithPdfjs(buffer);
+  }
+}
+
 async function extractTextFromDocx(buffer: Buffer) {
   const result = await mammoth.extractRawText({ buffer });
   return (result.value ?? "").trim();
@@ -225,8 +279,10 @@ export async function ingestUploadedDocToTurbopuffer({
   let fullText = "";
   let chunks: string[] = [];
   if (mimeType === "application/pdf") {
-    chunks = await extractPagesFromPdf(fileBuffer);
-    fullText = chunks.join("\n").trim();
+    const pages = await extractPagesFromPdf(fileBuffer, filename);
+    fullText = pages.join("\n").trim();
+    // Split into chunks to avoid exceeding embedding model token limits
+    chunks = chunkText(fullText);
   } else if (
     mimeType ===
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -243,6 +299,15 @@ export async function ingestUploadedDocToTurbopuffer({
 
   if (chunks.length === 0) {
     throw new Error("No chunks produced");
+  }
+
+  // Store extracted chunks to blob storage for debugging
+  const baseFilename = filename.replace(/\.[^.]+$/, "");
+  for (let idx = 0; idx < chunks.length; idx += 1) {
+    await put(`structured/${docId}/${baseFilename}_${idx}.txt`, chunks[idx], {
+      access: "public",
+      contentType: "text/plain",
+    });
   }
 
   const fileHash = crypto.createHash("sha1").update(fileBuffer).digest("hex");
