@@ -9,15 +9,6 @@ import { unstable_serialize } from "swr/infinite";
 import { ChatHeader, type RetrievalRangePreset } from "@/components/chat-header";
 import { Button } from "@/components/ui/button";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -185,24 +176,6 @@ function getSourceTypes(includeSlack: boolean): Array<"slack" | "docs"> {
   return includeSlack ? ["slack", "docs"] : ["docs"];
 }
 
-function labelForPreset(preset: RetrievalRangePreset) {
-  switch (preset) {
-    case "all":
-      return "All time";
-    case "1d":
-      return "Last day";
-    case "7d":
-      return "Last 7 days";
-    case "30d":
-      return "Last 30 days";
-    case "90d":
-      return "Last 90 days";
-    default: {
-      const _exhaustive: never = preset;
-      return _exhaustive;
-    }
-  }
-}
 
 export function Chat({
   id,
@@ -249,15 +222,14 @@ export function Chat({
   const [showCreditCardAlert, setShowCreditCardAlert] = useState(false);
   const [currentModelId, setCurrentModelId] = useState(initialChatModel);
   const currentModelIdRef = useRef(currentModelId);
-  const [currentAgentMode, setCurrentAgentMode] = useState<AgentMode>(initialAgentMode);
-  const currentAgentModeRef = useRef(currentAgentMode);
+  const [currentAgentMode, setCurrentAgentMode] = useState<AgentMode | string>(initialAgentMode);
+  const currentAgentModeRef = useRef<AgentMode | string>(currentAgentMode);
   const { selectedProjectId } = useProjectSelector();
   const selectedProjectIdRef = useRef(selectedProjectId);
 
   const {
     includeSlack,
     retrievalRangePreset,
-    setRetrievalRangePreset,
   } = useRetrievalSettings();
   const sourceTypes = getSourceTypes(includeSlack);
   const sourceTypesRef = useRef(sourceTypes);
@@ -289,7 +261,7 @@ export function Chat({
     writeIgnoredDocIdsForProject(selectedProjectId, ignoredDocIds);
   }, [ignoredDocIds, selectedProjectId]);
 
-  const [showCitations, setShowCitations] = useState(true);
+  const [showCitations, setShowCitations] = useState(false);
   const [pendingSources, setPendingSources] = useState<RetrievedSource[] | null>(
     null
   );
@@ -932,43 +904,6 @@ export function Chat({
                   />
                   Show citations
                 </label>
-
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      className="h-5 px-2 text-[10px] text-muted-foreground"
-                      size="sm"
-                      type="button"
-                      variant="ghost"
-                    >
-                      {labelForPreset(retrievalRangePreset)}
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-40" side="top">
-                    <DropdownMenuLabel>Time range</DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuRadioGroup
-                      value={retrievalRangePreset}
-                      onValueChange={(value) => {
-                        if (
-                          value === "all" ||
-                          value === "1d" ||
-                          value === "7d" ||
-                          value === "30d" ||
-                          value === "90d"
-                        ) {
-                          setRetrievalRangePreset(value);
-                        }
-                      }}
-                    >
-                      <DropdownMenuRadioItem value="all">All time</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="1d">Last day</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="7d">Last 7 days</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="30d">Last 30 days</DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="90d">Last 90 days</DropdownMenuRadioItem>
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuContent>
-                </DropdownMenu>
               </div>
               <MultimodalInput
                 attachments={attachments}

@@ -684,14 +684,18 @@ export async function getAllWaitlistRequests(): Promise<WaitlistRequest[]> {
   }
 }
 
-export async function getProjectsByUserId(userId: string): Promise<Project[]> {
+export type ProjectWithRole = Project & { role: ProjectAccessRole };
+
+export async function getProjectsByUserId(userId: string): Promise<ProjectWithRole[]> {
   try {
-    const owned = db
+    // Get owned projects
+    const ownedProjects = await db
       .select()
       .from(project)
       .where(eq(project.createdBy, userId));
 
-    const shared = db
+    // Get shared projects with roles
+    const sharedProjects = await db
       .select({
         id: project.id,
         name: project.name,
@@ -699,21 +703,34 @@ export async function getProjectsByUserId(userId: string): Promise<Project[]> {
         organizationId: project.organizationId,
         isDefault: project.isDefault,
         createdAt: project.createdAt,
+        role: projectUser.role,
       })
       .from(projectUser)
       .innerJoin(project, eq(projectUser.projectId, project.id))
       .where(eq(projectUser.userId, userId));
 
-    const projects = await owned.union(shared).orderBy(desc(project.createdAt));
-
-    // Dedupe just in case (owner could also be present in ProjectUser).
+    // Combine and add roles
+    const allProjects: ProjectWithRole[] = [];
     const seen = new Set<string>();
-    const deduped: Project[] = [];
-    for (const p of projects) {
+
+    // Add owned projects first (they are always "owner" role)
+    for (const p of ownedProjects) {
       if (seen.has(p.id)) continue;
       seen.add(p.id);
-      deduped.push(p);
+      allProjects.push({ ...p, role: "owner" });
     }
+
+    // Add shared projects with their roles
+    for (const p of sharedProjects) {
+      if (seen.has(p.id)) continue;
+      seen.add(p.id);
+      allProjects.push({ ...p, role: p.role });
+    }
+
+    // Sort by createdAt descending
+    allProjects.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    const deduped = allProjects;
 
     return deduped;
   } catch (error) {
@@ -910,6 +927,7 @@ export async function createProjectDoc({
   parseStatus,
   entityName,
   entityKind,
+  schemaId,
 }: {
   projectId: string;
   createdBy: string;
@@ -926,6 +944,7 @@ export async function createProjectDoc({
   parseStatus?: ProjectDoc["parseStatus"];
   entityName?: string | null;
   entityKind?: ProjectDoc["entityKind"] | null;
+  schemaId?: string | null;
 }): Promise<ProjectDoc> {
   try {
     const [created] = await db
@@ -946,6 +965,7 @@ export async function createProjectDoc({
         parseStatus: parseStatus ?? "pending",
         entityName: entityName ?? null,
         entityKind: entityKind ?? null,
+        schemaId: schemaId ?? null,
         createdAt: new Date(),
       })
       .returning();
@@ -1463,12 +1483,23 @@ export async function deleteChatById({ id }: { id: string }) {
   }
 }
 
-export async function deleteAllChatsByUserId({ userId }: { userId: string }) {
+export async function deleteAllChatsByUserId({
+  userId,
+  projectId,
+}: {
+  userId: string;
+  projectId?: string;
+}) {
   try {
+    const conditions = [eq(chat.userId, userId)];
+    if (projectId) {
+      conditions.push(eq(chat.projectId, projectId));
+    }
+
     const userChats = await db
       .select({ id: chat.id })
       .from(chat)
-      .where(eq(chat.userId, userId));
+      .where(and(...conditions));
 
     if (userChats.length === 0) {
       return { deletedCount: 0 };
@@ -1482,7 +1513,7 @@ export async function deleteAllChatsByUserId({ userId }: { userId: string }) {
 
     const deletedChats = await db
       .delete(chat)
-      .where(eq(chat.userId, userId))
+      .where(and(...conditions))
       .returning();
 
     return { deletedCount: deletedChats.length };
@@ -1493,6 +1524,8 @@ export async function deleteAllChatsByUserId({ userId }: { userId: string }) {
     );
   }
 }
+
+export type ChatWithProject = Chat & { projectName: string | null };
 
 export async function getChatsByUserId({
   id,
@@ -1510,22 +1543,32 @@ export async function getChatsByUserId({
   try {
     const extendedLimit = limit + 1;
 
-    const query = (whereCondition?: SQL<any>) => {
-      const conditions: (SQL<any> | undefined)[] = [
+    const query = (whereCondition?: SQL<unknown>) => {
+      const conditions: (SQL<unknown> | undefined)[] = [
         eq(chat.userId, id),
         projectId ? eq(chat.projectId, projectId) : undefined,
         whereCondition,
       ];
 
       return db
-        .select()
+        .select({
+          id: chat.id,
+          createdAt: chat.createdAt,
+          title: chat.title,
+          userId: chat.userId,
+          projectId: chat.projectId,
+          visibility: chat.visibility,
+          lastContext: chat.lastContext,
+          projectName: project.name,
+        })
         .from(chat)
+        .leftJoin(project, eq(chat.projectId, project.id))
         .where(and(...conditions))
         .orderBy(desc(chat.createdAt))
         .limit(extendedLimit);
     };
 
-    let filteredChats: Chat[] = [];
+    let filteredChats: ChatWithProject[] = [];
 
     if (startingAfter) {
       const [selectedChat] = await db
@@ -3419,6 +3462,39 @@ export async function financeGroupByCategory({
     throw new ChatSDKError(
       "bad_request:database",
       error instanceof Error ? error.message : "Failed to run finance group_by_category"
+    );
+  }
+}
+
+/**
+ * Get a custom workflow agent for a specific project and file type.
+ * Returns null if no custom override exists.
+ */
+export async function getCustomWorkflowAgent({
+  projectId,
+  fileType,
+}: {
+  projectId: string;
+  fileType: string;
+}): Promise<ProjectDoc | null> {
+  try {
+    const docs = await db
+      .select()
+      .from(projectDoc)
+      .where(
+        and(
+          eq(projectDoc.projectId, projectId),
+          eq(projectDoc.documentType, "workflow_agent"),
+          eq(projectDoc.schemaId, fileType)
+        )
+      )
+      .limit(1);
+
+    return docs.at(0) ?? null;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to get workflow agent"
     );
   }
 }

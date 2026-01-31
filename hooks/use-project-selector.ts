@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { useState } from "react";
 import useSWR from "swr";
 import { useLocalStorage } from "usehooks-ts";
-import type { Project } from "@/lib/db/schema";
+import type { ProjectWithRole } from "@/lib/db/queries";
 import { ChatSDKError } from "@/lib/errors";
 import { fetcher } from "@/lib/utils";
 
@@ -17,7 +17,7 @@ export function useProjectSelector() {
 
   const [hasCheckedStorage, setHasCheckedStorage] = useState(false);
 
-  const { data, isLoading, mutate } = useSWR<{ projects: Project[] }>("/api/projects", fetcher, {
+  const { data, isLoading, mutate } = useSWR<{ projects: ProjectWithRole[] }>("/api/projects", fetcher, {
     onErrorRetry: (error, _key, _config, revalidate, opts) => {
       // If DB is unreachable locally, don't retry forever (it makes dev look "stuck").
       if (error instanceof ChatSDKError && error.type === "offline") return;

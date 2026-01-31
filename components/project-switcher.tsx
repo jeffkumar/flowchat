@@ -2,6 +2,7 @@
 
 import { Check, ChevronDown, Plus, Folder, Trash2 } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,9 +29,16 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 
+type RemoveAction = {
+  projectId: string;
+  projectName: string;
+  isOwnerOrAdmin: boolean;
+};
+
 export function ProjectSwitcher({ className }: { className?: string }) {
   const router = useRouter();
   const pathname = usePathname();
+  const { data: session } = useSession();
   const {
     projects,
     selectedProjectId,
@@ -39,7 +47,7 @@ export function ProjectSwitcher({ className }: { className?: string }) {
     mutate,
   } = useProjectSelector();
   const [showCreateDialog, setShowCreateDialog] = React.useState(false);
-  const [deleteId, setDeleteId] = React.useState<string | null>(null);
+  const [removeAction, setRemoveAction] = React.useState<RemoveAction | null>(null);
 
   const handleDeleteProject = async (projectId: string) => {
     try {
@@ -60,7 +68,33 @@ export function ProjectSwitcher({ className }: { className?: string }) {
     } catch (_error) {
       toast.error("Failed to delete project");
     } finally {
-      setDeleteId(null);
+      setRemoveAction(null);
+    }
+  };
+
+  const handleLeaveProject = async (projectId: string) => {
+    if (!session?.user?.id) return;
+
+    try {
+      const response = await fetch(
+        `/api/projects/${projectId}/members/${session.user.id}`,
+        { method: "DELETE" }
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to leave project");
+      }
+
+      toast.success("Left project");
+      mutate();
+
+      if (selectedProjectId === projectId) {
+        setSelectedProjectId(null);
+      }
+    } catch (_error) {
+      toast.error("Failed to leave project");
+    } finally {
+      setRemoveAction(null);
     }
   };
 
@@ -114,7 +148,12 @@ export function ProjectSwitcher({ className }: { className?: string }) {
                     onClick={(e) => {
                       e.stopPropagation();
                       e.preventDefault();
-                      setDeleteId(project.id);
+                      const isOwnerOrAdmin = project.role === "owner" || project.role === "admin";
+                      setRemoveAction({
+                        projectId: project.id,
+                        projectName: project.name,
+                        isOwnerOrAdmin,
+                      });
                     }}
                     role="button"
                     tabIndex={0}
@@ -122,7 +161,12 @@ export function ProjectSwitcher({ className }: { className?: string }) {
                       if (e.key === "Enter" || e.key === " ") {
                         e.stopPropagation();
                         e.preventDefault();
-                        setDeleteId(project.id);
+                        const isOwnerOrAdmin = project.role === "owner" || project.role === "admin";
+                        setRemoveAction({
+                          projectId: project.id,
+                          projectName: project.name,
+                          isOwnerOrAdmin,
+                        });
                       }
                     }}
                   >
@@ -144,24 +188,36 @@ export function ProjectSwitcher({ className }: { className?: string }) {
         open={showCreateDialog}
       />
       <AlertDialog
-        open={!!deleteId}
-        onOpenChange={(open) => !open && setDeleteId(null)}
+        open={!!removeAction}
+        onOpenChange={(open) => !open && setRemoveAction(null)}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Project</AlertDialogTitle>
+            <AlertDialogTitle>
+              {removeAction?.isOwnerOrAdmin
+                ? "Delete Project"
+                : "Leave Project"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete this project? This action cannot be
-              undone and will delete all associated files and chats.
+              {removeAction?.isOwnerOrAdmin
+                ? `Are you sure you want to delete "${removeAction.projectName}"? This action cannot be undone and will affect all users in this project. All associated files and chats will be permanently deleted.`
+                : `Are you sure you want to remove yourself from "${removeAction?.projectName}"? You will no longer have access to this project.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => deleteId && handleDeleteProject(deleteId)}
+              onClick={() => {
+                if (!removeAction) return;
+                if (removeAction.isOwnerOrAdmin) {
+                  handleDeleteProject(removeAction.projectId);
+                } else {
+                  handleLeaveProject(removeAction.projectId);
+                }
+              }}
               className="bg-destructive hover:bg-destructive/90"
             >
-              Delete
+              {removeAction?.isOwnerOrAdmin ? "Delete" : "Leave"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -9,6 +9,10 @@ import {
   type TurbopufferUpsertRow,
   upsertRowsToTurbopuffer,
 } from "@/lib/rag/turbopuffer";
+import {
+  getWorkflowAgentConfigById,
+  type WorkflowAgentExtractionConfig,
+} from "@/lib/ai/workflow-agents";
 
 const MAX_CONTENT_CHARS = 3800;
 
@@ -34,6 +38,119 @@ function chunkText(text: string, maxLen = 2400, overlap = 200) {
     i += step;
   }
   return chunks;
+}
+
+/**
+ * Splits a large chunk at paragraph or sentence boundaries to preserve semantic context.
+ * Only applies character-based splitting as a last resort.
+ */
+function splitLargeChunk(text: string, maxLen = 2400): string[] {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxLen) {
+    return trimmed ? [trimmed] : [];
+  }
+
+  const results: string[] = [];
+
+  // First try splitting by double newlines (paragraphs)
+  const paragraphs = trimmed.split(/\n\s*\n/).filter((p) => p.trim().length > 0);
+
+  let currentChunk = "";
+  for (const para of paragraphs) {
+    const candidate = currentChunk ? `${currentChunk}\n\n${para}` : para;
+
+    if (candidate.length <= maxLen) {
+      currentChunk = candidate;
+    } else {
+      // Push current chunk if it has content
+      if (currentChunk.trim()) {
+        results.push(currentChunk.trim());
+      }
+
+      // If paragraph itself is too large, split it further
+      if (para.length > maxLen) {
+        const subChunks = splitBySentences(para, maxLen);
+        results.push(...subChunks);
+        currentChunk = "";
+      } else {
+        currentChunk = para;
+      }
+    }
+  }
+
+  // Don't forget the last chunk
+  if (currentChunk.trim()) {
+    results.push(currentChunk.trim());
+  }
+
+  return results;
+}
+
+/**
+ * Splits text by sentence boundaries. Falls back to character-based splitting
+ * if sentences are still too long.
+ */
+function splitBySentences(text: string, maxLen: number): string[] {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxLen) {
+    return trimmed ? [trimmed] : [];
+  }
+
+  const results: string[] = [];
+
+  // Split by sentence-ending punctuation followed by space or newline
+  const sentences = trimmed.split(/(?<=[.!?])\s+/).filter((s) => s.trim().length > 0);
+
+  let currentChunk = "";
+  for (const sentence of sentences) {
+    const candidate = currentChunk ? `${currentChunk} ${sentence}` : sentence;
+
+    if (candidate.length <= maxLen) {
+      currentChunk = candidate;
+    } else {
+      if (currentChunk.trim()) {
+        results.push(currentChunk.trim());
+      }
+
+      // If sentence itself is too large, fall back to character-based chunking
+      if (sentence.length > maxLen) {
+        const charChunks = chunkText(sentence, maxLen, 100);
+        results.push(...charChunks);
+        currentChunk = "";
+      } else {
+        currentChunk = sentence;
+      }
+    }
+  }
+
+  if (currentChunk.trim()) {
+    results.push(currentChunk.trim());
+  }
+
+  return results;
+}
+
+/**
+ * Processes an array of semantic chunks (e.g., from Reducto or pages).
+ * Preserves chunk boundaries and only splits individual chunks if they exceed maxLen.
+ */
+function processSemanticChunks(chunks: string[], maxLen = 2400): string[] {
+  const results: string[] = [];
+
+  for (const chunk of chunks) {
+    const trimmed = chunk.trim();
+    if (!trimmed) continue;
+
+    if (trimmed.length <= maxLen) {
+      results.push(trimmed);
+    } else {
+      // Split large chunks at semantic boundaries
+      const subChunks = splitLargeChunk(trimmed, maxLen);
+      results.push(...subChunks);
+    }
+  }
+
+  return results;
 }
 
 async function extractTextFromPdf(buffer: Buffer) {
@@ -253,6 +370,7 @@ export async function ingestUploadedDocToTurbopuffer({
   sourceUrl,
   sourceCreatedAtMs,
   fileBuffer,
+  workflowAgentId,
 }: {
   docId: string;
   projectSlug: string;
@@ -269,6 +387,7 @@ export async function ingestUploadedDocToTurbopuffer({
   sourceUrl?: string | null;
   sourceCreatedAtMs: number;
   fileBuffer: Buffer;
+  workflowAgentId?: string | null;
 }) {
   // Store docs in per-project namespaces. Use the v2 docs suffix to avoid vector dimension mismatches.
   const namespace = isDefaultProject
@@ -276,19 +395,38 @@ export async function ingestUploadedDocToTurbopuffer({
     : `_synergy_${projectId}_docsv2`;
   const indexedAtMs = Date.now();
 
+  // Get workflow agent configuration if an agent ID is provided
+  let workflowConfig: WorkflowAgentExtractionConfig | null = null;
+  if (workflowAgentId) {
+    workflowConfig = await getWorkflowAgentConfigById({ agentId: workflowAgentId });
+    // Log if using custom workflow agent
+    if (workflowConfig.agentId) {
+      console.info(
+        `[ingest] Using workflow agent "${workflowConfig.agentName}" for ${filename} in project ${projectId}`
+      );
+    }
+  }
+
   let fullText = "";
   let chunks: string[] = [];
   if (mimeType === "application/pdf") {
-    const pages = await extractPagesFromPdf(fileBuffer, filename);
-    fullText = pages.join("\n").trim();
-    // Split into chunks to avoid exceeding embedding model token limits
-    chunks = chunkText(fullText);
+    // extractPagesFromPdf returns semantic chunks from Reducto or page-based chunks from pdfjs.
+    // Process them directly to preserve semantic boundaries instead of joining and re-chunking.
+    // Note: workflowConfig.extractionPrompt could be passed to Reducto in the future
+    const semanticChunks = await extractPagesFromPdf(fileBuffer, filename);
+    chunks = processSemanticChunks(semanticChunks);
+    fullText = semanticChunks.join("\n").trim();
   } else if (
     mimeType ===
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   ) {
     fullText = await extractTextFromDocx(fileBuffer);
-    chunks = chunkText(fullText);
+    // For DOCX, split at paragraph boundaries since we get the full text
+    chunks = splitLargeChunk(fullText);
+  } else if (mimeType === "text/markdown" || mimeType === "text/plain") {
+    // Markdown and plain text files can be read directly
+    fullText = fileBuffer.toString("utf-8").trim();
+    chunks = splitLargeChunk(fullText);
   } else {
     throw new Error(`Unsupported mimeType for ingestion: ${mimeType}`);
   }

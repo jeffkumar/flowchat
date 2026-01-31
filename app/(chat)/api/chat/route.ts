@@ -44,6 +44,7 @@ import {
   getMessagesByChatId,
   getOrCreateDefaultProjectForUser,
   getProjectByIdForUser,
+  getProjectDocById,
   getProjectEntitySummaryForUser,
   saveDocument,
   saveChat,
@@ -784,7 +785,7 @@ export async function POST(request: Request) {
       message: ChatMessage;
       selectedChatModel: ChatModel["id"];
       selectedVisibilityType: VisibilityType;
-      selectedAgentMode?: "project" | "finance";
+      selectedAgentMode?: string; // "project", "finance", or custom agent UUID
       projectId?: string;
       sourceTypes?: Array<"slack" | "docs">;
       ignoredDocIds?: string[];
@@ -796,6 +797,7 @@ export async function POST(request: Request) {
 
     // Agent mode determines which tools are available
     const isFinanceMode = selectedAgentMode === "finance";
+    const isCustomAgent = selectedAgentMode && selectedAgentMode !== "project" && selectedAgentMode !== "finance";
 
     const session = await auth();
 
@@ -882,6 +884,24 @@ export async function POST(request: Request) {
     }
 
     const uiMessages = [...convertToUIMessages(messagesFromDb), message];
+
+    // Fetch custom agent system prompt if applicable
+    let customAgentSystemPrompt: string | null = null;
+    let customAgentName: string | null = null;
+    if (isCustomAgent && selectedAgentMode) {
+      try {
+        const agentDoc = await getProjectDocById({ docId: selectedAgentMode });
+        if (agentDoc && agentDoc.projectId === activeProjectId && agentDoc.documentType === "agent") {
+          const response = await fetch(agentDoc.blobUrl);
+          if (response.ok) {
+            customAgentSystemPrompt = await response.text();
+            customAgentName = agentDoc.description || agentDoc.filename.replace(/\.md$/, "");
+          }
+        }
+      } catch {
+        // Fallback to project mode if agent fetch fails
+      }
+    }
 
     const { longitude, latitude, city, country } = geolocation(request);
 
@@ -1515,7 +1535,9 @@ export async function POST(request: Request) {
         }
 
         // System prompt depends on agent mode
-        const systemPrompt = isFinanceMode
+        const systemPrompt = customAgentSystemPrompt
+          ? `You are a custom agent called "${customAgentName || "Custom Agent"}" in Flowchat.\n\n${customAgentSystemPrompt}\n\n---\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runCitationsAgent: validate claims against sources and add inline citations like 【N】.\n\nRules:\n- If you need to call a tool, call it immediately. Do not provide a conversational preamble or explain what you are about to do. Just call the tool.\n- Answer questions using the retrieved document context when available. Quote specific passages when helpful.\n- When presenting structured results (comparisons, lists), prefer GitHub-flavored markdown tables.\n- If you used retrieved context, optionally call runCitationsAgent at the end to add citations.\n\nKeep responses clear, accurate, and well-cited.`
+          : isFinanceMode
           ? isLikelyFinanceQuery
             ? "You are Flowchat (FrontlineAgent) in Finance Mode.\n\nYou answer questions based primarily on the conversation (the user's messages and your prior replies).\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n\nRules:\n- If you need to call a tool, call it immediately. Do not provide a conversational preamble or explain what you are about to do. Just call the tool.\n- CRITICAL: For finance, totals, or data analysis, you MUST call runFinanceAgent. Do not attempt to answer from memory or background context alone.\n- Use runFinanceAgent for any totals/sums/counts/aggregations. \n- If you need both a total and a breakdown (e.g. \"by month\"), ensure you ask the specialist for both or use the total provided by the specialist.\n- When presenting structured numeric results (breakdowns, comparisons, lists), prefer GitHub-flavored markdown tables.\n- If the user asks about a month by name (e.g. \"November\") but does not specify a year, assume the year is the current year.\n- If the user's message is a follow-up like \"break it down\" / \"by category\" / \"show me the list\" and omits time or entity, you MUST infer the missing time/entity from the immediately preceding conversation turns and include them explicitly when calling runFinanceAgent.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n\nKeep clarifying questions short and actionable."
             : "You are Flowchat (FrontlineAgent) in Finance Mode.\n\nYou answer questions based primarily on the conversation (the user's messages and your prior replies). Retrieved context (Slack messages and uploaded docs) is OPTIONAL background and may be irrelevant; only use it when it clearly helps answer the current question.\n\nYou can delegate to specialist agents (tools):\n- runProjectAgent: project/entity state and diagnostics.\n- runFinanceAgent: deterministic finance analysis (uses financeQuery internally).\n- runCitationsAgent: validate claims against sources and add inline citations like 【N】.\n\nRules:\n- If you need to call a tool, call it immediately. Do not provide a conversational preamble or explain what you are about to do. Just call the tool.\n- CRITICAL: For finance, totals, or data analysis, you MUST call runFinanceAgent. Do not attempt to answer from memory or background context alone.\n- Use runFinanceAgent for any totals/sums/counts/aggregations. \n- If you need both a total and a breakdown (e.g. \"by month\"), ensure you ask the specialist for both or use the total provided by the specialist.\n- When presenting structured numeric results (breakdowns, comparisons, lists), prefer GitHub-flavored markdown tables.\n- If the user asks about a month by name (e.g. \"November\") but does not specify a year, assume the year is the current year.\n- If the user's message is a follow-up like \"break it down\" / \"by category\" / \"show me the list\" and omits time or entity, you MUST infer the missing time/entity from the immediately preceding conversation turns and include them explicitly when calling runFinanceAgent.\n- If entity ambiguity exists (Personal vs one or more businesses), ask a clarifying question before answering.\n- Prefer bank-statement deposits for income-like questions, excluding transfers.\n- If you used retrieved context, optionally call runCitationsAgent at the end to add citations.\n\nKeep clarifying questions short and actionable."
@@ -2103,6 +2125,16 @@ export async function POST(request: Request) {
                       "runProjectAgent",
                       "runCitationsAgent",
                     ]
+              : isCustomAgent
+              ? [
+                  // Custom agent mode: same as project mode (no finance tools)
+                  "getWeather",
+                  "createDocument",
+                  "updateDocument",
+                  "requestSuggestions",
+                  "runProjectAgent",
+                  "runCitationsAgent",
+                ]
               : [
                   // Project mode: no finance tools
                   "getWeather",

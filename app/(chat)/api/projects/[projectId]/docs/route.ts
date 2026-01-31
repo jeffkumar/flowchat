@@ -30,7 +30,12 @@ export async function GET(
 
     const docs = await getProjectDocsByProjectId({ projectId });
 
-    return NextResponse.json({ docs }, { status: 200 });
+    // Filter out agent and note documents - they have their own management interfaces
+    const visibleDocs = docs.filter(
+      (doc) => doc.documentType !== "agent" && doc.documentType !== "note"
+    );
+
+    return NextResponse.json({ docs: visibleDocs }, { status: 200 });
   } catch (error) {
     if (error instanceof ChatSDKError) {
       return error.toResponse();

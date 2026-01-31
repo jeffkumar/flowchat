@@ -24,27 +24,27 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { useProjectSelector } from "@/hooks/use-project-selector";
-import type { Chat } from "@/lib/db/schema";
+import type { ChatWithProject } from "@/lib/db/queries";
 import { fetcher } from "@/lib/utils";
 import { LoaderIcon } from "./icons";
 import { ChatItem } from "./sidebar-history-item";
 
 type GroupedChats = {
-  today: Chat[];
-  yesterday: Chat[];
-  lastWeek: Chat[];
-  lastMonth: Chat[];
-  older: Chat[];
+  today: ChatWithProject[];
+  yesterday: ChatWithProject[];
+  lastWeek: ChatWithProject[];
+  lastMonth: ChatWithProject[];
+  older: ChatWithProject[];
 };
 
 export type ChatHistory = {
-  chats: Chat[];
+  chats: ChatWithProject[];
   hasMore: boolean;
 };
 
 const PAGE_SIZE = 20;
 
-const groupChatsByDate = (chats: Chat[]): GroupedChats => {
+const groupChatsByDate = (chats: ChatWithProject[]): GroupedChats => {
   const now = new Date();
   const oneWeekAgo = subWeeks(now, 1);
   const oneMonthAgo = subMonths(now, 1);
@@ -80,21 +80,22 @@ const groupChatsByDate = (chats: Chat[]): GroupedChats => {
 export function getChatHistoryPaginationKey(
   pageIndex: number,
   previousPageData: ChatHistory,
-  projectId?: string | null
+  projectId?: string | null,
+  filterByProject: boolean = true
 ) {
   if (previousPageData && previousPageData.hasMore === false) {
     return null;
   }
 
-  // If no project ID is provided (e.g. during initial load/default), we might default to something or return null.
-  // But here we want to filter by project. If null, we might want to return nothing or all?
-  // Strategy: If projectId is missing, return null to avoid fetching until we have one.
-  if (!projectId) {
+  // If filtering by project and no project ID, wait until we have one
+  if (filterByProject && !projectId) {
     return null;
   }
 
+  const projectParam = filterByProject && projectId ? `&projectId=${projectId}` : "";
+
   if (pageIndex === 0) {
-    return `/api/history?limit=${PAGE_SIZE}&projectId=${projectId}`;
+    return `/api/history?limit=${PAGE_SIZE}${projectParam}`;
   }
 
   const firstChatFromPage = previousPageData.chats.at(-1);
@@ -103,7 +104,15 @@ export function getChatHistoryPaginationKey(
     return null;
   }
 
-  return `/api/history?ending_before=${firstChatFromPage.id}&limit=${PAGE_SIZE}&projectId=${projectId}`;
+  return `/api/history?ending_before=${firstChatFromPage.id}&limit=${PAGE_SIZE}${projectParam}`;
+}
+
+const FILTER_BY_PROJECT_KEY = "flowchat_filter_by_project";
+
+function readFilterByProjectFromStorage(): boolean {
+  if (typeof window === "undefined") return true;
+  const stored = localStorage.getItem(FILTER_BY_PROJECT_KEY);
+  return stored === null ? true : stored === "true";
 }
 
 export function SidebarHistory({ user }: { user: User | undefined }) {
@@ -111,16 +120,24 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
   const { id } = useParams();
   const { selectedProjectId } = useProjectSelector();
   const [hasMounted, setHasMounted] = useState(false);
+  const [filterByProject, setFilterByProject] = useState(true);
 
   useEffect(() => {
     setHasMounted(true);
+    setFilterByProject(readFilterByProjectFromStorage());
   }, []);
+
+  const handleFilterChange = (checked: boolean) => {
+    setFilterByProject(checked);
+    localStorage.setItem(FILTER_BY_PROJECT_KEY, String(checked));
+  };
 
   const getKey = (pageIndex: number, previousPageData: ChatHistory) => {
     return getChatHistoryPaginationKey(
       pageIndex,
       previousPageData,
-      selectedProjectId
+      selectedProjectId,
+      filterByProject
     );
   };
 
@@ -258,10 +275,23 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
     );
   }
 
+  const showProjectLabel = !filterByProject;
+
   return (
     <>
       <SidebarGroup>
         <SidebarGroupContent>
+          <div className="px-2 pb-2">
+            <label className="flex items-center gap-2 text-xs text-sidebar-foreground/70 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={filterByProject}
+                onChange={(e) => handleFilterChange(e.target.checked)}
+                className="h-3 w-3 rounded-sm border border-sidebar-foreground/30 accent-primary"
+              />
+              Current project only
+            </label>
+          </div>
           <SidebarMenu>
             {paginatedChatHistories &&
               (() => {
@@ -288,6 +318,7 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
                               setShowDeleteDialog(true);
                             }}
                             setOpenMobile={setOpenMobile}
+                            showProjectLabel={showProjectLabel}
                           />
                         ))}
                       </div>
@@ -308,6 +339,7 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
                               setShowDeleteDialog(true);
                             }}
                             setOpenMobile={setOpenMobile}
+                            showProjectLabel={showProjectLabel}
                           />
                         ))}
                       </div>
@@ -328,6 +360,7 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
                               setShowDeleteDialog(true);
                             }}
                             setOpenMobile={setOpenMobile}
+                            showProjectLabel={showProjectLabel}
                           />
                         ))}
                       </div>
@@ -348,6 +381,7 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
                               setShowDeleteDialog(true);
                             }}
                             setOpenMobile={setOpenMobile}
+                            showProjectLabel={showProjectLabel}
                           />
                         ))}
                       </div>
@@ -368,6 +402,7 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
                               setShowDeleteDialog(true);
                             }}
                             setOpenMobile={setOpenMobile}
+                            showProjectLabel={showProjectLabel}
                           />
                         ))}
                       </div>

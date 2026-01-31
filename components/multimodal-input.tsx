@@ -75,11 +75,24 @@ import {
   FileIcon,
 } from "lucide-react";
 
-type UploadDocumentType =
-  | "general_doc"
-  | "bank_statement"
-  | "cc_statement"
-  | "invoice";
+// Built-in document types
+const BUILT_IN_DOC_TYPES = ["general_doc", "bank_statement", "cc_statement", "invoice"] as const;
+type BuiltInDocType = typeof BUILT_IN_DOC_TYPES[number];
+
+// UploadDocumentType can be a built-in type or a workflow agent ID (prefixed with "workflow:")
+type UploadDocumentType = BuiltInDocType | `workflow:${string}`;
+
+type MatchingWorkflowAgent = {
+  id: string;
+  name: string;
+  description: string;
+};
+
+type WorkflowAgentOption = {
+  id: string;
+  name: string;
+  description?: string;
+};
 
 function normalizeBusinessName(value: string): string {
   return value.trim();
@@ -206,8 +219,8 @@ function PureMultimodalInput({
   selectedModelId: string;
   onModelChange?: (modelId: string) => void;
   selectedProjectId?: string;
-  selectedAgentMode?: AgentMode;
-  onAgentModeChange?: (mode: AgentMode) => void;
+  selectedAgentMode?: AgentMode | string;
+  onAgentModeChange?: (mode: AgentMode | string) => void;
 }) {
   const { mutate } = useSWRConfig();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -271,6 +284,19 @@ function PureMultimodalInput({
   );
   const [uploadBusinessName, setUploadBusinessName] = useState("");
 
+  // Fetch workflow agents for the document type dropdown
+  const { data: workflowAgentsData } = useSWR<{ agents: WorkflowAgentOption[] }>(
+    selectedProjectId ? `/api/projects/${selectedProjectId}/workflow-agents` : null,
+    fetcher
+  );
+  const workflowAgentOptions = workflowAgentsData?.agents ?? [];
+  
+  // Workflow agent selection state
+  const [workflowAgentId, setWorkflowAgentId] = useState<string | undefined>(undefined);
+  const [workflowAgentDialogOpen, setWorkflowAgentDialogOpen] = useState(false);
+  const [matchingWorkflowAgents, setMatchingWorkflowAgents] = useState<MatchingWorkflowAgent[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+
   const { data: businessNamesData } = useSWR<{ names: string[] }>(
     "/api/entities/business-names",
     fetcher,
@@ -325,16 +351,25 @@ function PureMultimodalInput({
   ]);
 
   const uploadFile = useCallback(
-    async (file: File) => {
+    async (file: File, agentId?: string) => {
     const formData = new FormData();
     formData.append("file", file);
-    formData.append("documentType", uploadDocumentType);
+    
+    // Check if uploadDocumentType is a workflow agent selection
+    let effectiveDocType = uploadDocumentType;
+    let effectiveAgentId = agentId;
+    if (uploadDocumentType.startsWith("workflow:")) {
+      effectiveAgentId = uploadDocumentType.slice("workflow:".length);
+      effectiveDocType = "general_doc"; // Use general_doc as base type
+    }
+    
+    formData.append("documentType", effectiveDocType);
     formData.append("entityKind", uploadEntityKind);
     if (uploadEntityKind === "business") {
       const bn = uploadBusinessName.trim();
       if (bn.length > 0) formData.append("entityName", bn);
     }
-    if (uploadDocumentType === "invoice") {
+    if (effectiveDocType === "invoice") {
       const sender = invoiceSender.trim();
       const recipient = invoiceRecipient.trim();
       if (sender) formData.append("invoiceSender", sender);
@@ -342,6 +377,9 @@ function PureMultimodalInput({
     }
     if (selectedProjectId) {
       formData.append("projectId", selectedProjectId);
+    }
+    if (effectiveAgentId) {
+      formData.append("workflowAgentId", effectiveAgentId);
     }
 
     try {
@@ -381,14 +419,12 @@ function PureMultimodalInput({
     ]
   );
 
-  const handleFileChange = useCallback(
-    async (event: ChangeEvent<HTMLInputElement>) => {
-      const files = Array.from(event.target.files || []);
-
+  const processFilesWithAgent = useCallback(
+    async (files: File[], agentId?: string) => {
       setUploadQueue(files.map((file) => file.name));
 
       try {
-        const uploadPromises = files.map((file) => uploadFile(file));
+        const uploadPromises = files.map((file) => uploadFile(file, agentId));
         const uploadedAttachments = await Promise.all(uploadPromises);
         const successfullyUploadedAttachments = uploadedAttachments.filter(
           (attachment) => attachment !== undefined
@@ -402,9 +438,71 @@ function PureMultimodalInput({
         console.error("Error uploading files!", error);
       } finally {
         setUploadQueue([]);
+        setPendingFiles([]);
+        setWorkflowAgentId(undefined);
       }
     },
     [setAttachments, uploadFile]
+  );
+
+  const handleFileChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(event.target.files || []);
+      if (files.length === 0) return;
+
+      // Reset the file input
+      if (event.target) {
+        event.target.value = "";
+      }
+
+      // Only check for workflow agents if uploading general docs and we have a project
+      if (uploadDocumentType === "general_doc" && selectedProjectId) {
+        // Get unique MIME types from the files
+        const mimeTypes = [...new Set(files.map((f) => f.type))];
+        
+        // Query matching workflow agents for each MIME type
+        const agentPromises = mimeTypes.map(async (mimeType) => {
+          try {
+            const response = await fetch(
+              `/api/projects/${selectedProjectId}/workflow-agents/for-mime-type?mimeType=${encodeURIComponent(mimeType)}`
+            );
+            if (response.ok) {
+              const data = await response.json();
+              return data.agents as MatchingWorkflowAgent[];
+            }
+          } catch {
+            // Ignore errors
+          }
+          return [];
+        });
+
+        const agentResults = await Promise.all(agentPromises);
+        const allAgents = agentResults.flat();
+        
+        // Deduplicate agents by ID
+        const uniqueAgents = allAgents.filter(
+          (agent, index, self) => self.findIndex((a) => a.id === agent.id) === index
+        );
+
+        if (uniqueAgents.length > 1) {
+          // Multiple agents match - show selection dialog
+          setMatchingWorkflowAgents(uniqueAgents);
+          setPendingFiles(files);
+          setWorkflowAgentDialogOpen(true);
+          return;
+        }
+        
+        if (uniqueAgents.length === 1) {
+          // Exactly one agent matches - use it automatically
+          await processFilesWithAgent(files, uniqueAgents[0].id);
+          return;
+        }
+      }
+
+      // No matching agents or not a general doc - upload without agent
+      await processFilesWithAgent(files);
+    },
+    [selectedProjectId, uploadDocumentType, processFilesWithAgent]
   );
 
   const handlePaste = useCallback(
@@ -549,6 +647,7 @@ function PureMultimodalInput({
               setInvoiceSender={setInvoiceSender}
               setUploadDocumentType={setUploadDocumentType}
               uploadDocumentType={uploadDocumentType}
+              workflowAgentOptions={workflowAgentOptions}
               onRequestFiles={() => setEntityDialogOpen(true)}
             />
             {selectedAgentMode && onAgentModeChange && (
@@ -660,6 +759,76 @@ function PureMultimodalInput({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Workflow Agent Selection Dialog */}
+      <Dialog
+        open={workflowAgentDialogOpen}
+        onOpenChange={(open) => {
+          setWorkflowAgentDialogOpen(open);
+          if (!open) {
+            setPendingFiles([]);
+            setMatchingWorkflowAgents([]);
+            setWorkflowAgentId(undefined);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Select Document Type</DialogTitle>
+            <DialogDescription>
+              Multiple workflow agents can process these files. Choose one:
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-2 py-4">
+            <button
+              type="button"
+              onClick={() => {
+                setWorkflowAgentDialogOpen(false);
+                processFilesWithAgent(pendingFiles, undefined);
+              }}
+              className="flex flex-col gap-0.5 rounded-lg border p-3 text-left transition-colors hover:bg-muted/50"
+            >
+              <span className="text-sm font-medium">General Document</span>
+              <span className="text-xs text-muted-foreground">
+                Use default extraction without a workflow agent
+              </span>
+            </button>
+            {matchingWorkflowAgents.map((agent) => (
+              <button
+                key={agent.id}
+                type="button"
+                onClick={() => {
+                  setWorkflowAgentDialogOpen(false);
+                  processFilesWithAgent(pendingFiles, agent.id);
+                }}
+                className="flex flex-col gap-0.5 rounded-lg border p-3 text-left transition-colors hover:bg-muted/50"
+              >
+                <span className="text-sm font-medium">{agent.name}</span>
+                {agent.description && (
+                  <span className="text-xs text-muted-foreground">
+                    {agent.description}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+
+          <DialogFooter>
+            <Button
+              onClick={() => {
+                setWorkflowAgentDialogOpen(false);
+                setPendingFiles([]);
+                setMatchingWorkflowAgents([]);
+              }}
+              type="button"
+              variant="outline"
+            >
+              Cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -703,6 +872,7 @@ function PureAttachmentsButton({
   setInvoiceSender,
   uploadDocumentType,
   setUploadDocumentType,
+  workflowAgentOptions,
   onRequestFiles,
 }: {
   invoiceParties?: { senders: string[]; recipients: string[] };
@@ -714,6 +884,7 @@ function PureAttachmentsButton({
   setInvoiceSender: Dispatch<SetStateAction<string>>;
   uploadDocumentType: UploadDocumentType;
   setUploadDocumentType: Dispatch<SetStateAction<UploadDocumentType>>;
+  workflowAgentOptions: WorkflowAgentOption[];
   onRequestFiles: () => void;
 }) {
   const isReasoningModel = selectedModelId === "chat-model-reasoning";
@@ -749,6 +920,19 @@ function PureAttachmentsButton({
                 <SelectItem value="bank_statement">Bank statement</SelectItem>
                 <SelectItem value="cc_statement">Credit card statement</SelectItem>
                 <SelectItem value="invoice">Invoice</SelectItem>
+                {workflowAgentOptions.length > 0 && (
+                  <>
+                    <div className="my-1 h-px bg-border" />
+                    <div className="px-2 py-1 text-xs text-muted-foreground">
+                      Custom Types
+                    </div>
+                    {workflowAgentOptions.map((agent) => (
+                      <SelectItem key={agent.id} value={`workflow:${agent.id}`}>
+                        {agent.name}
+                      </SelectItem>
+                    ))}
+                  </>
+                )}
               </SelectContent>
             </Select>
           </div>

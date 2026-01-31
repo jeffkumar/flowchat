@@ -8,8 +8,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
 import { unstable_serialize } from "swr/infinite";
-import { CreateProjectDialog } from "@/components/create-project-dialog";
-import { PlusIcon, TrashIcon } from "@/components/icons";
+import { TrashIcon } from "@/components/icons";
 import {
   getChatHistoryPaginationKey,
   SidebarHistory,
@@ -28,7 +27,7 @@ import {
 } from "@/components/ui/sidebar";
 import { useProjectSelector } from "@/hooks/use-project-selector";
 import { cn } from "@/lib/utils";
-import { FileText, Plug2 } from "lucide-react";
+import { Bot, FileText, MessageSquarePlus, Notebook, Plug2 } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -46,8 +45,7 @@ export function AppSidebar({ user }: { user: User | undefined }) {
   const { setOpenMobile } = useSidebar();
   const { mutate } = useSWRConfig();
   const [showDeleteAllDialog, setShowDeleteAllDialog] = useState(false);
-  const [showCreateProjectDialog, setShowCreateProjectDialog] = useState(false);
-  const { selectedProjectId } = useProjectSelector();
+  const { selectedProjectId, selectedProject } = useProjectSelector();
   const { resolvedTheme } = useTheme();
   const [hasMounted, setHasMounted] = useState(false);
 
@@ -58,12 +56,17 @@ export function AppSidebar({ user }: { user: User | undefined }) {
   const shouldInvertSidebar = hasMounted && resolvedTheme === "light";
 
   const handleDeleteAll = () => {
-    const deletePromise = fetch("/api/history", {
+    if (!selectedProjectId) {
+      toast.error("No project selected");
+      return;
+    }
+
+    const deletePromise = fetch(`/api/history?projectId=${selectedProjectId}`, {
       method: "DELETE",
     });
 
     toast.promise(deletePromise, {
-      loading: "Deleting all chats...",
+      loading: "Deleting project chats...",
       success: () => {
         mutate(
           unstable_serialize((index, previousPageData) =>
@@ -76,9 +79,9 @@ export function AppSidebar({ user }: { user: User | undefined }) {
         );
         router.push("/");
         setShowDeleteAllDialog(false);
-        return "All chats deleted successfully";
+        return "Project chats deleted successfully";
       },
-      error: "Failed to delete all chats",
+      error: "Failed to delete project chats",
     });
   };
 
@@ -118,45 +121,29 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent align="end" className="hidden md:block">
-                      Delete All Chats
+                      Delete Project Chats
                     </TooltipContent>
                   </Tooltip>
                 )}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      className="h-8 p-1 md:h-fit md:p-2"
-                      onClick={() => {
-                        setOpenMobile(false);
-                        router.push("/");
-                        router.refresh();
-                      }}
-                      type="button"
-                      variant="ghost"
-                    >
-                      <PlusIcon />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent align="end" className="hidden md:block">
-                    New Chat
-                  </TooltipContent>
-                </Tooltip>
               </div>
             </div>
           </SidebarMenu>
         </SidebarHeader>
         <SidebarContent>
-          <div className="px-2 py-2">
+          <div className="px-2 pt-2 pb-1">
             <Button
-              className="w-full justify-start"
-              onClick={() => setShowCreateProjectDialog(true)}
+              className="w-full justify-start gap-2"
               variant="outline"
+              onClick={() => {
+                router.push("/");
+                setOpenMobile(false);
+              }}
             >
-              <PlusIcon />
-              <span className="ml-2">Create Project</span>
+              <MessageSquarePlus className="h-4 w-4" />
+              New Chat
             </Button>
           </div>
-          <div className="px-2 pb-2">
+          <div className="px-2 py-2">
             <SidebarMenu>
               <SidebarMenuItem>
                 <SidebarMenuButton asChild>
@@ -180,6 +167,28 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild>
+                  <Link
+                    href="/project-files/notes"
+                    onClick={() => setOpenMobile(false)}
+                  >
+                    <Notebook className="h-4 w-4" />
+                    <span>Notes</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild>
+                  <Link
+                    href="/agents"
+                    onClick={() => setOpenMobile(false)}
+                  >
+                    <Bot className="h-4 w-4" />
+                    <span>Agents</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
             </SidebarMenu>
           </div>
           <SidebarHistory user={user} />
@@ -193,10 +202,12 @@ export function AppSidebar({ user }: { user: User | undefined }) {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete all chats?</AlertDialogTitle>
+            <AlertDialogTitle>
+              Delete all chats for {selectedProject?.name ?? "this project"}?
+            </AlertDialogTitle>
             <AlertDialogDescription>
               This action cannot be undone. This will permanently delete all
-              your chats and remove them from our servers.
+              chats in this project and remove them from our servers.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -207,11 +218,6 @@ export function AppSidebar({ user }: { user: User | undefined }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      <CreateProjectDialog
-        onOpenChange={setShowCreateProjectDialog}
-        open={showCreateProjectDialog}
-      />
     </>
   );
 }

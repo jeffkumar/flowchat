@@ -100,7 +100,7 @@ export const projectDoc = pgTable(
     indexingError: text("indexingError"),
     metadata: jsonb("metadata"),
     documentType: varchar("documentType", {
-      enum: ["general_doc", "bank_statement", "cc_statement", "invoice"],
+      enum: ["general_doc", "bank_statement", "cc_statement", "invoice", "note", "agent", "workflow_agent"],
     })
       .notNull()
       .default("general_doc"),

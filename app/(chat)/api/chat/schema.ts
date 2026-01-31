@@ -35,7 +35,7 @@ export const postRequestBodySchema = z.object({
     "deepseek-v3",
   ]),
   selectedVisibilityType: z.enum(["public", "private"]),
-  selectedAgentMode: z.enum(["project", "finance"]).optional(),
+  selectedAgentMode: z.string().optional(), // "project", "finance", or custom agent UUID
   projectId: z.string().uuid().optional(),
   sourceTypes: z.array(z.enum(["slack", "docs"])).optional(),
   ignoredDocIds: z.array(z.string()).optional(),

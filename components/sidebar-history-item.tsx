@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { memo } from "react";
 import { useChatVisibility } from "@/hooks/use-chat-visibility";
-import type { Chat } from "@/lib/db/schema";
+import type { ChatWithProject } from "@/lib/db/queries";
 import {
   CheckCircleFillIcon,
   GlobeIcon,
@@ -26,27 +26,61 @@ import {
   SidebarMenuItem,
 } from "./ui/sidebar";
 
+// Deterministic color based on project ID
+const PROJECT_COLORS = [
+  "text-blue-400",
+  "text-green-400",
+  "text-purple-400",
+  "text-orange-400",
+  "text-pink-400",
+  "text-cyan-400",
+  "text-yellow-400",
+  "text-red-400",
+];
+
+function getProjectColor(projectId: string | null): string {
+  if (!projectId) return "text-muted-foreground";
+  let hash = 0;
+  for (let i = 0; i < projectId.length; i++) {
+    const char = projectId.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash = hash & hash;
+  }
+  return PROJECT_COLORS[Math.abs(hash) % PROJECT_COLORS.length];
+}
+
 const PureChatItem = ({
   chat,
   isActive,
   onDelete,
   setOpenMobile,
+  showProjectLabel = false,
 }: {
-  chat: Chat;
+  chat: ChatWithProject;
   isActive: boolean;
   onDelete: (chatId: string) => void;
   setOpenMobile: (open: boolean) => void;
+  showProjectLabel?: boolean;
 }) => {
   const { visibilityType, setVisibilityType } = useChatVisibility({
     chatId: chat.id,
     initialVisibilityType: chat.visibility,
   });
 
+  const projectColor = getProjectColor(chat.projectId);
+
   return (
     <SidebarMenuItem>
       <SidebarMenuButton asChild isActive={isActive}>
         <Link href={`/chat/${chat.id}`} onClick={() => setOpenMobile(false)}>
-          <span>{chat.title}</span>
+          <div className="flex flex-col min-w-0 flex-1">
+            <span className="truncate">{chat.title}</span>
+            {showProjectLabel && chat.projectName && (
+              <span className={`text-[10px] truncate ${projectColor}`}>
+                {chat.projectName}
+              </span>
+            )}
+          </div>
         </Link>
       </SidebarMenuButton>
 
@@ -114,6 +148,9 @@ const PureChatItem = ({
 
 export const ChatItem = memo(PureChatItem, (prevProps, nextProps) => {
   if (prevProps.isActive !== nextProps.isActive) {
+    return false;
+  }
+  if (prevProps.showProjectLabel !== nextProps.showProjectLabel) {
     return false;
   }
   return true;

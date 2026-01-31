@@ -132,6 +132,13 @@ export async function GET(request: Request) {
     return NextResponse.json({ items }, { status: 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to search items";
+    console.error("[Microsoft Search] Error:", message);
+    
+    // Return appropriate status codes based on error type
+    if (message === "Microsoft not connected" || message === "Microsoft session expired") {
+      return NextResponse.json({ error: message }, { status: 401 });
+    }
+    
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

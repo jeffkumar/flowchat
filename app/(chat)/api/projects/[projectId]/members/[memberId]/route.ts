@@ -33,11 +33,17 @@ export async function DELETE(
   if (!role) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
-  if (role === "member") {
+
+  const parsed = parseMemberId(memberId);
+  
+  // Allow users to remove themselves from a project (even if they're just a member)
+  const isSelfRemoval = !parsed.isEmail && parsed.decoded === session.user.id;
+  
+  // Only admins/owners can remove others, but anyone can remove themselves
+  if (role === "member" && !isSelfRemoval) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const parsed = parseMemberId(memberId);
   try {
     if (parsed.isEmail) {
       await revokeProjectInvitation({

@@ -45,14 +45,20 @@ export async function GET(request: NextRequest) {
   }
 }
 
-export async function DELETE() {
+export async function DELETE(request: NextRequest) {
   const session = await auth();
 
   if (!session?.user) {
     return new ChatSDKError("unauthorized:chat").toResponse();
   }
 
-  const result = await deleteAllChatsByUserId({ userId: session.user.id });
+  const { searchParams } = request.nextUrl;
+  const projectId = searchParams.get("projectId");
+
+  const result = await deleteAllChatsByUserId({
+    userId: session.user.id,
+    projectId: projectId || undefined,
+  });
 
   return Response.json(result, { status: 200 });
 }

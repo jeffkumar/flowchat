@@ -72,6 +72,7 @@ export async function POST(request: Request) {
     const rawEntityName = formData.get("entityName");
     const rawInvoiceSender = formData.get("invoiceSender");
     const rawInvoiceRecipient = formData.get("invoiceRecipient");
+    const rawWorkflowAgentId = formData.get("workflowAgentId");
 
     if (!file) {
       return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
@@ -134,6 +135,11 @@ export async function POST(request: Request) {
       typeof rawInvoiceRecipient === "string" &&
       rawInvoiceRecipient.trim().length > 0
         ? rawInvoiceRecipient.trim().slice(0, 500)
+        : undefined;
+
+    const workflowAgentId =
+      typeof rawWorkflowAgentId === "string" && rawWorkflowAgentId.trim().length > 0
+        ? rawWorkflowAgentId.trim()
         : undefined;
 
     if (
@@ -270,6 +276,7 @@ export async function POST(request: Request) {
               sourceUrl: null,
               sourceCreatedAtMs: doc.createdAt.getTime(),
               fileBuffer: buffer,
+              workflowAgentId,
             });
 
             const latestAfter = await getProjectDocById({ docId: doc.id });
